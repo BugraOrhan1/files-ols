@@ -513,6 +513,8 @@ Analysis and comparison history is append-only in a separate
 record linked to its parent. Workbench search opens the project index in
 read-only mode and does not migrate or write it, so it can run alongside the
 hashing worker without touching its queue or hash records.
+See [PHASE10_STATUS.md](./PHASE10_STATUS.md) for verified coverage, limitations,
+publication status, and Phase 11 preparation.
 
 Five named roots are configured in the live database and are checked with
 Windows directory operations before each inventory run:
