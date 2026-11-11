@@ -109,6 +109,15 @@ class EcuWorkbenchTests(unittest.TestCase):
         self.assertEqual(analysis["source"]["size_bytes"], len(content))
         self.assertEqual(analysis["identifications"]["automatically_extracted"], {})
         self.assertEqual(analysis["identifications"]["user_provided"], {})
+        self.assertEqual(analysis["identifications"]["evidence"]["status"], "UNKNOWN")
+        self.assertEqual(
+            analysis["report"]["ecu_identity"]["fields"]["ecu_type"]["status"],
+            "UNKNOWN",
+        )
+        self.assertEqual(
+            analysis["report"]["ecu_identity"]["format_status"],
+            "extension_only",
+        )
         self.assertEqual(original.read_bytes(), content)
         self.assertEqual(
             Path(analysis["source"]["stored_copy"]).read_bytes(), content
@@ -126,6 +135,16 @@ class EcuWorkbenchTests(unittest.TestCase):
         self.assertEqual(analysis["source"]["sha256"], hashlib.sha256(content).hexdigest())
         self.assertEqual(analysis["source"]["size_bytes"], len(content))
         self.assertEqual(analysis["report"]["file"]["format"], "raw_ori")
+        self.assertEqual(
+            analysis["report"]["ecu_identity"]["format"], "raw_ori"
+        )
+        self.assertEqual(
+            analysis["report"]["ecu_identity"]["status"], "UNKNOWN"
+        )
+        self.assertEqual(
+            analysis["report"]["ecu_identity"]["fields"]["ecu_type"]["status"],
+            "UNKNOWN",
+        )
         self.assertEqual(original.read_bytes(), content)
 
         rerun = reanalyze(
@@ -240,15 +259,17 @@ class EcuWorkbenchTests(unittest.TestCase):
 
         analysis = self._import_bin("customer.bin", data)
         exact_matches = analysis["report"]["references"]["exact_references"]
-        self.assertEqual(analysis["report"]["status"], "CONFIRMED_REFERENCE")
+        self.assertEqual(analysis["report"]["status"], "INCONCLUSIVE")
         self.assertEqual(len(exact_matches), 2)
         self.assertEqual(
-            {item["status"] for item in exact_matches},
-            {"CONFIRMED_REFERENCE", "EXACT_CONTENT_MATCH"},
+            {item["status"] for item in exact_matches}, {"INCONCLUSIVE"}
         )
-        reference = next(
-            item for item in exact_matches
-            if item["status"] == "CONFIRMED_REFERENCE"
+        self.assertEqual(
+            analysis["report"]["ecu_identity"]["status"], "INCONCLUSIVE"
+        )
+        self.assertEqual(
+            analysis["report"]["ecu_identity"]["fields"]["ecu_type"]["status"],
+            "INCONCLUSIVE",
         )
         with self.index.connection:
             self.index.connection.execute(
@@ -256,12 +277,120 @@ class EcuWorkbenchTests(unittest.TestCase):
                 ("f" * 64, outcome.path),
             )
         stale = self._import_bin("customer.bin", data)
-        self.assertEqual(stale["report"]["status"], "EXACT_CONTENT_MATCH")
+        self.assertEqual(stale["report"]["status"], "INCONCLUSIVE")
         self.assertFalse(
             stale["report"]["references"]["exact_references"][0][
                 "validation_matches_current_source"
             ]
         )
+
+    def test_single_validated_binary_reference_derives_parser_reported_identity(self):
+        data = b"single validated export"
+        outcome = self._import_project("single-reference.ols", b"OLS source")
+        self._record_live_ols_hash(outcome)
+        project_id = self.index.connection.execute(
+            "SELECT id FROM projects WHERE source_id=(SELECT id FROM source_files WHERE path=?)",
+            (outcome.path,),
+        ).fetchone()[0]
+        digest = hashlib.sha256(data).hexdigest()
+        with self.index.connection:
+            cursor = self.index.connection.execute(
+                """
+                INSERT INTO reference_artifacts(
+                    project_id,manifest_path,manifest_sha256,artifact_index,kind,path,
+                    sha256,size_bytes,version_name,source_slot_index,relation_status,
+                    representation,metadata_json
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    project_id, str(self.root / "single-manifest.json"), "c" * 64,
+                    0, "binary_version", str(self.root / "single-reference.bin"),
+                    digest, len(data), "Original", 0, "confirmed", "full_binary", "{}",
+                ),
+            )
+            self.index.connection.execute(
+                """
+                INSERT INTO reference_checks(
+                    artifact_id,source_sha256,status,message,comparison_json
+                ) VALUES(?,?,'PASS','test fixture','{}')
+                """,
+                (cursor.lastrowid, outcome.sha256),
+            )
+
+        analysis = self._import_bin("single-customer.bin", data)
+        identity = analysis["report"]["ecu_identity"]
+        self.assertEqual(analysis["report"]["status"], "CONFIRMED_REFERENCE")
+        self.assertEqual(identity["status"], "DERIVED")
+        self.assertEqual(identity["fields"]["ecu_type"]["status"], "DERIVED")
+        self.assertEqual(identity["fields"]["ecu_type"]["value"], "ECU-A")
+        self.assertEqual(
+            identity["candidates"][0]["parser"]["name"], "test-parser"
+        )
+        self.assertEqual(
+            identity["candidates"][0]["metadata"]["ecu_type"],
+            {
+                "value": "ECU-A",
+                "status": "direct",
+                "source": "project_metadata",
+            },
+        )
+        self.assertEqual(
+            identity["candidates"][0]["version_name"], "Original"
+        )
+        self.assertEqual(identity["parser_status"], "not_run_no_validated_raw_binary_decoder")
+
+    def test_conflicting_project_metadata_keeps_exact_reference_unconfirmed(self):
+        data = b"same bytes conflicting project identities"
+        first = self._import_project("first-conflict.ols", b"first project")
+        second = self._import_project("second-conflict.ols", b"second project")
+        self._record_live_ols_hash(first)
+        self._record_live_ols_hash(second)
+        project_ids = [
+            self.index.connection.execute(
+                "SELECT id FROM projects WHERE source_id=(SELECT id FROM source_files WHERE path=?)",
+                (item.path,),
+            ).fetchone()[0]
+            for item in (first, second)
+        ]
+        with self.index.connection:
+            self.index.connection.execute(
+                "UPDATE project_metadata SET value='ECU-B' "
+                "WHERE project_id=? AND field='ecu_type'",
+                (project_ids[1],),
+            )
+            for index, project_id in enumerate(project_ids):
+                cursor = self.index.connection.execute(
+                    """
+                    INSERT INTO reference_artifacts(
+                        project_id,manifest_path,manifest_sha256,artifact_index,kind,path,
+                        sha256,size_bytes,version_name,source_slot_index,relation_status,
+                        representation,metadata_json
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        project_id, str(self.root / f"conflict-{index}.json"),
+                        str(index + 1) * 64, 0, "binary_version",
+                        str(self.root / f"conflict-{index}.bin"),
+                        hashlib.sha256(data).hexdigest(), len(data), "Original",
+                        0, "confirmed", "full_binary", "{}",
+                    ),
+                )
+                source_hash = first.sha256 if index == 0 else second.sha256
+                self.index.connection.execute(
+                    """
+                    INSERT INTO reference_checks(
+                        artifact_id,source_sha256,status,message,comparison_json
+                    ) VALUES(?,?,'PASS','test fixture','{}')
+                    """,
+                    (cursor.lastrowid, source_hash),
+                )
+
+        analysis = self._import_bin("conflicting.bin", data)
+        identity = analysis["report"]["ecu_identity"]
+        self.assertEqual(analysis["report"]["status"], "INCONCLUSIVE")
+        self.assertEqual(identity["status"], "CONFLICTING")
+        self.assertEqual(identity["fields"]["ecu_type"]["status"], "CONFLICTING")
+        self.assertIsNone(identity["fields"]["ecu_type"]["value"])
 
     def test_reference_artifact_is_rehashed_before_archival(self):
         data = b"reference version bytes"

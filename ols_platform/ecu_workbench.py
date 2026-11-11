@@ -39,6 +39,23 @@ class AnalysisAssistant(Protocol):
     def summarize(self, report: dict[str, Any]) -> str: ...
 
 
+class RawBinaryEvidenceAdapter:
+    _FORMATS = {".bin": "raw_bin", ".ori": "raw_ori"}
+
+    def inspect(self, filename: str, sha256: str, size_bytes: int) -> dict[str, Any]:
+        suffix = Path(filename).suffix.lower()
+        if suffix not in self._FORMATS:
+            raise ValueError("Only raw .bin and .ori files are supported.")
+        return {
+            "adapter": "raw_binary_v1",
+            "format": self._FORMATS[suffix],
+            "format_status": "extension_only",
+            "sha256": sha256,
+            "size_bytes": size_bytes,
+            "parser_status": "not_run_no_validated_raw_binary_decoder",
+        }
+
+
 def _connect_store(storage_root: Path) -> sqlite3.Connection:
     storage_root.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(storage_root / "workbench.sqlite3", timeout=30)
@@ -115,12 +132,199 @@ def _is_confirmed_reference(reference: dict[str, Any]) -> bool:
     )
 
 
+def _project_identity_evidence(
+    connection: sqlite3.Connection, project_id: int, slot_index: int | None
+) -> dict[str, Any]:
+    project = connection.execute(
+        """
+        SELECT p.parser_name,p.parser_version,p.format_version,d.processing_status
+        FROM projects p
+        LEFT JOIN project_diagnostics d ON d.project_id=p.id
+        WHERE p.id=?
+        """,
+        (project_id,),
+    ).fetchone()
+    metadata_rows = connection.execute(
+        """
+        SELECT field,value,status FROM project_metadata
+        WHERE project_id=? AND field IN ({})
+        """.format(",".join("?" for _ in _IDENTIFICATION_FIELDS)),
+        (project_id, *_IDENTIFICATION_FIELDS),
+    ).fetchall()
+    metadata = {
+        row["field"]: {
+            "value": row["value"],
+            "status": row["status"],
+            "source": "project_metadata",
+        }
+        for row in metadata_rows
+        if row["value"]
+    }
+    version = None
+    if slot_index is not None:
+        version_row = connection.execute(
+            """
+            SELECT name,description,status,slot_index
+            FROM project_versions
+            WHERE project_id=? AND slot_index=?
+            ORDER BY id
+            LIMIT 1
+            """,
+            (project_id, slot_index),
+        ).fetchone()
+        if version_row:
+            version = dict(version_row)
+    if project is None:
+        parser = {"name": None, "version": None, "format_version": None, "status": "unknown"}
+    else:
+        parser = {
+            "name": project["parser_name"],
+            "version": project["parser_version"],
+            "format_version": project["format_version"],
+            "status": project["processing_status"] or "unknown",
+        }
+    return {"parser": parser, "version": version, "metadata": metadata}
+
+
+def _build_ecu_identity_evidence(
+    *,
+    file_evidence: dict[str, Any],
+    user_provided: dict[str, str],
+    exact_references: list[dict[str, Any]],
+    slot_candidates: list[dict[str, Any]],
+    metadata_candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    candidate_records = [
+        {
+            "kind": "exact_binary_reference",
+            "artifact_id": item["artifact_id"],
+            "project_id": item["project_id"],
+            "version_name": item["version_name"],
+            "status": (
+                "INCONCLUSIVE"
+                if len(exact_references) > 1
+                else item["status"]
+            ),
+            "parser": item["project_identity"]["parser"],
+            "metadata": item["project_identity"]["metadata"],
+        }
+        for item in exact_references
+    ]
+    candidate_records.extend(
+        {
+            "kind": "project_metadata_candidate",
+            "project_id": item["project_id"],
+            "path": item["path"],
+            "status": item["status"],
+            "parser": item["parser"],
+            "metadata_status": item["metadata_status"],
+            "metadata": item["metadata"],
+        }
+        for item in metadata_candidates
+    )
+
+    fields: dict[str, dict[str, Any]] = {}
+    has_conflicts = False
+    has_candidate_evidence = bool(exact_references or slot_candidates or metadata_candidates)
+    for field in _IDENTIFICATION_FIELDS:
+        candidate_values: list[dict[str, Any]] = []
+        for candidate in candidate_records:
+            raw_value = candidate["metadata"].get(field)
+            if isinstance(raw_value, dict):
+                value = raw_value.get("value")
+                metadata_status = raw_value.get("status", "unknown")
+            else:
+                value = raw_value
+                metadata_status = candidate.get("metadata_status", {}).get(
+                    field, "parser_reported"
+                )
+            if value:
+                candidate_values.append(
+                    {
+                        "value": str(value),
+                        "evidence_status": metadata_status,
+                        "candidate_kind": candidate["kind"],
+                        "project_id": candidate["project_id"],
+                        "parser": candidate["parser"],
+                    }
+                )
+        distinct_values = {item["value"].casefold() for item in candidate_values}
+        supplied = user_provided.get(field)
+        conflicts = len(distinct_values) > 1 or bool(
+            supplied
+            and any(item["value"].casefold() != supplied.casefold() for item in candidate_values)
+        )
+        if conflicts:
+            has_conflicts = True
+            fields[field] = {
+                "status": "CONFLICTING",
+                "value": None,
+                "user_provided": supplied,
+                "candidate_values": candidate_values,
+            }
+            continue
+
+        unique_reference = exact_references[0] if len(exact_references) == 1 else None
+        direct_values = [
+            item for item in candidate_values
+            if item["candidate_kind"] == "exact_binary_reference"
+            and item["evidence_status"] == "direct"
+        ]
+        if (
+            unique_reference is not None
+            and unique_reference["individually_validated_reference"]
+            and direct_values
+        ):
+            fields[field] = {
+                "status": "DERIVED",
+                "value": direct_values[0]["value"],
+                "evidence": direct_values,
+            }
+        elif candidate_values:
+            fields[field] = {
+                "status": "INCONCLUSIVE",
+                "value": None,
+                "candidate_values": candidate_values,
+            }
+        elif supplied:
+            fields[field] = {
+                "status": "UNVERIFIED_USER_INPUT",
+                "value": supplied,
+                "evidence": [{"source": "user_provided", "status": "unverified"}],
+            }
+        else:
+            fields[field] = {"status": "UNKNOWN", "value": None, "evidence": []}
+
+    if has_conflicts:
+        identity_status = "CONFLICTING"
+    elif any(item["status"] == "DERIVED" for item in fields.values()):
+        identity_status = "DERIVED"
+    elif has_candidate_evidence or user_provided:
+        identity_status = "INCONCLUSIVE"
+    else:
+        identity_status = "UNKNOWN"
+
+    return {
+        "status": identity_status,
+        "input_adapter": file_evidence["adapter"],
+        "format": file_evidence["format"],
+        "format_status": file_evidence["format_status"],
+        "sha256": file_evidence["sha256"],
+        "size_bytes": file_evidence["size_bytes"],
+        "parser_status": file_evidence["parser_status"],
+        "fields": fields,
+        "candidates": candidate_records,
+        "slot_candidate_count": len(slot_candidates),
+    }
+
+
 def _lookup_references(
     index_database: Any,
     *,
     sha256: str,
     size_bytes: int,
     identifications: dict[str, str],
+    filename: str = "input.bin",
 ) -> dict[str, Any]:
     connection = index_database.connection
     exact_reference_rows = [
@@ -153,10 +357,11 @@ def _lookup_references(
     ]
     exact_references = exact_reference_rows[:50]
     for item in exact_references:
-        item["status"] = (
-            "CONFIRMED_REFERENCE"
-            if _is_confirmed_reference(item)
-            else "EXACT_CONTENT_MATCH"
+        item["individually_validated_reference"] = _is_confirmed_reference(item)
+        item["status"] = "CONFIRMED_REFERENCE" if item["individually_validated_reference"] else "EXACT_CONTENT_MATCH"
+        item["content_match_status"] = "EXACT_CONTENT_MATCH"
+        item["project_identity"] = _project_identity_evidence(
+            connection, item["project_id"], item["source_slot_index"]
         )
         item["validation_matches_current_source"] = (
             bool(item["live_source_sha256"])
@@ -249,6 +454,8 @@ def _lookup_references(
                     "project_id": result["project_id"],
                     "path": result["source"]["path"],
                     "status": candidate_status,
+                    "parser": result["parser"],
+                    "metadata_status": result["metadata_status"],
                     "rank_score": result["rank_score"],
                     "rank_reasons": result["rank_reasons"],
                     "matched_identifications": matched_identifications,
@@ -273,8 +480,31 @@ def _lookup_references(
                 }
             )
 
-    if any(item["status"] == "CONFIRMED_REFERENCE" for item in exact_references):
-        overall_status = "CONFIRMED_REFERENCE"
+    file_evidence = RawBinaryEvidenceAdapter().inspect(
+        filename, sha256, size_bytes
+    )
+    ecu_identity = _build_ecu_identity_evidence(
+        file_evidence=file_evidence,
+        user_provided=identifications,
+        exact_references=exact_references,
+        slot_candidates=slot_candidates,
+        metadata_candidates=metadata_candidates,
+    )
+    exact_references_truncated = len(exact_reference_rows) > 50
+    if len(exact_references) > 1 or exact_references_truncated:
+        for item in exact_references:
+            item["status"] = "INCONCLUSIVE"
+            item["limitation"] = (
+                "More than one full-binary reference has the same exact content; "
+                "the matching project/version assignment is ambiguous."
+            )
+        overall_status = "INCONCLUSIVE"
+    elif exact_references and exact_references[0]["individually_validated_reference"]:
+        overall_status = (
+            "INCONCLUSIVE"
+            if ecu_identity["status"] == "CONFLICTING"
+            else "CONFIRMED_REFERENCE"
+        )
     elif exact_references:
         overall_status = "EXACT_CONTENT_MATCH"
     elif any(item["status"] == "LIKELY" for item in metadata_candidates):
@@ -286,7 +516,7 @@ def _lookup_references(
     return {
         "status": overall_status,
         "exact_references": exact_references,
-        "exact_references_truncated": len(exact_reference_rows) > 50,
+        "exact_references_truncated": exact_references_truncated,
         "slot_candidates": slot_candidates,
         "slot_candidates_truncated": len(slot_candidate_rows) > 50,
         "metadata_candidates": metadata_candidates,
@@ -297,6 +527,7 @@ def _lookup_references(
             "Metadata candidate rank_score reuses the documented deterministic "
             "project-search tally; it is not a probability or validation result."
         ),
+        "ecu_identity": ecu_identity,
     }
 
 
@@ -331,6 +562,7 @@ def _persist_analysis(
         "identifications": {
             "user_provided": identifications,
             "automatically_extracted": {},
+            "evidence": report.get("ecu_identity", {}),
             "missing": [
                 field for field in _IDENTIFICATION_FIELDS
                 if field not in identifications
@@ -350,7 +582,9 @@ def _persist_analysis(
         "engine_versions": {
             "application": __version__,
             "parser": None,
-            "parser_status": "not used for raw BIN analysis",
+            "parser_status": report.get("ecu_identity", {}).get(
+                "parser_status", "not_run_no_validated_raw_binary_decoder"
+            ),
         },
     }
     connection = _connect_store(storage_root)
@@ -437,6 +671,7 @@ def import_binary_stream(
             sha256=sha256,
             size_bytes=expected_size,
             identifications=clean_identifications,
+            filename=Path(filename).name,
         )
         report = {
             "status": references["status"],
@@ -446,16 +681,20 @@ def import_binary_stream(
                 "sha256": sha256,
                 "size_bytes": expected_size,
                 "hash_method": "streaming SHA-256 over every uploaded byte",
+                "input_adapter": references["ecu_identity"]["input_adapter"],
+                "format_status": references["ecu_identity"]["format_status"],
             },
             "identifications": {
                 "automatically_extracted": {},
                 "user_provided": clean_identifications,
+                "evidence": references["ecu_identity"],
                 "missing": [
                     field for field in _IDENTIFICATION_FIELDS
                     if field not in clean_identifications
                 ],
             },
             "references": references,
+            "ecu_identity": references["ecu_identity"],
             "limitations": [
                 "No ECU-identification decoder is configured; no identifiers were inferred from arbitrary BIN bytes.",
                 "A matching full-file hash proves byte identity only, not vehicle compatibility.",
@@ -524,6 +763,12 @@ def list_reference_artifacts(
             if _is_confirmed_reference(item)
             else "INCONCLUSIVE"
         )
+        item["individually_validated_reference"] = (
+            item["status"] == "CONFIRMED_REFERENCE"
+        )
+        item["project_identity"] = _project_identity_evidence(
+            index_database.connection, item["project_id"], item["source_slot_index"]
+        )
         results.append(item)
     return results
 
@@ -563,6 +808,9 @@ def import_reference_artifact(
             f"No full_binary reference artifact exists with ID {artifact_id}."
         )
     reference = dict(row)
+    reference["project_identity"] = _project_identity_evidence(
+        index_database.connection, reference["project_id"], reference["source_slot_index"]
+    )
     source_path = Path(reference["path"]).resolve(strict=True)
     if not source_path.is_file():
         raise ValueError("The indexed binary reference path is not a file.")
@@ -606,35 +854,48 @@ def import_reference_artifact(
             temporary_path.unlink()
         else:
             os.replace(temporary_path, stored_path)
-        status = (
-            "CONFIRMED_REFERENCE"
-            if _is_confirmed_reference(reference)
-            else "EXACT_CONTENT_MATCH"
-        )
         reference["validation_matches_current_source"] = (
             bool(reference["live_source_sha256"])
             and bool(reference["validation_source_sha256"])
             and reference["live_source_sha256"].lower()
             == reference["validation_source_sha256"].lower()
         )
+        reference["individually_validated_reference"] = _is_confirmed_reference(reference)
+        reference["status"] = (
+            "CONFIRMED_REFERENCE"
+            if reference["individually_validated_reference"]
+            else "EXACT_CONTENT_MATCH"
+        )
+        references = _lookup_references(
+            index_database,
+            sha256=sha256,
+            size_bytes=size_bytes,
+            identifications={},
+            filename=source_path.name
+            if source_path.suffix.lower() in {".bin", ".ori"}
+            else "reference.bin",
+        )
+        references["selected_reference"] = {
+            **reference,
+            "content_verified_at_import": True,
+        }
+        ecu_identity = references["ecu_identity"]
+        ecu_identity["input_adapter"] = "indexed_full_binary_reference_v1"
+        ecu_identity["format"] = reference["representation"]
+        ecu_identity["format_status"] = "manifest_asserted"
+        status = references["status"]
         report = {
             "status": status,
             "file": {
                 "format": reference["representation"],
                 "sha256": sha256,
                 "size_bytes": size_bytes,
+                "input_adapter": ecu_identity["input_adapter"],
+                "format_status": ecu_identity["format_status"],
                 "ecu_file_validity": "format is asserted by the indexed reference record, not independently decoded",
             },
-            "references": {
-                "selected_reference": {
-                    **reference,
-                    "status": status,
-                    "content_verified_at_import": True,
-                },
-                "exact_references": [],
-                "slot_candidates": [],
-                "metadata_candidates": [],
-            },
+            "ecu_identity": ecu_identity,
+            "references": references,
             "limitations": [
                 "Reference bytes were re-read and matched the stored SHA-256 and size before archiving.",
                 "The project/version relationship is no stronger than its stored relation and latest reference-check status.",
@@ -693,6 +954,7 @@ def reanalyze(
         sha256=actual_hash,
         size_bytes=actual_size,
         identifications=identifications,
+        filename=source["filename"],
     )
     report = {
         "status": references["status"],
@@ -701,16 +963,20 @@ def reanalyze(
             "sha256": actual_hash,
             "size_bytes": actual_size,
             "hash_method": "streaming SHA-256 over every stored-copy byte",
+            "input_adapter": references["ecu_identity"]["input_adapter"],
+            "format_status": references["ecu_identity"]["format_status"],
         },
         "identifications": {
             "automatically_extracted": {},
             "user_provided": identifications,
+            "evidence": references["ecu_identity"],
             "missing": [
                 field for field in _IDENTIFICATION_FIELDS
                 if field not in identifications
             ],
         },
         "references": references,
+        "ecu_identity": references["ecu_identity"],
         "limitations": [
             "Reanalysis creates a new history record; the prior report is retained.",
             "No ECU-identification decoder is configured; no identifiers were inferred.",

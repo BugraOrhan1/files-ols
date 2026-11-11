@@ -482,14 +482,31 @@ the content is a valid ECU image.
 
 Vehicle/ECU identifiers entered in the form are recorded as
 `user_provided`. No identifiers are automatically decoded from BIN data.
-Missing fields remain missing. The analysis report uses existing
-`reference_artifacts` only when the stored artifact is explicitly a
+Missing identity evidence is reported as `UNKNOWN`; a supplied identifier is
+kept explicitly unverified unless independently supported. The raw input
+adapter establishes only the filename extension, full-byte SHA-256, and size;
+it does not validate the ECU format or decode ECU identity.
+
+The report preserves parser identity, version, format, processing status, and
+the source/status of project metadata separately from raw-file evidence. A
+parser-reported identity field is `DERIVED` only when there is one individually
+validated exact full-binary reference. Parser or metadata candidates without
+that unique relationship remain `INCONCLUSIVE`; conflicting candidate values
+are `CONFLICTING`. A `CONFIRMED_REFERENCE` is a validated project/version
+reference relationship, not proof of vehicle compatibility. Multiple exact
+binary references are ambiguous and cannot be reported as a confirmed
+project/version assignment; their byte match is still exposed separately as
+`EXACT_CONTENT_MATCH`.
+
+The analysis report uses existing `reference_artifacts` only when the stored
+artifact is explicitly a
 `binary_version` with `full_binary` representation and matching complete hash
 and size. It reports `CONFIRMED_REFERENCE` only when the recorded version
 relation is confirmed and the latest reference check is `PASS`; otherwise an
-exact byte match remains `EXACT_CONTENT_MATCH`. Before a known reference is
-added to the Workbench, the local file is re-read and verified against its
-stored full-file hash and size.
+unambiguous exact byte match remains `EXACT_CONTENT_MATCH`. A stale parser
+snapshot or conflicting identity evidence cannot promote a candidate to a
+confirmed reference. Before a known reference is added to the Workbench, the
+local file is re-read and verified against its stored full-file hash and size.
 
 Parser-reported slot payload hash/size matches and metadata matches are
 candidates, not content proof. A metadata candidate cannot be elevated to
@@ -513,8 +530,9 @@ Analysis and comparison history is append-only in a separate
 record linked to its parent. Workbench search opens the project index in
 read-only mode and does not migrate or write it, so it can run alongside the
 hashing worker without touching its queue or hash records.
-See [PHASE10_STATUS.md](./PHASE10_STATUS.md) for verified coverage, limitations,
-publication status, and Phase 11 preparation.
+See [PHASE10_STATUS.md](./PHASE10_STATUS.md) for Phase 10 coverage and
+[PHASE11_STATUS.md](./PHASE11_STATUS.md) for the validated initial Phase 11
+scope, test results, and remaining limitations.
 
 Five named roots are configured in the live database and are checked with
 Windows directory operations before each inventory run:
