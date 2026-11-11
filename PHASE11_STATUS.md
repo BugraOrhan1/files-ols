@@ -1,4 +1,4 @@
-# Phase 11 status — initial ECU identity evidence
+# Phase 11 status — initial identity evidence and OLS parser validation
 
 ## Scope and publication
 
@@ -10,8 +10,10 @@
 - Published Phase 11 revision: [`a93af53557d516459580b698e4c4c7a2ac8db129`](https://github.com/BugraOrhan1/files-ols/commit/a93af53557d516459580b698e4c4c7a2ac8db129).
 - Remote `main` and the published code, tests, README, and status-document blob
   IDs were verified against the local Git objects after push.
-- This is the **initial ECU identity and reference-evidence scope**, not a
-  completion claim for all of Phase 11.
+- Initial ECU identity and reference-evidence implementation commit:
+  `bc0012c322edf4d72654daa8fcbbb9ffac05ad7d`.
+- This report now also records Phase 11B's real-parser sample validation.
+  Neither phase establishes that all Phase 11 goals are complete.
 
 ## Implemented behavior
 
@@ -49,7 +51,7 @@ Identity and reference evidence remain distinct:
 No automatic tuning generation, checksum correction, map-value transfer, or
 write to ECU files is implemented.
 
-## Verification
+## Phase 11 initial-scope verification
 
 Tests use synthetic bytes and temporary databases. No customer BIN/ORI,
 live-index migration, production scan, or production hashing was used.
@@ -70,8 +72,132 @@ live-index migration, production scan, or production hashing was used.
 | `node --check ols_platform\dashboard.js` | Exit `0` |
 | `git diff --check` | Exit `0` |
 
-The two skipped tests mean this validation does not establish how the optional
-external `py-ols` parser behaves on the eight repository sample projects.
+The initial-scope full suite was run before the external parser was configured;
+its two skips were subsequently eliminated by the Phase 11B run below.
+
+## Phase 11B: actual py-ols sample run
+
+The separately checked-out parser was at upstream commit
+`4c283a80161e130b03eb8743c752a689ecda6b78` (`more parsing fixes`). The checkout
+has no `pyproject.toml`, `setup.py`, requirements file, or other installation
+manifest. Its package initializer reports version `1.1.0`; its parser module
+imports only Python standard-library modules. It was configured as a source
+checkout using `PY_OLS_PATH=C:\Users\Bugra\Desktop\py-ols-study`, which is the
+path mechanism documented by this application. The adapter successfully
+loaded `OLSReader` and `read_ols`; its parser fingerprint was
+`adapter-3+py-ols-sha256:02dacf610120f5eb4971aa0cd606efd29821b13a9e32db0165e6d5be49832771`.
+
+The parser checkout was already locally modified before this run: its only
+tracked diff changes the CLI's x-axis display from the conversion `offset` to
+the `address` and adds a formatting helper; untracked parser tests are also
+present. No checkout files were changed during Phase 11B. The diff is outside
+the parser's `.ols` API path; for reproducibility, the exact parser-module
+fingerprint above identifies the file that the adapter loaded.
+
+The checkout includes a GPL-3.0 license. The parser is not bundled into this
+repository and is loaded from the external source path. This does not resolve
+distribution obligations if it is later combined with or distributed beside
+the application; obtain legal review before shipping such a product.
+
+The existing real-parser test module was executed with `PY_OLS_PATH` set:
+both `test_eight_projects_import_without_losing_parser_output` (which imports
+all eight samples into a temporary SQLite database) and
+`test_damaged_file_is_reported_as_failed_by_real_parser` ran and passed. A
+separate read-only inspection using the same `PyOlsReader` recorded these
+sample results:
+
+| Sample | SHA-256 | Format | Parser result | Named versions / enumerated slots | Maps / axes | Missing recognized metadata | Parse warnings |
+|---|---|---:|---|---:|---:|---|---|
+| `100004.ols` | `053aa96ea3021a6e3d71b11fe8023bab31650205a41196e8ecc39968b006167c` | 597 | Parsed with warnings | 1 / 4 | 0 / 0 | none | 3 unlabeled slots |
+| `100007.ols` | `726179f17d56922d3667e18f87af739e49f59732df963332195c0249dad6a178` | 597 | Parsed with warnings | 1 / 4 | 0 / 0 | gearbox, ECU type, SW number, HW number | 4 missing metadata fields; 3 unlabeled slots |
+| `100008.ols` | `7234cdacd4509455724b9a2ec318c5ce7edc17cdb3210ef2f3691e290f32b4cf` | 597 | Parsed with warnings | 1 / 3 | 0 / 0 | make, model, engine, year, fuel, displacement, power, gearbox, SW/HW number, HW code | 11 missing metadata fields; 2 unlabeled slots |
+| `100009.ols` | `ef55e64d62358f1da11c36631ea0ba572383faa803188b556821ab5bcd3956ee` | 597 | Parsed with warnings | 1 / 2 | 4 / 8 | year, gearbox | 2 missing metadata fields; 4 unnamed maps; 4 incomplete-axis warnings at `0x224dda`, `0x2249a6`, `0x1aa468`, `0x1aa224`; 1 unlabeled slot |
+| `100010.ols` | `4f20f13b6fc0c7a1606073b00a392ab8051db1c5689eff0fcc704bc594c8bd16` | 597 | Parsed with warnings | 1 / 3 | 0 / 0 | none | 2 unlabeled slots |
+| `10001004.ols` | `2e22340c61b1c9b44710501775669e8d75d0592d6bb936245ca80fd899db0326` | 503 | Parsed with warnings | 1 / 3 | 0 / 0 | none | 2 unlabeled slots |
+| `10001005.ols` | `4a117e3549cf457c1a8977f5e1da497517e7f3c21e80bf138ca72dd108cce2d3` | 503 | Parsed with warnings | 1 / 3 | 0 / 0 | HW number | 1 missing metadata field; 2 unlabeled slots |
+| `100010054.ols` | `eda083e60ad20c8b4f286b289bb6760f7e5a9666b496e7e1ce2ef16b978bc635` | 503 | Parsed with warnings | 1 / 4 | 12 / 23 | none | 12 unnamed maps; 12 incomplete-axis warnings at `0x3a9bb0`, `0x3b0232`, `0x3afbf8`, `0x3af4a0`, `0x3af328`, `0x3af1b0`, `0x3aeebe`, `0x3af038`, `0x3aebce`, `0x3aed46`, `0x3b7c54`, `0x371a62`; 3 unlabeled slots |
+
+Across the eight samples the parser returned 8 named version records (each
+named `Original`) but the adapter enumerated 26 binary slots; 18 slot names
+remain unresolved. All 26 enumerated slots were classified by the adapter as
+`present_nonempty_unverified`. This is a parser/adapter observation, not proof
+that these are all WinOLS versions or that each slot has the assumed meaning.
+The six non-empty version descriptions are import-history text; the other two
+are empty. No independently exported WinOLS file was available here to
+validate a named version against an enumerated slot.
+
+Among the 16 returned map definitions, all names were empty. The parser
+reported 31 axes, with missing axis unit or identifier warnings for each map
+(16 warning records). Its recognized metadata values, grouped by sample, were:
+
+- `100004`: make `VW`, model `Golf`, engine `2.0 TSI`, year `2017`, fuel
+  `Turbo-Benzin`, displacement `2.0`, power `245.0PS / 180.2kW`, gearbox
+  `DSG7`, ECU maker `Siemens/Continental`, ECU type `SIMOS18.10`, SW
+  `5G0906259N`, HW number `5G0906259N`, HW code `SCG0051000000`, memory
+  `Eprom`, user `Filedatabase.eu`.
+- `100007`: make `Peugeot`, model `307`, engine `2.0 HDi 16V`, year `2011`,
+  fuel `Turbo-Diesel`, displacement `2.0`, power `150.0PS / 110.3kW`, HW code
+  `PO30052000000`, ECU maker `Siemens/Continental`, memory `Eprom`, user
+  `Filedatabase.de`.
+- `100008`: ECU maker `Siemens/Continental`, ECU type `SID209`, memory
+  `Eprom`, user `Filedatabase.eu`.
+- `100009`: make `BMW`, model `7er`, engine `50D`, fuel `Turbo-Diesel`,
+  displacement `2.993`, power `399.7PS / 294.0kW`, ECU maker `Bosch`, ECU
+  type `MDG1_MD1CP002`, SW
+  `B57D30S0-G1xB57S0_RDE#S15A-17-07-504-FS (O_8KTB1-000047D1-028)`, HW number
+  `8KTB1-000047D1-028`, HW code `B57D30S0-G1`, memory `Eprom`, user
+  `Filedatabase.eu`.
+- `100010`: make `MB`, model `C220`, engine `2.2 CDI R4`, year `2011`, fuel
+  `Turbo-Diesel`, displacement `2.2`, power `170.0PS / 125.0kW`, gearbox
+  `Automatik`, ECU maker `Delphi`, ECU type `CRD3`, SW
+  `CRD3-651-WMA4HD11-204WM-125kW-4CSL2S-EU5OP_AJ122_LH-EF-DS04_ME185001`, HW
+  number `6519040001`, HW code `6519024803`, memory `Eprom`, user
+  `Filedatabase.eu`.
+- `10001004`: make `Audi`, model `RS6`, engine `4.0 TFSI V8`, year `2017`,
+  fuel `Turbo-Benzin`, displacement `4.0`, power `560.0PS / 411.9kW`, gearbox
+  `Automatik`, ECU maker `Bosch`, ECU type `MED17.1.1`, SW `4G0906560F`, HW
+  number `4H0906014`, HW code `013988`, memory `Eprom`, user `DYNO Setting`.
+- `10001005`: make `MB`, model `GT-S AMG`, engine `4.0 AMG V8 Biturbo`, year
+  `2016`, fuel `Turbo-Benzin`, displacement `4.0`, power `510.0PS / 375.1kW`,
+  gearbox `DKG`, ECU maker `Bosch`, ECU type `MED17.7.5`, SW
+  `8Y35210H0830000 1201`, HW code `033192`, memory `Eprom`, user `DYNO Setting`.
+- `100010054`: make `Audi`, model `A8`, engine `4.2 TDI CR V8`, year `2012`,
+  fuel `Turbo-Diesel`, displacement `4.2`, power `350.0PS / 257.4kW`, gearbox
+  `S-Tronic 8`, ECU maker `Bosch`, ECU type `EDC17CP44`, SW and HW number
+  `4H0907409B`, HW code `522813`, memory `Eprom`, user `Fastech Setting`.
+
+These are values the parser returned, not independently verified ECU facts.
+The returned definitions, axis metadata, format IDs, version names, and parser
+data remain parser output/provenance; they do not prove compatibility or
+relationships. All eight parses had warnings and no parser errors. This
+matches the existing integration assertions (format versions, slot/map/axis
+counts, one `Original` record, and unresolved slots); the earlier
+[OLS integration assessment](./OLS_INTEGRATION_ASSESSMENT.md) remains clear
+that no WinOLS export validation was performed.
+
+## Phase 11B verification
+
+| Check | Result |
+|---|---|
+| Parser import/API probe | Passed; loaded `OLSReader` and `read_ols`, reported package version `1.1.0` |
+| Existing eight-sample and damaged-file integration test module | 2 tests passed, 0 failed, 0 skipped; exit `0` |
+| Full suite with `PY_OLS_PATH` configured | 82 tests run, 82 passed, 0 failed, 0 skipped; unittest child exit `0` |
+| Full-suite PowerShell/tool wrapper | Reported `1` although the `cmd`-captured Python exit was `0` and the complete log ends `OK`; no test failure was hidden |
+| `python -m compileall -q ols_platform deployment tests` | Exit `0` |
+| `node --check ols_platform\dashboard.js` | Exit `0` |
+| `git diff --check` | Exit `0` (to be rerun after this document edit) |
+
+Parser metadata remains evidence from the named parser build only. A matching
+parser result is not independent ECU identity or project/version validation.
+The eight sample hashes were checked again after parsing and matched the
+pre-run values. Parser reads, tests, and import assertions used source samples
+read-only and a temporary SQLite database; the live index and queue were not
+opened. PID `45712` was verified still running after these parser tests with
+the same continuous two-reader command. No source OLS/BIN files or tuning
+files were created or changed.
+
+The Phase 11B documentation-only revision and remote publication status are
+recorded after commit and push.
 
 ## Preserved worker and data
 
