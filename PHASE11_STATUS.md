@@ -7,6 +7,9 @@
 - Verified base revision before these changes: `4bcb141f293e13e70adc20bd65e930a8d87c8fef`
 - Validated implementation commit: `bc0012c322edf4d72654daa8fcbbb9ffac05ad7d`
   (implementation, tests, and README).
+- Published Phase 11 revision: [`a93af53557d516459580b698e4c4c7a2ac8db129`](https://github.com/BugraOrhan1/files-ols/commit/a93af53557d516459580b698e4c4c7a2ac8db129).
+- Remote `main` and the published code, tests, README, and status-document blob
+  IDs were verified against the local Git objects after push.
 - This is the **initial ECU identity and reference-evidence scope**, not a
   completion claim for all of Phase 11.
 
@@ -97,5 +100,5 @@ change.
 - Full Phase 11 remains **in progress**. Only this initial identity evidence
   and safe reference-linking layer has been implemented and tested.
 
-The final published repository revision and GitHub URL are reported after
-remote verification.
+The final documentation follow-up revision is reported after its remote
+verification.
