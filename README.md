@@ -416,16 +416,56 @@ errors are not treated as corrupt OLS projects. The dashboard can register a
 source, test access, and run a dry-run, but parser indexing remains a bounded
 CLI operation. It binds to loopback and never writes to the source files.
 
-The project search can combine exact ECU identifiers, calibration numbers,
-map names and dimensions, version names, format, validation status, and exact
-parser-derived hashes. Text search covers indexed paths, metadata, map names
-and descriptions, and version labels. Results carry source hashes, parser
-status, missing-information flags, and distinct named versions and physical
-binary slots. Candidate ranking is retrieval only: it does not establish a
-tune relationship. `parser-coverage` groups stored parser issues by format
-and problem; parser coverage is not independent validation. No embedding
-provider or tuning model is configured. Training candidates can be registered
-with provenance and validation state, but no training operation exists.
+The project search can combine exact ECU, hardware, software, calibration and
+vehicle metadata; source path/hash/size; parser and reference-validation
+status; version names; map names/descriptions and dimensions. Results are
+bounded to 100 per page by the dashboard; the service and CLI support
+`--limit` (maximum 1000) and `--offset`. Complete SHA-256 values found by the
+live file-location hasher are visible to search without a parser re-import.
+When both exist, search and project matching prefer that complete live content
+hash over the parser-import snapshot and report the hash provenance. If the
+hashes differ, parser-derived metadata and binary-slot evidence are flagged as
+potentially stale and cannot raise a project comparison to `LIKELY`; missing
+live hashes remain explicitly unverified rather than being treated as current.
+Text searches are substring scans and may be slower on large indexes; queries
+are timed, slow queries are logged locally, and an individual SQLite search
+statement is interrupted after five seconds so more filters can be applied.
+SQLite lock/busy errors return a retryable dashboard response. The existing
+WAL journal mode and busy timeout are reused; search adds no schema migration
+or queue writes.
+
+Example:
+
+```powershell
+python -m ols_platform.cli search-projects `
+  --ecu-type ECU-A --sw-number SW-123 `
+  --min-file-size 1000000 --max-file-size 50000000 `
+  --parser-status partially_processed --limit 50 --offset 0
+```
+
+Results carry matched fields, parser warnings/errors, missing-information
+flags, available versions and binary slots, and bounded map/axis summaries.
+Project detail also shows the current evidence and differences for comparable
+projects. A `CONFIRMED` exact full-file hash means only that OLS file contents
+are identical; it does not independently validate metadata, versions or tune
+semantics. Exact ECU metadata, parser slot hashes, and matching map definitions
+remain evidence with explicit uncertainty. Map names or dimensions do not
+prove that map values decode correctly in every binary version.
+
+The deterministic `rank_score` is a retrieval tally, not a probability or
+confidence value: +10 per exact ECU/calibration identifier, +100 for a complete
+source SHA-256 match, +12 for a parser-reported binary payload hash, +4 for
+matching map-name or dimension criteria, +4 for a version-name filter, +5 for independently
+validated reference status, +2 when map and axis definitions exist, and +1
+when the parser marked a project fully processed. The `CONFIRMED`, `LIKELY`,
+and `INCONCLUSIVE` labels retain their separate evidence-based meanings.
+`REJECTED` is reserved for an explicit ECU-type conflict or simultaneous
+hardware-number and hardware-code conflicts, absent an identical complete
+source hash.
+`parser-coverage` groups stored parser issues by format and problem; parser
+coverage is not independent validation. No embedding provider or tuning model
+is configured. Training candidates can be registered with provenance and
+validation state, but no training operation exists.
 
 Five named roots are configured in the live database and are checked with
 Windows directory operations before each inventory run:

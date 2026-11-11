@@ -18,6 +18,9 @@ const statusLabels = {
   import_warnings: "Waarschuwingen (historie)"
 };
 
+let currentSearchOffset = 0;
+let currentSearchParams = new URLSearchParams();
+
 async function getJson(url) {
   const response = await fetch(url, { cache: "no-store" });
   if (!response.ok) {
@@ -563,56 +566,114 @@ async function loadCoverage() {
   }
 }
 
-async function loadProjects(query = "") {
+async function loadProjects(offset = 0) {
   const target = document.getElementById("projects");
   const notice = document.getElementById("notice");
+  const summary = document.getElementById("search-summary");
+  const previous = document.getElementById("search-prev");
+  const next = document.getElementById("search-next");
+  const page = document.getElementById("search-page");
   notice.textContent = "";
+  summary.textContent = "Zoekopdracht uitvoeren…";
   target.replaceChildren();
   try {
     const url = new URL("/api/project-search", window.location.origin);
-    if (query) url.searchParams.set("text", query);
-    url.searchParams.set("limit", "100");
-    const projects = (await getJson(url)).results.map((result) => ({
-      id: result.project_id,
-      path: result.source.path,
-      format_version: result.format_version,
-      version_count: result.counts.versions,
-      map_count: result.counts.maps,
-      processing_status: result.parser.status
-    }));
+    if (offset === 0) {
+      currentSearchParams = new URLSearchParams(
+        new FormData(document.getElementById("search-form"))
+      );
+      for (const [key, value] of [...currentSearchParams.entries()]) {
+        if (!String(value).trim()) currentSearchParams.delete(key);
+      }
+    }
+    for (const [key, value] of currentSearchParams) {
+      url.searchParams.set(key, value);
+    }
+    url.searchParams.set("limit", "50");
+    url.searchParams.set("offset", String(offset));
+    const report = await getJson(url);
+    const projects = report.results;
+    currentSearchOffset = report.offset;
     if (!projects.length) {
       const row = node("tr");
-      row.append(node("td", "muted", "Geen projecten gevonden."));
+      row.append(node(
+        "td", "muted",
+        offset ? "Geen projecten meer op deze pagina." : "Geen projecten gevonden."
+      ));
       row.firstChild.colSpan = 5;
       target.append(row);
-      return;
+    } else {
+      for (const project of projects) {
+        const row = node("tr");
+        const fileCell = node("td");
+        const open = node("button", "path-button", project.source.path);
+        open.type = "button";
+        open.addEventListener("click", () => loadProject(project.project_id));
+        fileCell.append(open);
+        fileCell.append(node(
+          "span", "search-result-meta",
+          `Project ${project.project_id} · formaat ${project.format_version} · ` +
+          `${Number(project.source.size_bytes).toLocaleString("nl-NL")} bytes`
+        ));
+        row.append(fileCell);
+
+        const matchCell = node("td");
+        const matchStatus = project.match_status || project.confidence;
+        const statusClass = matchStatus === "CONFIRMED"
+          ? "pill match-confirmed"
+          : matchStatus === "LIKELY" ? "pill match-likely" : "pill";
+        matchCell.append(node("span", statusClass, matchStatus));
+        matchCell.append(node(
+          "span", "search-result-meta",
+          project.reference_validation === "validated"
+            ? "Referentie onafhankelijk gevalideerd"
+            : `Referentie: ${project.reference_validation}`
+        ));
+        row.append(matchCell);
+
+        const metadata = project.metadata || {};
+        const identity = [
+          metadata.ecu_type && `ECU ${metadata.ecu_type}`,
+          metadata.hw_number && `HW ${metadata.hw_number}`,
+          metadata.sw_number && `SW ${metadata.sw_number}`,
+          metadata.calibration_id && `CAL ${metadata.calibration_id}`
+        ].filter(Boolean);
+        row.append(node(
+          "td", "", identity.join(" · ") || "Geen ECU-identificaties beschikbaar"
+        ));
+        row.append(node(
+          "td", "",
+          `${project.counts.versions} versies · ${project.counts.binary_slots} binaire slots · ` +
+          `${project.counts.maps} kaarten · ${project.counts.axes} assen`
+        ));
+        const stateCell = node("td");
+        stateCell.append(node(
+          "span",
+          project.parser.status === "fully_processed" ? "pill complete" : "pill",
+          project.parser.status
+        ));
+        stateCell.append(node(
+          "span", "search-result-meta",
+          `${project.parser_warnings.length} parserwaarschuwingen · ` +
+          `${project.parser_errors.length} parserfouten`
+        ));
+        row.append(stateCell);
+        target.append(row);
+      }
     }
-    for (const project of projects) {
-      const row = node("tr");
-      const fileCell = node("td");
-      const open = node("button", "path-button", project.path);
-      open.type = "button";
-      open.addEventListener("click", () => loadProject(project.id));
-      fileCell.append(open);
-      row.append(fileCell);
-      row.append(node("td", "", String(project.format_version)));
-      row.append(node("td", "", String(project.version_count)));
-      row.append(node("td", "", String(project.map_count)));
-      const stateCell = node("td");
-      const isComplete = project.processing_status === "fully_processed";
-      const stateLabel = project.processing_status === "failed"
-        ? "Laatste poging mislukt"
-        : isComplete ? "Verwerkt" : "Gedeeltelijk";
-      stateCell.append(node(
-        "span",
-        isComplete ? "pill complete" : "pill",
-        stateLabel
-      ));
-      row.append(stateCell);
-      target.append(row);
-    }
+    summary.textContent =
+      `${report.result_count.toLocaleString("nl-NL")} resultaten op deze pagina · ` +
+      `offset ${report.offset.toLocaleString("nl-NL")} · ` +
+      `${(report.query_seconds * 1000).toLocaleString("nl-NL", { maximumFractionDigits: 1 })} ms · ` +
+      `${report.ranker}; score is geen kans of validatie`;
+    page.textContent = `Pagina ${Math.floor(report.offset / report.limit) + 1}`;
+    previous.disabled = report.offset === 0;
+    next.disabled = !report.has_more;
   } catch (error) {
+    summary.textContent = "";
     notice.textContent = `Projecten konden niet worden geladen: ${error.message}`;
+    previous.disabled = true;
+    next.disabled = true;
   }
 }
 
@@ -625,11 +686,108 @@ async function loadProject(projectId) {
   detail.textContent = "Details laden…";
   section.scrollIntoView({ behavior: "smooth", block: "start" });
   try {
-    const project = await getJson(`/api/projects/${encodeURIComponent(projectId)}`);
+    const [project, comparisons] = await Promise.all([
+      getJson(`/api/projects/${encodeURIComponent(projectId)}`),
+      getJson(`/api/project-matches/${encodeURIComponent(projectId)}`)
+    ]);
     title.textContent = project.path;
-    detail.textContent = JSON.stringify(project, null, 2);
+    detail.textContent = JSON.stringify({
+      project_id: project.id,
+      source: {
+        path: project.path,
+        sha256: project.sha256,
+        size_bytes: project.size_bytes
+      },
+      metadata: project.metadata,
+      parser: {
+        format_version: project.format_version,
+        parser_name: project.parser_name,
+        parser_version: project.parser_version,
+        complete: project.is_complete,
+        diagnostics: project.diagnostics
+      },
+      versions: project.versions,
+      binary_slots: project.version_slots,
+      maps: project.maps,
+      skipped_elements: project.skipped_elements
+    }, null, 2);
+    const matchesTarget = document.getElementById("similar-projects");
+    if (!comparisons.matches.length) {
+      matchesTarget.replaceChildren(node(
+        "p", "muted",
+        "Geen vergelijkbare projecten op basis van de huidige exacte hashes of ECU-identificaties. " +
+        "Parser-exportvalidatie en meer projectmetadata kunnen de vergelijking verbeteren."
+      ));
+    } else {
+      matchesTarget.replaceChildren(...comparisons.matches.map((match) => {
+        const card = node("article", "card");
+        card.append(node(
+          "strong", "", `Project ${match.right.id} · ${match.status}`
+        ));
+        card.append(node("span", "", match.right.path));
+        const otherMetadata = match.right.metadata || {};
+        const otherIdentity = [
+          otherMetadata.ecu_type && `ECU ${otherMetadata.ecu_type}`,
+          otherMetadata.hw_number && `HW ${otherMetadata.hw_number}`,
+          otherMetadata.sw_number && `SW ${otherMetadata.sw_number}`,
+          otherMetadata.calibration_id && `CAL ${otherMetadata.calibration_id}`
+        ].filter(Boolean);
+        card.append(node(
+          "span", "muted",
+          `${otherIdentity.join(" · ") || "Geen ECU-identificaties"} · ` +
+          `referentie ${match.right.reference_status} · parser ${match.right.parser_status}`
+        ));
+        card.append(node(
+          "span", "muted",
+          `SHA-256 ${match.right.sha256 || "ontbreekt"} (${match.right.hash_provenance}; ` +
+          `parser-snapshot ${match.right.parser_snapshot_matches_current_content === null
+            ? "niet live gecontroleerd"
+            : match.right.parser_snapshot_matches_current_content ? "gelijk" : "afwijkend"}) · ` +
+          `versies ${(match.right.versions || []).map((version) =>
+            version.name || `slot ${version.slot_index}`
+          ).join(", ") || "geen"}`
+        ));
+        const binarySummary = (match.right.binary_slots || []).map((slot) =>
+          `slot ${slot.slot_index} ${slot.name || "(ongelabeld)"}: ` +
+          `${slot.payload_sha256 ? slot.payload_sha256.slice(0, 12) : "geen payload-hash"}`
+        );
+        card.append(node(
+          "span", "muted",
+          `Parser-slots (niet onafhankelijk gevalideerd): ` +
+          `${binarySummary.join("; ") || "geen"}`
+        ));
+        const mapSummary = (match.right.maps || []).slice(0, 5).map((map) =>
+          `${map.name || "naamloos"} (${map.columns_count}×${map.rows_count}, ${map.axes_count} assen)`
+        );
+        card.append(node(
+          "span", "muted",
+          `Kaartstructuren: ${mapSummary.join("; ") || "geen parserdefinities"}`
+        ));
+        card.append(node("span", "muted", match.basis));
+        card.append(node(
+          "span", "muted",
+          `Gelijke metadata: ${match.equal_metadata_fields.join(", ") || "geen"} · ` +
+          `Verschillende metadata: ${match.conflicting_metadata_fields.join(", ") || "geen"} · ` +
+          `${match.parser_slot_payload_matches.length} parser-slot-hashovereenkomsten · ` +
+          `${match.common_map_structures.length} gelijke kaartstructuren`
+        ));
+        card.append(node(
+          "span", "muted",
+          `Ontbrekende metadata: ${match.right.missing_metadata_fields.join(", ") || "geen"} · ` +
+          `Kaartwaarden betrouwbaar gedecodeerd: ${match.right.values_reliably_decoded ? "ja" : "nee"}`
+        ));
+        card.append(node(
+          "span", "muted",
+          `Onzekerheden: ${match.unresolved_uncertainties.join(" ")}`
+        ));
+        return card;
+      }));
+    }
   } catch (error) {
     detail.textContent = `Projectdetails konden niet worden geladen: ${error.message}`;
+    document.getElementById("similar-projects").replaceChildren(node(
+      "p", "notice", `Vergelijkbare projecten konden niet worden geladen: ${error.message}`
+    ));
   }
 }
 
@@ -642,12 +800,22 @@ document.getElementById("refresh").addEventListener("click", () => {
   loadHashing();
   loadSources();
   loadCoverage();
-  loadProjects(document.getElementById("query").value.trim());
+  loadProjects(currentSearchOffset);
 });
 document.getElementById("refresh-sources").addEventListener("click", loadSources);
 document.getElementById("search-form").addEventListener("submit", (event) => {
   event.preventDefault();
-  loadProjects(document.getElementById("query").value.trim());
+  loadProjects(0);
+});
+document.getElementById("clear-search").addEventListener("click", () => {
+  document.getElementById("search-form").reset();
+  loadProjects(0);
+});
+document.getElementById("search-prev").addEventListener("click", () => {
+  loadProjects(Math.max(0, currentSearchOffset - 50));
+});
+document.getElementById("search-next").addEventListener("click", () => {
+  loadProjects(currentSearchOffset + 50);
 });
 document.getElementById("source-form").addEventListener("submit", async (event) => {
   event.preventDefault();

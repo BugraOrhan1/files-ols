@@ -59,6 +59,16 @@ select { min-height: 39px; padding: 8px 11px; border: 1px solid #cbd5df; border-
 .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 15px; color: var(--muted); font-size: 13px; }
 .check { display: inline-flex; align-items: center; gap: 6px; }
 .check input { width: auto; min-height: auto; margin: 0; }
+.project-search-form { display: grid; width: 100%; gap: 9px; }
+.project-search-form > label,
+.search-grid label { display: grid; gap: 5px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.search-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(185px, 1fr)); gap: 10px; width: 100%; }
+.search-grid input, .search-grid select { width: 100%; min-width: 0; }
+.search-actions, .pagination { display: flex; align-items: center; gap: 9px; }
+.pagination { justify-content: flex-end; margin-top: 14px; }
+.search-result-meta { display: block; margin-top: 5px; color: var(--muted); font-size: 12px; }
+.match-confirmed { color: #176144; background: #e4f5ed; }
+.match-likely { color: #805500; background: #fff3d5; }
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; text-align: left; }
 th, td { padding: 12px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }

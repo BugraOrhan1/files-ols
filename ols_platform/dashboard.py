@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import ipaddress
+import sqlite3
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote
@@ -194,7 +195,9 @@ def create_handler(database_path: Path):
                                 "ecu_type", "ecu_manufacturer", "ecu_family",
                                 "sw_number", "hw_number", "hw_code",
                                 "calibration_number", "calibration_id",
-                                "engine", "make", "model",
+                                "engine", "make", "model", "year",
+                                "fuel_type", "displacement", "power",
+                                "gearbox", "memory_type",
                             )
                             if query.get(field, [""])[0]
                         }
@@ -210,12 +213,27 @@ def create_handler(database_path: Path):
                                 rows=int(query["rows"][0]) if query.get("rows") else None,
                                 version_name=query.get("version_name", [""])[0][:200],
                                 binary_hash=query.get("binary_hash", [""])[0][:128],
+                                file_hash=query.get("file_hash", [""])[0][:64],
                                 format_version=int(query["format_version"][0])
                                 if query.get("format_version") else None,
                                 validation_status=query.get(
                                     "validation_status", [""]
                                 )[0][:40],
+                                parser_status=query.get(
+                                    "parser_status", [""]
+                                )[0][:40],
+                                source_path=query.get(
+                                    "source_path", [""]
+                                )[0][:500],
+                                file_size=int(query["file_size"][0])
+                                if query.get("file_size") else None,
+                                min_file_size=int(query["min_file_size"][0])
+                                if query.get("min_file_size") else None,
+                                max_file_size=int(query["max_file_size"][0])
+                                if query.get("max_file_size") else None,
+                                map_text=query.get("map_text", [""])[0][:200],
                                 limit=int(query.get("limit", ["100"])[0]),
+                                offset=int(query.get("offset", ["0"])[0]),
                             ),
                         )
                         return
@@ -330,6 +348,19 @@ def create_handler(database_path: Path):
                         return
                 finally:
                     database.close()
+            except sqlite3.OperationalError as exc:
+                if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+                    self._send_json(
+                        503,
+                        {"error": "The index is busy; retry the read shortly."},
+                    )
+                else:
+                    self._send_json(500, {"error": "Search failed; see local server log."})
+                    self.log_error("Dashboard SQLite query failed: %s", exc)
+                return
+            except TimeoutError as exc:
+                self._send_json(504, {"error": str(exc)})
+                return
             except (ValueError, TypeError) as exc:
                 self._send_json(400, {"error": str(exc)})
                 return

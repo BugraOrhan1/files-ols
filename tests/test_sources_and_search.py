@@ -1,9 +1,12 @@
+import hashlib
 import json
+import sqlite3
 import tempfile
 import unittest
 import os
 import threading
 import time
+from types import SimpleNamespace
 from unittest.mock import patch
 from pathlib import Path
 
@@ -1211,6 +1214,178 @@ class SourceAndSearchTests(unittest.TestCase):
                     )
             finally:
                 database.close()
+
+    def test_project_search_filters_pages_and_sees_new_complete_hashes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            files = []
+            for index in range(3):
+                source = root / f"search-{index}.ols"
+                source.write_bytes(bytes([65 + index]) * (128 * (index + 1)))
+                files.append(source)
+            database = IndexDatabase(root / "index.sqlite3")
+            writer = None
+            try:
+                outcomes = list(import_sources(
+                    sources=files,
+                    reader=FixtureReader(),
+                    database=database,
+                    max_file_bytes=1024,
+                    progress=False,
+                ))
+                self.assertEqual(len(outcomes), 3)
+                source = register_source(database, root)
+                scan_registered_source(
+                    database, source["id"], benchmark_bytes=0
+                )
+                projects = {
+                    row["path"]: row["id"]
+                    for row in database.connection.execute(
+                        "SELECT id,path FROM source_files"
+                    )
+                }
+                for index, file_path in enumerate(files):
+                    project_id = projects[str(file_path.resolve())]
+                    with database.connection:
+                        database.connection.execute(
+                            """
+                            UPDATE project_metadata SET value=?
+                            WHERE project_id=? AND field='sw_number'
+                            """,
+                            (f"SW-SEARCH-{index}", project_id),
+                        )
+                target_path = str(files[1].resolve())
+                target_project = projects[target_path]
+                content_hash = hashlib.sha256(files[1].read_bytes()).hexdigest()
+                with database.connection:
+                    database.connection.execute(
+                        "UPDATE source_files SET sha256=? WHERE id=?",
+                        ("0" * 64, target_project),
+                    )
+                self.assertEqual(
+                    search_projects(database, file_hash=content_hash)["results"],
+                    [],
+                )
+
+                writer = IndexDatabase(root / "index.sqlite3")
+                with writer.connection:
+                    writer.connection.execute(
+                        """
+                        UPDATE file_locations SET sha256=?
+                        WHERE path=? AND file_kind='ols'
+                        """,
+                        (content_hash, target_path),
+                    )
+                exact_hash = search_projects(
+                    database, file_hash=content_hash
+                )
+                self.assertEqual(exact_hash["result_count"], 1)
+                self.assertEqual(
+                    exact_hash["results"][0]["project_id"], target_project
+                )
+                self.assertEqual(exact_hash["results"][0]["match_status"], "CONFIRMED")
+                self.assertEqual(
+                    exact_hash["results"][0]["source"]["hash_provenance"],
+                    "live_file_location",
+                )
+                self.assertFalse(
+                    exact_hash["results"][0]["source"][
+                        "parser_snapshot_matches_current_content"
+                    ]
+                )
+                self.assertIn(
+                    "file_hash",
+                    [item["field"] for item in exact_hash["results"][0]["matched_features"]],
+                )
+
+                first_page = search_projects(database, limit=1)
+                second_page = search_projects(database, limit=1, offset=1)
+                final_page = search_projects(database, limit=1, offset=2)
+                self.assertEqual(first_page["result_count"], 1)
+                self.assertTrue(first_page["has_more"])
+                self.assertEqual(second_page["offset"], 1)
+                self.assertTrue(second_page["has_more"])
+                self.assertFalse(final_page["has_more"])
+                self.assertEqual(
+                    len({
+                        first_page["results"][0]["project_id"],
+                        second_page["results"][0]["project_id"],
+                        final_page["results"][0]["project_id"],
+                    }),
+                    3,
+                )
+
+                combined = search_projects(
+                    database,
+                    metadata={"ecu_type": " ECU-A ", "sw_number": "SW-SEARCH-0"},
+                    map_text="Fuel",
+                    columns=8,
+                    rows=4,
+                )
+                self.assertEqual(combined["result_count"], 1)
+                result = combined["results"][0]
+                self.assertEqual(result["metadata"]["sw_number"], "SW-SEARCH-0")
+                self.assertEqual(result["maps"][0]["axes_count"], 0)
+                self.assertFalse(result["values_reliably_decoded"])
+                self.assertTrue(result["missing_information"])
+                self.assertTrue(result["uncertainties"])
+                self.assertGreaterEqual(combined["query_seconds"], 0)
+
+                size_match = search_projects(
+                    database, min_file_size=200, max_file_size=300
+                )
+                self.assertEqual(size_match["result_count"], 1)
+                path_match = search_projects(
+                    database, source_path="search-2.ols"
+                )
+                self.assertEqual(path_match["result_count"], 1)
+                parser_status = result["parser"]["status"]
+                self.assertEqual(
+                    search_projects(database, parser_status=parser_status)[
+                        "result_count"
+                    ],
+                    3,
+                )
+                with patch(
+                    "ols_platform.project_search._SLOW_SEARCH_SECONDS",0
+                ):
+                    with self.assertLogs(
+                        "ols_platform.project_search", level="WARNING"
+                    ):
+                        search_projects(database, limit=1)
+                with self.assertRaisesRegex(ValueError, "64 hexadecimal"):
+                    search_projects(database, file_hash="not-a-hash")
+                with self.assertRaisesRegex(ValueError, "cannot exceed"):
+                    search_projects(
+                        database, min_file_size=400, max_file_size=200
+                    )
+            finally:
+                if writer is not None:
+                    writer.close()
+                database.close()
+
+    def test_project_search_surfaces_sqlite_read_failures(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = IndexDatabase(Path(directory) / "index.sqlite3")
+            database.close()
+            with self.assertRaises(sqlite3.ProgrammingError):
+                search_projects(database)
+
+    def test_project_search_aborts_interrupted_sqlite_statement(self):
+        class InterruptedConnection:
+            def __init__(self):
+                self.progress_handler = None
+
+            def set_progress_handler(self, handler, _interval):
+                self.progress_handler = handler
+
+            def execute(self, _query, _parameters):
+                raise sqlite3.OperationalError("interrupted")
+
+        connection = InterruptedConnection()
+        with self.assertRaisesRegex(TimeoutError, "refine the search"):
+            search_projects(SimpleNamespace(connection=connection))
+        self.assertIsNone(connection.progress_handler)
 
 
 if __name__ == "__main__":

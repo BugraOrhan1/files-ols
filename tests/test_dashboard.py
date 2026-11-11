@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -6,6 +7,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+from unittest.mock import patch
 
 from ols_platform.dashboard import create_handler
 from ols_platform.database import IndexDatabase
@@ -66,7 +68,11 @@ class DashboardTests(unittest.TestCase):
                 with urlopen(f"{base_url}/api/parser-coverage") as response:
                     self.assertEqual(json.loads(response.read())["project_count"], 0)
                 with urlopen(f"{base_url}/api/project-search") as response:
-                    self.assertEqual(json.loads(response.read())["results"], [])
+                    search = json.loads(response.read())
+                    self.assertEqual(search["results"], [])
+                    self.assertEqual(search["offset"], 0)
+                    self.assertFalse(search["has_more"])
+                    self.assertGreaterEqual(search["query_seconds"], 0)
                 with urlopen(f"{base_url}/api/projects") as response:
                     self.assertEqual(json.loads(response.read()), [])
                 with urlopen(f"{base_url}/api/diagnostics") as response:
@@ -145,6 +151,50 @@ class DashboardTests(unittest.TestCase):
                 with self.assertRaises(HTTPError) as raised:
                     urlopen(request)
                 self.assertEqual(raised.exception.code, 403)
+            finally:
+                server.shutdown()
+                server.server_close()
+                worker.join(timeout=3)
+
+    def test_project_search_validation_busy_database_and_timeout_responses(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "index.sqlite3"
+            database = IndexDatabase(database_path)
+            database.close()
+            server = ThreadingHTTPServer(
+                ("127.0.0.1", 0), create_handler(database_path)
+            )
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            base_url = f"http://127.0.0.1:{server.server_port}"
+            try:
+                with self.assertRaises(HTTPError) as raised:
+                    urlopen(f"{base_url}/api/project-search?file_hash=invalid")
+                self.assertEqual(raised.exception.code, 400)
+
+                with patch(
+                    "ols_platform.dashboard.search_projects",
+                    side_effect=sqlite3.OperationalError("database is locked"),
+                ):
+                    with self.assertRaises(HTTPError) as raised:
+                        urlopen(f"{base_url}/api/project-search")
+                    self.assertEqual(raised.exception.code, 503)
+                    self.assertIn(
+                        "retry",
+                        json.loads(raised.exception.read())["error"].lower(),
+                    )
+
+                with patch(
+                    "ols_platform.dashboard.search_projects",
+                    side_effect=TimeoutError("Search timed out."),
+                ):
+                    with self.assertRaises(HTTPError) as raised:
+                        urlopen(f"{base_url}/api/project-search")
+                    self.assertEqual(raised.exception.code, 504)
+                    self.assertEqual(
+                        json.loads(raised.exception.read())["error"],
+                        "Search timed out.",
+                    )
             finally:
                 server.shutdown()
                 server.server_close()

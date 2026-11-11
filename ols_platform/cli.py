@@ -488,12 +488,14 @@ def build_parser() -> argparse.ArgumentParser:
     queue_run.set_defaults(action="index-queue-run")
 
     search = commands.add_parser(
-        "search-projects", help="Search exact metadata and parser-derived project evidence."
+        "search-projects",
+        help="Search indexed projects by ECU metadata, source, versions and maps.",
     )
     for argument in (
         "ecu_type", "ecu_manufacturer", "ecu_family", "sw_number",
         "hw_number", "hw_code", "calibration_number", "calibration_id",
-        "engine", "make", "model",
+        "engine", "make", "model", "year", "fuel_type", "displacement",
+        "power", "gearbox", "memory_type",
     ):
         search.add_argument(f"--{argument.replace('_', '-')}")
     search.add_argument("--text", default="")
@@ -502,9 +504,17 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--rows", type=int)
     search.add_argument("--version-name", default="")
     search.add_argument("--binary-hash", default="")
+    search.add_argument("--file-hash", default="")
+    search.add_argument("--source-path", default="")
+    search.add_argument("--file-size", type=int)
+    search.add_argument("--min-file-size", type=int)
+    search.add_argument("--max-file-size", type=int)
+    search.add_argument("--map-text", default="")
     search.add_argument("--format-version", type=int)
     search.add_argument("--validation-status", default="")
+    search.add_argument("--parser-status", default="")
     search.add_argument("--limit", type=int, default=100)
+    search.add_argument("--offset", type=int, default=0)
     search.set_defaults(action="search-projects")
 
     coverage = commands.add_parser(
@@ -782,7 +792,9 @@ def main(argv: list[str] | None = None) -> int:
                 for name in (
                     "ecu_type", "ecu_manufacturer", "ecu_family", "sw_number",
                     "hw_number", "hw_code", "calibration_number",
-                    "calibration_id", "engine", "make", "model",
+                    "calibration_id", "engine", "make", "model", "year",
+                    "fuel_type", "displacement", "power", "gearbox",
+                    "memory_type",
                 )
                 if getattr(args, name)
             }
@@ -796,9 +808,17 @@ def main(argv: list[str] | None = None) -> int:
                     rows=args.rows,
                     version_name=args.version_name,
                     binary_hash=args.binary_hash,
+                    file_hash=args.file_hash,
                     format_version=args.format_version,
                     validation_status=args.validation_status,
+                    parser_status=args.parser_status,
+                    source_path=args.source_path,
+                    file_size=args.file_size,
+                    min_file_size=args.min_file_size,
+                    max_file_size=args.max_file_size,
+                    map_text=args.map_text,
                     limit=args.limit,
+                    offset=args.offset,
                 ),
                 indent=2,
                 ensure_ascii=False,

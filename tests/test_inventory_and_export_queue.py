@@ -277,11 +277,56 @@ class InventoryAndExportQueueTests(unittest.TestCase):
                     "parser_slot_extent_unverified",
                     match["parser_slot_payload_matches"][0]["relation_status"],
                 )
+                self.assertEqual(match["right"]["metadata"]["sw_number"], "SW-123")
+                self.assertEqual(len(match["right"]["versions"]), 1)
+                self.assertEqual(match["right"]["maps"], [])
+                self.assertEqual(match["right"]["hash_provenance"], "parser_import")
+                self.assertIsNone(
+                    match["right"]["parser_snapshot_matches_current_content"]
+                )
+                self.assertTrue(match["matching_evidence"])
+                self.assertTrue(match["unresolved_uncertainties"])
                 direct = compare_projects(database, 1, 2)
                 self.assertEqual(direct["status"], "LIKELY")
                 exact = compare_projects(database, 1, 3)
                 self.assertEqual(exact["status"], "CONFIRMED")
                 self.assertTrue(exact["source_file_exact_match"])
+                with database.connection:
+                    database.connection.executemany(
+                        """
+                        INSERT INTO project_metadata(project_id,field,value,status)
+                        VALUES(?,'ecu_type',?,'parser_reported')
+                        ON CONFLICT(project_id,field) DO UPDATE SET value=excluded.value
+                        """,
+                        ((1, "ECU-A"), (2, "ECU-B")),
+                    )
+                rejected = compare_projects(database, 1, 2)
+                self.assertEqual(rejected["status"], "REJECTED")
+                self.assertTrue(any(
+                    item["kind"] == "conflicting_ecu_identity"
+                    and item["status"] == "REJECTED"
+                    for item in rejected["matching_evidence"]
+                ))
+                stale_source_id = database.register_source(
+                    source_key="stale-match-test",
+                    path=str(root),
+                    status="available",
+                )
+                database.record_file_location(
+                    source_id=stale_source_id,
+                    path=str(first.resolve()),
+                    file_kind="ols",
+                    size_bytes=first.stat().st_size,
+                    modified_ns=first.stat().st_mtime_ns,
+                    sha256="f" * 64,
+                )
+                stale = compare_projects(database, 1, 2)
+                self.assertEqual(stale["status"], "INCONCLUSIVE")
+                self.assertEqual(stale["left"]["hash_provenance"], "live_file_location")
+                self.assertFalse(
+                    stale["left"]["parser_snapshot_matches_current_content"]
+                )
+                self.assertIn("different file revision", stale["basis"])
             finally:
                 database.close()
 

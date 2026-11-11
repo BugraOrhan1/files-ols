@@ -157,13 +157,66 @@
           <p class="eyebrow">PROJECTEN</p>
           <h2 id="projects-title">Geïndexeerde bestanden</h2>
         </div>
-        <form id="search-form">
-          <label class="sr-only" for="query">Zoek merk, ECU, software-ID of pad</label>
-          <input id="query" name="query" type="search" placeholder="Zoek merk, ECU of software-ID">
-          <button type="submit">Zoeken</button>
+        <form id="search-form" class="project-search-form">
+          <label for="query">Vrije tekst</label>
+          <input id="query" name="text" type="search"
+            placeholder="Projectnaam, ECU-ID, map of pad">
+          <div class="search-grid">
+            <label>ECU-identificatie<input name="ecu_type" autocomplete="off"></label>
+            <label>ECU-fabrikant<input name="ecu_manufacturer" autocomplete="off"></label>
+            <label>ECU-familie<input name="ecu_family" autocomplete="off"></label>
+            <label>Hardware-ID<input name="hw_number" autocomplete="off"></label>
+            <label>Hardwarecode<input name="hw_code" autocomplete="off"></label>
+            <label>Software-ID<input name="sw_number" autocomplete="off"></label>
+            <label>Kalibratie-ID<input name="calibration_id" autocomplete="off"></label>
+            <label>Kalibratienummer<input name="calibration_number" autocomplete="off"></label>
+            <label>Merk<input name="make" autocomplete="off"></label>
+            <label>Model<input name="model" autocomplete="off"></label>
+            <label>Motorisering<input name="engine" autocomplete="off"></label>
+            <label>Bouwjaar<input name="year" autocomplete="off"></label>
+            <label>Brandstof<input name="fuel_type" autocomplete="off"></label>
+            <label>Cilinderinhoud<input name="displacement" autocomplete="off"></label>
+            <label>Vermogen<input name="power" autocomplete="off"></label>
+            <label>Transmissie<input name="gearbox" autocomplete="off"></label>
+            <label>Geheugentype<input name="memory_type" autocomplete="off"></label>
+            <label>Projectbestand SHA-256<input name="file_hash" spellcheck="false"></label>
+            <label>Bronmap bevat<input name="source_path" autocomplete="off"></label>
+            <label>Versienaam exact<input name="version_name" autocomplete="off"></label>
+            <label>Kaartnaam/omschrijving bevat<input name="map_text" autocomplete="off"></label>
+            <label>Kaartkolommen<input name="columns" type="number" min="0"></label>
+            <label>Kaartregels<input name="rows" type="number" min="0"></label>
+            <label>Bestandsgrootte exact (bytes)<input name="file_size" type="number" min="0"></label>
+            <label>Minimumgrootte (bytes)<input name="min_file_size" type="number" min="0"></label>
+            <label>Maximumgrootte (bytes)<input name="max_file_size" type="number" min="0"></label>
+            <label>Referentievalidatie
+              <select name="validation_status">
+                <option value="">Alle statussen</option>
+                <option value="validated">Onafhankelijk gevalideerd</option>
+                <option value="INCONCLUSIVE">INCONCLUSIVE</option>
+                <option value="not_validated">Niet gevalideerd</option>
+              </select>
+            </label>
+            <label>Parserstatus
+              <select name="parser_status">
+                <option value="">Alle statussen</option>
+                <option value="fully_processed">Volledig verwerkt</option>
+                <option value="partially_processed">Gedeeltelijk</option>
+                <option value="failed">Mislukt</option>
+              </select>
+            </label>
+          </div>
+          <div class="search-actions">
+            <button type="submit">Zoeken</button>
+            <button id="clear-search" type="button" class="secondary">Filters wissen</button>
+          </div>
         </form>
       </div>
+      <p class="muted">
+        Identificaties zijn exacte filters; vrije tekst en mapbeschrijvingen zijn gedeeltelijke zoekacties.
+        Een match toont vindbewijs, geen bevestiging van een tune- of versierelatie.
+      </p>
       <div id="notice" class="notice" role="status"></div>
+      <div id="search-summary" class="muted" aria-live="polite"></div>
       <div class="table-wrap">
         <table>
           <thead>
@@ -176,6 +229,11 @@
           </tbody>
         </table>
       </div>
+        <div class="pagination">
+          <button id="search-prev" type="button" class="secondary" disabled>Vorige</button>
+          <span id="search-page" class="muted">Pagina 1</span>
+          <button id="search-next" type="button" class="secondary" disabled>Volgende</button>
+        </div>
     </section>
     <section id="detail-section" hidden aria-labelledby="detail-title">
       <div class="section-heading">
@@ -186,6 +244,8 @@
         <button id="close-detail" type="button" class="secondary">Sluiten</button>
       </div>
       <pre id="detail" class="detail"></pre>
+      <h3>Vergelijkbare projecten en bewijs</h3>
+      <div id="similar-projects" class="cards" aria-live="polite"></div>
     </section>
   </main>
   <footer>
