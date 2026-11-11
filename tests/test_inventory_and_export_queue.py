@@ -265,6 +265,26 @@ class InventoryAndExportQueueTests(unittest.TestCase):
                             progress=False,
                         )
                     )
+                for source in (first, second, exact_copy):
+                    source_path = str(source.resolve())
+                    indexed = database.connection.execute(
+                        "SELECT sha256,size_bytes,modified_ns FROM source_files WHERE path=?",
+                        (source_path,),
+                    ).fetchone()
+                    source_id = database.register_source(
+                        source_key="matching-test",
+                        path=str(root),
+                        status="available",
+                    )
+                    database.record_file_location(
+                        source_id=source_id,
+                        path=source_path,
+                        file_kind="ols",
+                        size_bytes=indexed["size_bytes"],
+                        modified_ns=indexed["modified_ns"],
+                        sha256=indexed["sha256"],
+                        state="hashed",
+                    )
                 report = find_project_matches(database, 1)
                 self.assertEqual(report["candidate_count"], 2)
                 match = next(
@@ -280,14 +300,30 @@ class InventoryAndExportQueueTests(unittest.TestCase):
                 self.assertEqual(match["right"]["metadata"]["sw_number"], "SW-123")
                 self.assertEqual(len(match["right"]["versions"]), 1)
                 self.assertEqual(match["right"]["maps"], [])
-                self.assertEqual(match["right"]["hash_provenance"], "parser_import")
-                self.assertIsNone(
+                self.assertEqual(match["right"]["hash_provenance"], "live_file_location")
+                self.assertTrue(
                     match["right"]["parser_snapshot_matches_current_content"]
                 )
                 self.assertTrue(match["matching_evidence"])
                 self.assertTrue(match["unresolved_uncertainties"])
                 direct = compare_projects(database, 1, 2)
                 self.assertEqual(direct["status"], "LIKELY")
+                first_live_hash = database.connection.execute(
+                    "SELECT sha256 FROM file_locations WHERE path=? AND file_kind='ols'",
+                    (str(first.resolve()),),
+                ).fetchone()[0]
+                with database.connection:
+                    database.connection.execute(
+                        "UPDATE file_locations SET sha256=? WHERE path=? AND file_kind='ols'",
+                        ("f" * 64, str(first.resolve())),
+                    )
+                stale = compare_projects(database, 1, 2)
+                self.assertEqual(stale["status"], "INCONCLUSIVE")
+                with database.connection:
+                    database.connection.execute(
+                        "UPDATE file_locations SET sha256=? WHERE path=? AND file_kind='ols'",
+                        (first_live_hash, str(first.resolve())),
+                    )
                 exact = compare_projects(database, 1, 3)
                 self.assertEqual(exact["status"], "CONFIRMED")
                 self.assertTrue(exact["source_file_exact_match"])

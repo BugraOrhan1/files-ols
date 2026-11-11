@@ -66,12 +66,12 @@ def _project_summary(database: Any, project_id: int) -> dict[str, Any]:
         SELECT p.id,s.path,s.sha256 AS parser_snapshot_sha256,
                (SELECT fl.sha256 FROM file_locations fl
                 WHERE fl.path=s.path AND fl.file_kind='ols'
-                  AND fl.sha256 IS NOT NULL
+                  AND fl.is_present=1 AND fl.sha256 IS NOT NULL
                 ORDER BY fl.id DESC LIMIT 1) AS live_sha256,
                COALESCE((
                    SELECT fl.sha256 FROM file_locations fl
                    WHERE fl.path=s.path AND fl.file_kind='ols'
-                     AND fl.sha256 IS NOT NULL
+                     AND fl.is_present=1 AND fl.sha256 IS NOT NULL
                    ORDER BY fl.id DESC LIMIT 1
                ),s.sha256) AS sha256,
                s.size_bytes,p.format_version,p.parser_name,p.parser_version,
@@ -184,10 +184,14 @@ def compare_projects(database: Any, left_id: int, right_id: int) -> dict[str, An
     rows = database.connection.execute(
         """
         SELECT p.id,s.path,
+               (SELECT fl.sha256 FROM file_locations fl
+                WHERE fl.path=s.path AND fl.file_kind='ols'
+                  AND fl.is_present=1 AND fl.sha256 IS NOT NULL
+                ORDER BY fl.id DESC LIMIT 1) AS live_sha256,
                COALESCE((
                    SELECT fl.sha256 FROM file_locations fl
                    WHERE fl.path=s.path AND fl.file_kind='ols'
-                     AND fl.sha256 IS NOT NULL
+                     AND fl.is_present=1 AND fl.sha256 IS NOT NULL
                    ORDER BY fl.id DESC LIMIT 1
                ),s.sha256) AS sha256,
                s.size_bytes,p.format_version
@@ -247,7 +251,10 @@ def compare_projects(database: Any, left_id: int, right_id: int) -> dict[str, An
         if (signature := _map_signature(item)) is not None
         and signature not in left_map_signatures
     ][:25]
-    source_exact = projects[left_id]["sha256"] == projects[right_id]["sha256"]
+    source_exact = bool(
+        projects[left_id]["live_sha256"]
+        and projects[left_id]["live_sha256"] == projects[right_id]["live_sha256"]
+    )
     hard_identity_conflicts = (
         "ecu_type" in conflicting_metadata
         or {
@@ -267,8 +274,8 @@ def compare_projects(database: Any, left_id: int, right_id: int) -> dict[str, An
         slot_matches
         and any(field in equal_metadata for field in _ECU_ID_FIELDS)
         and not any(field in conflicting_metadata for field in _ECU_ID_FIELDS)
-        and left_detail["parser_snapshot_matches_current_content"] is not False
-        and right_detail["parser_snapshot_matches_current_content"] is not False
+        and left_detail["parser_snapshot_matches_current_content"] is True
+        and right_detail["parser_snapshot_matches_current_content"] is True
     ):
         status = "LIKELY"
         basis = (
@@ -412,12 +419,12 @@ def find_project_matches(
         raise ValueError("Project match limit must be between 1 and 1000.")
     source = database.connection.execute(
         """
-        SELECT COALESCE((
+        SELECT (
             SELECT fl.sha256 FROM file_locations fl
             WHERE fl.path=s.path AND fl.file_kind='ols'
-              AND fl.sha256 IS NOT NULL
+              AND fl.is_present=1 AND fl.sha256 IS NOT NULL
             ORDER BY fl.id DESC LIMIT 1
-        ),s.sha256) AS sha256
+        ) AS live_sha256
         FROM projects p JOIN source_files s ON s.id=p.source_id
         WHERE p.id=?
         """,
@@ -433,12 +440,10 @@ def find_project_matches(
             FROM projects other
             JOIN source_files other_source ON other_source.id=other.source_id
             WHERE other.id!=? AND (
-                COALESCE((
-                    SELECT fl.sha256 FROM file_locations fl
-                    WHERE fl.path=other_source.path AND fl.file_kind='ols'
-                      AND fl.sha256 IS NOT NULL
-                    ORDER BY fl.id DESC LIMIT 1
-                ),other_source.sha256)=? OR EXISTS (
+                (SELECT fl.sha256 FROM file_locations fl
+                 WHERE fl.path=other_source.path AND fl.file_kind='ols'
+                   AND fl.is_present=1 AND fl.sha256 IS NOT NULL
+                 ORDER BY fl.id DESC LIMIT 1)=? OR EXISTS (
                     SELECT 1
                     FROM project_version_slots a
                     JOIN project_version_slots b
@@ -457,7 +462,10 @@ def find_project_matches(
             ORDER BY other.id
             LIMIT ?
             """,
-            (project_id, source["sha256"], project_id, project_id, limit * 10),
+            (
+                project_id, source["live_sha256"], project_id, project_id,
+                limit * 10,
+            ),
         )
     ]
     reports = [

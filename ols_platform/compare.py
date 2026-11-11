@@ -5,6 +5,7 @@ import json
 import sqlite3
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import BinaryIO
 
 
 @dataclass(frozen=True)
@@ -36,25 +37,32 @@ def compare_binary_files(
     """Read-only byte comparison using bounded chunks and absolute offsets."""
     if chunk_size <= 0 or max_ranges <= 0:
         raise ValueError("chunk_size and max_ranges must be positive.")
-    original_size = original.stat().st_size
-    tuned_size = tuned.stat().st_size
-    original_hash = _hash_file(original, chunk_size)
-    tuned_hash = _hash_file(tuned, chunk_size)
+    original_before = original.stat()
+    tuned_before = tuned.stat()
+    original_digest = hashlib.sha256()
+    tuned_digest = hashlib.sha256()
     changed: list[ChangedRange] = []
     differing_bytes = 0
     in_range = False
     range_start = 0
-    common_size = min(original_size, tuned_size)
+    original_size = 0
+    tuned_size = 0
 
     with original.open("rb") as old_file, tuned.open("rb") as new_file:
         offset = 0
-        while offset < common_size:
-            count = min(chunk_size, common_size - offset)
-            old_chunk = old_file.read(count)
-            new_chunk = new_file.read(count)
-            for index, (old_byte, new_byte) in enumerate(zip(old_chunk, new_chunk)):
+        while True:
+            old_chunk = _read_chunk(old_file, chunk_size)
+            new_chunk = _read_chunk(new_file, chunk_size)
+            if not old_chunk and not new_chunk:
+                break
+            original_digest.update(old_chunk)
+            tuned_digest.update(new_chunk)
+            original_size += len(old_chunk)
+            tuned_size += len(new_chunk)
+            shared_size = min(len(old_chunk), len(new_chunk))
+            for index in range(shared_size):
                 absolute = offset + index
-                if old_byte != new_byte:
+                if old_chunk[index] != new_chunk[index]:
                     differing_bytes += 1
                     if not in_range:
                         if len(changed) >= max_ranges:
@@ -67,15 +75,34 @@ def compare_binary_files(
                 elif in_range:
                     changed.append(ChangedRange(range_start, absolute))
                     in_range = False
-            offset += count
+            if len(old_chunk) != len(new_chunk):
+                tail_size = abs(len(old_chunk) - len(new_chunk))
+                differing_bytes += tail_size
+                if not in_range:
+                    if len(changed) >= max_ranges:
+                        raise RuntimeError(
+                            f"Comparison exceeds the configured {max_ranges} "
+                            "changed-range limit."
+                        )
+                    range_start = offset + shared_size
+                    in_range = True
+            offset += max(len(old_chunk), len(new_chunk))
 
-    if original_size != tuned_size:
-        differing_bytes += abs(original_size - tuned_size)
-        if not in_range:
-            range_start = common_size
-            in_range = True
     if in_range:
         changed.append(ChangedRange(range_start, max(original_size, tuned_size)))
+    original_after = original.stat()
+    tuned_after = tuned.stat()
+    if (
+        original_size != original_before.st_size
+        or tuned_size != tuned_before.st_size
+        or original_after.st_size != original_before.st_size
+        or tuned_after.st_size != tuned_before.st_size
+        or original_after.st_mtime_ns != original_before.st_mtime_ns
+        or tuned_after.st_mtime_ns != tuned_before.st_mtime_ns
+    ):
+        raise RuntimeError("A binary file changed during comparison.")
+    original_hash = original_digest.hexdigest()
+    tuned_hash = tuned_digest.hexdigest()
 
     return BinaryComparison(
         original_path=str(original.resolve()),
@@ -125,9 +152,13 @@ def store_comparison(database_path: Path, result: BinaryComparison) -> None:
         connection.close()
 
 
-def _hash_file(path: Path, chunk_size: int) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as file:
-        while chunk := file.read(chunk_size):
-            digest.update(chunk)
-    return digest.hexdigest()
+def _read_chunk(file: BinaryIO, chunk_size: int) -> bytes:
+    parts = []
+    remaining = chunk_size
+    while remaining:
+        chunk = file.read(remaining)
+        if not chunk:
+            break
+        parts.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(parts)

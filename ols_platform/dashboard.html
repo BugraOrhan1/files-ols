@@ -19,6 +19,7 @@
   <main>
     <nav class="page-nav" aria-label="Applicatiepagina's">
       <a class="active" href="/">Projecten</a>
+      <a href="#ecu-workbench">ECU File Workbench</a>
       <a href="/diagnostics">Importdiagnose</a>
     </nav>
     <section aria-labelledby="sources-title">
@@ -150,6 +151,67 @@
       <div id="hashing-sources" class="cards" aria-live="polite"></div>
       <h3>Bevestigde exacte duplicaten (SHA-256 + grootte)</h3>
       <div id="hashing-duplicates" class="cards" aria-live="polite"></div>
+    </section>
+    <section id="ecu-workbench" aria-labelledby="ecu-workbench-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">LOKALE BIN-ANALYSE</p>
+          <h2 id="ecu-workbench-title">ECU File Workbench</h2>
+        </div>
+      </div>
+      <p class="muted">
+        Ondersteunt ruwe BIN-bestanden. HEX-import is uitgeschakeld totdat een
+        gevalideerde importer met expliciete adres-/gapsemantiek beschikbaar is.
+        Het originele bestand wordt niet gewijzigd; de browser uploadt het via
+        loopback naar een afzonderlijke lokale analysekopie.
+      </p>
+      <form id="ecu-workbench-form" class="project-search-form">
+        <label for="ecu-file">Origineel ECU-bestand (.bin)</label>
+        <input id="ecu-file" name="file" type="file" accept=".bin,application/octet-stream" required>
+        <div class="search-grid">
+          <label>ECU-type<input name="ecu_type" autocomplete="off"></label>
+          <label>ECU-fabrikant<input name="ecu_manufacturer" autocomplete="off"></label>
+          <label>Hardware-ID<input name="hw_number" autocomplete="off"></label>
+          <label>Hardwarecode<input name="hw_code" autocomplete="off"></label>
+          <label>Software-ID<input name="sw_number" autocomplete="off"></label>
+          <label>Kalibratie-ID<input name="calibration_id" autocomplete="off"></label>
+          <label>Voertuigmerk<input name="make" autocomplete="off"></label>
+          <label>Voertuigmodel<input name="model" autocomplete="off"></label>
+          <label>Motorisering<input name="engine" autocomplete="off"></label>
+        </div>
+        <div class="search-actions">
+          <button id="ecu-import-button" type="submit">Importeer en analyseer</button>
+          <span id="ecu-import-state" class="muted" aria-live="polite"></span>
+        </div>
+      </form>
+      <div id="ecu-analysis-result" class="cards" aria-live="polite"></div>
+      <pre id="ecu-analysis-report" class="detail" hidden></pre>
+      <h3>Vergelijk twee geïmporteerde bestanden</h3>
+      <p class="muted">
+        Selecteer bijvoorbeeld een originele en een getunede BIN. Alleen byteverschillen
+        worden vastgesteld; technische betekenis blijft INCONCLUSIVE.
+      </p>
+      <div class="source-form">
+        <label for="ecu-reference-select">Geïndexeerde binaire referentie</label>
+        <select id="ecu-reference-select"></select>
+        <button id="ecu-reference-import" type="button" class="secondary">
+          Referentie veilig kopiëren en aan geschiedenis toevoegen
+        </button>
+      </div>
+      <div class="source-form">
+        <label for="ecu-compare-a">Bestand A</label>
+        <select id="ecu-compare-a"></select>
+        <label for="ecu-compare-b">Bestand B</label>
+        <select id="ecu-compare-b"></select>
+        <button id="ecu-compare-button" type="button">Vergelijk bytes</button>
+      </div>
+      <pre id="ecu-comparison-report" class="detail" hidden></pre>
+      <h3>Analysegeschiedenis</h3>
+      <div id="ecu-analysis-history" class="cards" aria-live="polite">
+        <p class="muted">Analysegeschiedenis laden…</p>
+      </div>
+      <h3>Vergelijkingsgeschiedenis</h3>
+      <div id="ecu-comparison-history" class="cards" aria-live="polite"></div>
     </section>
     <section aria-labelledby="projects-title">
       <div class="section-heading">

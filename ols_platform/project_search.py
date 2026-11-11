@@ -71,8 +71,9 @@ class EvidenceRanker:
             )
         if (
             criteria.get("file_hash")
-            and result.get("source", {}).get("sha256")
-            and result["source"]["sha256"].lower() == criteria["file_hash"].lower()
+            and result.get("source", {}).get("live_sha256")
+            and result["source"]["live_sha256"].lower()
+            == criteria["file_hash"].lower()
         ):
             score += 100
             reasons.append(
@@ -124,6 +125,7 @@ def search_projects(
     *,
     text: str = "",
     metadata: dict[str, str] | None = None,
+    metadata_match_mode: str = "all",
     map_name: str = "",
     columns: int | None = None,
     rows: int | None = None,
@@ -149,6 +151,8 @@ def search_projects(
     if metadata is not None and not isinstance(metadata, dict):
         raise ValueError("Metadata filters must be a field-to-text mapping.")
     filters = metadata or {}
+    if metadata_match_mode not in {"all", "any"}:
+        raise ValueError("Metadata match mode must be 'all' or 'any'.")
     unknown = set(filters) - set(_METADATA_FIELDS)
     if unknown:
         raise ValueError(f"Unsupported metadata filter(s): {sorted(unknown)}")
@@ -193,15 +197,21 @@ def search_projects(
     clauses: list[str] = []
     parameters: list[object] = []
     matched_features: list[tuple[str, str]] = []
+    metadata_clauses: list[str] = []
+    metadata_parameters: list[object] = []
     for field, value in filters.items():
         if not value.strip():
             continue
-        clauses.append(
+        metadata_clauses.append(
             "EXISTS (SELECT 1 FROM project_metadata pm "
             "WHERE pm.project_id=p.id AND pm.field=? AND pm.value=?)"
         )
-        parameters.extend((field, value.strip()))
+        metadata_parameters.extend((field, value.strip()))
         matched_features.append((field, value.strip()))
+    if metadata_clauses:
+        operator = " AND " if metadata_match_mode == "all" else " OR "
+        clauses.append(f"({operator.join(metadata_clauses)})")
+        parameters.extend(metadata_parameters)
     if text.strip():
         clauses.append(
             """
@@ -266,10 +276,10 @@ def search_projects(
         matched_features.append(("binary_hash", binary_hash.strip().lower()))
     if file_hash:
         clauses.append(
-            "COALESCE((SELECT fl.sha256 FROM file_locations fl "
+            "EXISTS (SELECT 1 FROM file_locations fl "
             "WHERE fl.path=s.path AND fl.file_kind='ols' "
-            "AND fl.sha256 IS NOT NULL ORDER BY fl.id DESC LIMIT 1),"
-            "NULLIF(s.sha256,''))=?"
+            "AND fl.is_present=1 AND fl.sha256=? "
+            "ORDER BY fl.id DESC LIMIT 1)"
         )
         parameters.append(file_hash.strip().lower())
         matched_features.append(("file_hash", file_hash.strip().lower()))
@@ -323,13 +333,13 @@ def search_projects(
                s.path,s.sha256 AS parser_sha256,(
                    SELECT fl.sha256 FROM file_locations fl
                    WHERE fl.path=s.path AND fl.file_kind='ols'
-                     AND fl.sha256 IS NOT NULL
+                     AND fl.is_present=1 AND fl.sha256 IS NOT NULL
                    ORDER BY fl.id DESC LIMIT 1
                ) AS live_sha256,
                COALESCE((
                    SELECT fl.sha256 FROM file_locations fl
                    WHERE fl.path=s.path AND fl.file_kind='ols'
-                     AND fl.sha256 IS NOT NULL
+                     AND fl.is_present=1 AND fl.sha256 IS NOT NULL
                    ORDER BY fl.id DESC LIMIT 1
                ),NULLIF(s.sha256,'')) AS sha256,s.size_bytes,
                d.processing_status,d.reference_status,
@@ -449,8 +459,8 @@ def search_projects(
             and metadata_values.get(field) == value.strip()
         )
         source_hash_match = bool(
-            file_hash and row["sha256"]
-            and row["sha256"].lower() == file_hash.strip().lower()
+            file_hash and row["live_sha256"]
+            and row["live_sha256"].lower() == file_hash.strip().lower()
         )
         parser_snapshot_matches_current = (
             row["live_sha256"] == row["parser_sha256"]
@@ -479,6 +489,7 @@ def search_projects(
                 "source": {
                     "path": row["path"],
                     "sha256": row["sha256"],
+                    "live_sha256": row["live_sha256"],
                     "parser_snapshot_sha256": row["parser_sha256"],
                     "hash_provenance": (
                         "live_file_location"

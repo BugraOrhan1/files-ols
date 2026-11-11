@@ -3,12 +3,22 @@ from __future__ import annotations
 import json
 import ipaddress
 import sqlite3
+from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from .database import IndexDatabase
+from .ecu_workbench import (
+    compare_analyses,
+    get_analysis,
+    get_comparison,
+    history as workbench_history,
+    import_reference_artifact,
+    import_binary_stream,
+    list_reference_artifacts,
+    reanalyze,
+)
 from .sources import build_hashing_report
 from .reference_package import build_package_report
 from .project_matching import find_project_matches
@@ -32,18 +42,145 @@ _STATIC = {
 }
 
 
+class _LimitedReader:
+    def __init__(self, source, size: int):
+        self._source = source
+        self._remaining = size
+
+    def read(self, size: int = -1) -> bytes:
+        if self._remaining <= 0:
+            return b""
+        count = self._remaining if size < 0 else min(size, self._remaining)
+        chunk = self._source.read(count)
+        self._remaining -= len(chunk)
+        return chunk
+
+
+def _readonly_index(database_path: Path):
+    uri = f"{database_path.resolve().as_uri()}?mode=ro"
+    connection = sqlite3.connect(uri, uri=True, timeout=5)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA query_only = ON")
+    return SimpleNamespace(connection=connection), connection
+
+
 def create_handler(database_path: Path):
+    workbench_root = database_path.resolve().parent / "ecu-workbench"
+
     class DashboardHandler(BaseHTTPRequestHandler):
+        def _is_allowed_loopback_host(self) -> bool:
+            host = self.headers.get("Host", "").strip().lower()
+            hostname = (
+                host[1:].split("]", 1)[0]
+                if host.startswith("[") and "]" in host
+                else host.split(":", 1)[0]
+            )
+            return hostname in {"127.0.0.1", "localhost"}
+
         def do_POST(self) -> None:
             peer = self.client_address[0]
             try:
-                if not ipaddress.ip_address(peer).is_loopback:
-                    self._send_json(403, {"error": "Loopback requests only."})
-                    return
+                peer_is_loopback = ipaddress.ip_address(peer).is_loopback
+            except ValueError:
+                peer_is_loopback = False
+            if not peer_is_loopback or not self._is_allowed_loopback_host():
+                self._send_json(403, {"error": "Loopback requests only."})
+                return
+            try:
                 host = self.headers.get("Host", "")
                 if self.headers.get("Origin") != f"http://{host}":
                     self._send_json(403, {"error": "Same-origin requests only."})
                     return
+                request = urlsplit(self.path)
+                if request.path == "/api/workbench/import":
+                    if self.headers.get_content_type() != "application/octet-stream":
+                        self._send_json(415, {"error": "Upload must be application/octet-stream."})
+                        return
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 1 <= length <= 4 * 1024 * 1024 * 1024:
+                        self._send_json(413, {"error": "Upload must be between 1 byte and 4 GiB."})
+                        return
+                    encoded_name = self.headers.get("X-File-Name", "")
+                    filename = unquote(encoded_name).replace("\\", "/").rsplit("/", 1)[-1]
+                    if not filename or len(filename) > 255:
+                        self._send_json(400, {"error": "A filename of at most 255 characters is required."})
+                        return
+                    query = parse_qs(request.query)
+                    identifications = {
+                        field: values[0]
+                        for field, values in query.items()
+                        if values and values[0]
+                    }
+                    index_database, connection = _readonly_index(database_path)
+                    try:
+                        result = import_binary_stream(
+                            _LimitedReader(self.rfile, length),
+                            filename=filename,
+                            expected_size=length,
+                            storage_root=workbench_root,
+                            index_database=index_database,
+                            identifications=identifications,
+                        )
+                    finally:
+                        connection.close()
+                    self._send_json(201, result)
+                    return
+
+                if request.path in {
+                    "/api/workbench/compare",
+                    "/api/workbench/reference",
+                } or (
+                    request.path.startswith("/api/workbench/analyses/")
+                    and request.path.endswith("/reanalyze")
+                ):
+                    if self.headers.get_content_type() != "application/json":
+                        self._send_json(415, {"error": "Use application/json."})
+                        return
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 1 <= length <= 8192:
+                        self._send_json(413, {"error": "Request body must be 1-8192 bytes."})
+                        return
+                    payload = json.loads(self.rfile.read(length))
+                    if not isinstance(payload, dict):
+                        raise ValueError("Request body must be a JSON object.")
+                    if request.path == "/api/workbench/compare":
+                        analysis_a_id = payload.get("analysis_a_id")
+                        analysis_b_id = payload.get("analysis_b_id")
+                        if not isinstance(analysis_a_id, str) or not isinstance(analysis_b_id, str):
+                            raise ValueError("Two analysis IDs are required.")
+                        result = compare_analyses(
+                            workbench_root, analysis_a_id, analysis_b_id
+                        )
+                    elif request.path == "/api/workbench/reference":
+                        artifact_id = payload.get("artifact_id")
+                        if not isinstance(artifact_id, int) or isinstance(artifact_id, bool):
+                            raise ValueError("A numeric reference artifact ID is required.")
+                        index_database, connection = _readonly_index(database_path)
+                        try:
+                            result = import_reference_artifact(
+                                workbench_root, artifact_id, index_database
+                            )
+                        finally:
+                            connection.close()
+                    else:
+                        parts = request.path.strip("/").split("/")
+                        if (
+                            len(parts) != 5
+                            or parts[:3] != ["api", "workbench", "analyses"]
+                            or parts[4] != "reanalyze"
+                        ):
+                            self._send_json(404, {"error": "Not found."})
+                            return
+                        index_database, connection = _readonly_index(database_path)
+                        try:
+                            result = reanalyze(
+                                workbench_root, unquote(parts[3]), index_database
+                            )
+                        finally:
+                            connection.close()
+                    self._send_json(201, result)
+                    return
+
                 if self.headers.get_content_type() != "application/json":
                     self._send_json(415, {"error": "Use application/json."})
                     return
@@ -106,6 +243,17 @@ def create_handler(database_path: Path):
                 self._send_json(500, {"error": "Source operation failed; see local server log."})
 
         def do_GET(self) -> None:
+            peer = self.client_address[0]
+            try:
+                if (
+                    not ipaddress.ip_address(peer).is_loopback
+                    or not self._is_allowed_loopback_host()
+                ):
+                    self._send_json(403, {"error": "Loopback requests only."})
+                    return
+            except ValueError:
+                self._send_json(403, {"error": "Loopback requests only."})
+                return
             request = urlsplit(self.path)
             if request.path == "/":
                 self._send(200, _PAGE.read_bytes(), "text/html; charset=utf-8")
@@ -120,6 +268,42 @@ def create_handler(database_path: Path):
             if request.path in _STATIC:
                 path, content_type = _STATIC[request.path]
                 self._send(200, path.read_bytes(), content_type)
+                return
+            if request.path == "/api/workbench/history":
+                try:
+                    query = parse_qs(request.query)
+                    limit = int(query.get("limit", ["100"])[0])
+                    self._send_json(200, workbench_history(workbench_root, limit=limit))
+                except (ValueError, TypeError) as exc:
+                    self._send_json(400, {"error": str(exc)})
+                return
+            if request.path == "/api/workbench/references":
+                index_database, connection = _readonly_index(database_path)
+                try:
+                    self._send_json(
+                        200,
+                        list_reference_artifacts(index_database),
+                    )
+                except (ValueError, TypeError) as exc:
+                    self._send_json(400, {"error": str(exc)})
+                finally:
+                    connection.close()
+                return
+            if request.path.startswith("/api/workbench/analyses/"):
+                try:
+                    analysis_id = unquote(request.path.rsplit("/", 1)[1])
+                    self._send_json(200, get_analysis(workbench_root, analysis_id))
+                except ValueError as exc:
+                    self._send_json(404, {"error": str(exc)})
+                return
+            if request.path.startswith("/api/workbench/comparisons/"):
+                try:
+                    comparison_id = unquote(request.path.rsplit("/", 1)[1])
+                    self._send_json(
+                        200, get_comparison(workbench_root, comparison_id)
+                    )
+                except ValueError as exc:
+                    self._send_json(404, {"error": str(exc)})
                 return
 
             try:

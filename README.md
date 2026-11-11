@@ -1,7 +1,7 @@
 # WinOLS project indexer
 
 This is a new, local-first application in this workspace. The first release
-provides a Python CLI and local read-only dashboard, a SQLite project index, a
+provides a Python CLI and local dashboard, a SQLite project index, a
 parser adapter for a separately installed/cloned `py-ols`, and a read-only
 streaming binary comparison command. It does not generate or write ECU tunes.
 
@@ -466,6 +466,51 @@ source hash.
 coverage is not independent validation. No embedding provider or tuning model
 is configured. Training candidates can be registered with provenance and
 validation state, but no training operation exists.
+
+## ECU File Workbench
+
+The dashboard's **ECU File Workbench** accepts raw `.bin` files only. Select a
+file in the browser; it is streamed to the loopback dashboard in bounded
+1-MiB reads, SHA-256 hashed over every byte, and stored as a content-addressed
+copy under `data\ecu-workbench\files`. The original is never modified. The
+upload is limited to 4 GiB. Intel HEX, checksums, address translation, and
+other ECU formats are not supported because no validated importer is
+configured. A `.bin` extension or accepted byte stream does not establish that
+the content is a valid ECU image.
+
+Vehicle/ECU identifiers entered in the form are recorded as
+`user_provided`. No identifiers are automatically decoded from BIN data.
+Missing fields remain missing. The analysis report uses existing
+`reference_artifacts` only when the stored artifact is explicitly a
+`binary_version` with `full_binary` representation and matching complete hash
+and size. It reports `CONFIRMED_REFERENCE` only when the recorded version
+relation is confirmed and the latest reference check is `PASS`; otherwise an
+exact byte match remains `EXACT_CONTENT_MATCH`. Before a known reference is
+added to the Workbench, the local file is re-read and verified against its
+stored full-file hash and size.
+
+Parser-reported slot payload hash/size matches and metadata matches are
+candidates, not content proof. A metadata candidate cannot be elevated to
+`LIKELY` unless the complete live file-location hash matches the parser-import
+snapshot; absent live hashes or stale snapshots remain `INCONCLUSIVE`. The
+documented deterministic project-search rank is reused and is not a
+probability. `NO_MATCH` means no match was found in the available index, not
+that a reference does not exist.
+
+Two imported or indexed reference binaries can be compared from the dashboard.
+The report contains their full hashes and sizes, differing-byte count,
+half-open changed ranges, origins, and a `semantic_status` of
+`INCONCLUSIVE`. It does not interpret map values, offsets across differing
+representations, checksums, or tuning intent. Parser map/axis metadata is
+available on candidate projects but is not bound to the compared BIN values.
+No automatic tuning or remote AI provider is enabled; the provider boundary
+is defined but unconfigured, and raw files remain local.
+
+Analysis and comparison history is append-only in a separate
+`data\ecu-workbench\workbench.sqlite3` database. Reanalysis creates a new
+record linked to its parent. Workbench search opens the project index in
+read-only mode and does not migrate or write it, so it can run alongside the
+hashing worker without touching its queue or hash records.
 
 Five named roots are configured in the live database and are checked with
 Windows directory operations before each inventory run:

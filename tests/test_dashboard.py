@@ -14,6 +14,118 @@ from ols_platform.database import IndexDatabase
 
 
 class DashboardTests(unittest.TestCase):
+    def test_ecu_workbench_import_history_reanalysis_and_compare_routes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "index.sqlite3"
+            database = IndexDatabase(database_path)
+            database.close()
+            server = ThreadingHTTPServer(
+                ("127.0.0.1", 0), create_handler(database_path)
+            )
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            base_url = f"http://127.0.0.1:{server.server_port}"
+            try:
+                rebound_request = Request(
+                    f"{base_url}/api/workbench/history",
+                    headers={"Host": "attacker.invalid"},
+                )
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(rebound_request)
+                self.assertEqual(error.exception.code, 403)
+
+                rebound_post = Request(
+                    f"{base_url}/api/workbench/reference",
+                    data=b"{}",
+                    headers={
+                        "Content-Type": "application/json",
+                        "Host": "attacker.invalid",
+                        "Origin": "http://attacker.invalid",
+                    },
+                    method="POST",
+                )
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(rebound_post)
+                self.assertEqual(error.exception.code, 403)
+
+                first_request = Request(
+                    f"{base_url}/api/workbench/import?ecu_type=ECU-A",
+                    data=b"\x00\x01\x02\x03",
+                    headers={
+                        "Content-Type": "application/octet-stream",
+                        "X-File-Name": "original.bin",
+                        "Origin": base_url,
+                    },
+                    method="POST",
+                )
+                with urlopen(first_request) as response:
+                    first = json.loads(response.read())
+                    self.assertEqual(response.status, 201)
+                    self.assertEqual(first["source"]["size_bytes"], 4)
+                    self.assertEqual(
+                        first["identifications"]["user_provided"]["ecu_type"],
+                        "ECU-A",
+                    )
+
+                second_request = Request(
+                    f"{base_url}/api/workbench/import",
+                    data=b"\x00\x01\xff\x03\x04",
+                    headers={
+                        "Content-Type": "application/octet-stream",
+                        "X-File-Name": "tuned.bin",
+                        "Origin": base_url,
+                    },
+                    method="POST",
+                )
+                with urlopen(second_request) as response:
+                    second = json.loads(response.read())
+
+                compare_request = Request(
+                    f"{base_url}/api/workbench/compare",
+                    data=json.dumps({
+                        "analysis_a_id": first["analysis_id"],
+                        "analysis_b_id": second["analysis_id"],
+                    }).encode(),
+                    headers={
+                        "Content-Type": "application/json",
+                        "Origin": base_url,
+                    },
+                    method="POST",
+                )
+                with urlopen(compare_request) as response:
+                    comparison = json.loads(response.read())
+                    self.assertEqual(response.status, 201)
+                    self.assertEqual(comparison["differing_bytes"], 2)
+                    self.assertEqual(comparison["semantic_status"], "INCONCLUSIVE")
+
+                rerun_request = Request(
+                    f"{base_url}/api/workbench/analyses/{first['analysis_id']}/reanalyze",
+                    data=b"{}",
+                    headers={
+                        "Content-Type": "application/json",
+                        "Origin": base_url,
+                    },
+                    method="POST",
+                )
+                with urlopen(rerun_request) as response:
+                    rerun = json.loads(response.read())
+                    self.assertEqual(rerun["parent_analysis_id"], first["analysis_id"])
+                with urlopen(f"{base_url}/api/workbench/history") as response:
+                    saved = json.loads(response.read())
+                    self.assertEqual(len(saved["analyses"]), 3)
+                    self.assertEqual(len(saved["comparisons"]), 1)
+                with urlopen(
+                    f"{base_url}/api/workbench/analyses/{first['analysis_id']}"
+                ) as response:
+                    self.assertEqual(
+                        json.loads(response.read())["analysis_id"],
+                        first["analysis_id"],
+                    )
+            finally:
+                server.shutdown()
+                server.server_close()
+                worker.join(timeout=3)
+
     def test_local_read_only_endpoints(self):
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "index.sqlite3"
@@ -28,7 +140,9 @@ class DashboardTests(unittest.TestCase):
             try:
                 with urlopen(f"{base_url}/") as response:
                     self.assertEqual(response.status, 200)
-                    self.assertIn(b"WinOLS bibliotheek", response.read())
+                    dashboard = response.read()
+                    self.assertIn(b"WinOLS bibliotheek", dashboard)
+                    self.assertIn(b"ECU File Workbench", dashboard)
                     self.assertEqual(
                         response.headers["Content-Security-Policy"],
                         "default-src 'self'; script-src 'self'; style-src 'self'; "
@@ -73,6 +187,8 @@ class DashboardTests(unittest.TestCase):
                     self.assertEqual(search["offset"], 0)
                     self.assertFalse(search["has_more"])
                     self.assertGreaterEqual(search["query_seconds"], 0)
+                with urlopen(f"{base_url}/api/workbench/references") as response:
+                    self.assertEqual(json.loads(response.read()), [])
                 with urlopen(f"{base_url}/api/projects") as response:
                     self.assertEqual(json.loads(response.read()), [])
                 with urlopen(f"{base_url}/api/diagnostics") as response:

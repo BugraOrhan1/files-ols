@@ -1298,6 +1298,21 @@ class SourceAndSearchTests(unittest.TestCase):
                     [item["field"] for item in exact_hash["results"][0]["matched_features"]],
                 )
 
+                with writer.connection:
+                    writer.connection.execute(
+                        "UPDATE file_locations SET is_present=0 WHERE path=? AND file_kind='ols'",
+                        (target_path,),
+                    )
+                self.assertEqual(
+                    search_projects(database, file_hash=content_hash)["results"],
+                    [],
+                )
+                with writer.connection:
+                    writer.connection.execute(
+                        "UPDATE file_locations SET is_present=1 WHERE path=? AND file_kind='ols'",
+                        (target_path,),
+                    )
+
                 first_page = search_projects(database, limit=1)
                 second_page = search_projects(database, limit=1, offset=1)
                 final_page = search_projects(database, limit=1, offset=2)

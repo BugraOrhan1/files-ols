@@ -791,6 +791,233 @@ async function loadProject(projectId) {
   }
 }
 
+function showWorkbenchAnalysis(analysis) {
+  const result = document.getElementById("ecu-analysis-result");
+  const reportElement = document.getElementById("ecu-analysis-report");
+  const report = analysis.report;
+  const source = analysis.source;
+  result.replaceChildren(
+    node("strong", "pill", report.status),
+    node(
+      "span", "muted",
+      `${source.filename} · ${Number(source.size_bytes).toLocaleString("nl-NL")} bytes · ` +
+      `SHA-256 ${source.sha256}`
+    ),
+    node(
+      "span", "muted",
+      `${report.references.exact_references.length} exacte exportmatches · ` +
+      `${report.references.slot_candidates.length} onzekere slotkandidaten · ` +
+      `${report.references.metadata_candidates.length} metadatakandidaten`
+    )
+  );
+  reportElement.hidden = false;
+  reportElement.textContent = JSON.stringify(analysis, null, 2);
+}
+
+function showWorkbenchComparison(report) {
+  const target = document.getElementById("ecu-comparison-report");
+  target.hidden = false;
+  target.textContent = JSON.stringify(report, null, 2);
+}
+
+async function loadWorkbenchHistory() {
+  const analysisTarget = document.getElementById("ecu-analysis-history");
+  const comparisonTarget = document.getElementById("ecu-comparison-history");
+  const selectA = document.getElementById("ecu-compare-a");
+  const selectB = document.getElementById("ecu-compare-b");
+  const referenceSelect = document.getElementById("ecu-reference-select");
+  try {
+    const [history, references] = await Promise.all([
+      getJson("/api/workbench/history?limit=100"),
+      getJson("/api/workbench/references")
+    ]);
+    const priorA = selectA.value;
+    const priorB = selectB.value;
+    const options = history.analyses.map((analysis) => {
+      const option = document.createElement("option");
+      option.value = analysis.analysis_id;
+      option.textContent =
+        `${analysis.source_filename} · ${analysis.status} · ${analysis.analysis_id.slice(0, 8)}`;
+      return option;
+    });
+    selectA.replaceChildren(...options.map((option) => option.cloneNode(true)));
+    selectB.replaceChildren(...options.map((option) => option.cloneNode(true)));
+    if (history.analyses.some((item) => item.analysis_id === priorA)) selectA.value = priorA;
+    if (history.analyses.some((item) => item.analysis_id === priorB)) selectB.value = priorB;
+    const referenceOptions = references.map((reference) => {
+      const option = document.createElement("option");
+      option.value = reference.artifact_id;
+      option.disabled = !reference.available;
+      option.textContent =
+        `Project ${reference.project_id} · ${reference.version_name || "versie onbenoemd"} · ` +
+        `${reference.status} · ${reference.representation} · ${reference.path.split(/[\\/]/).pop()}` +
+        (reference.available ? "" : " · bestand ontbreekt");
+      return option;
+    });
+    referenceSelect.replaceChildren(...referenceOptions);
+
+    if (!history.analyses.length) {
+      analysisTarget.replaceChildren(node("p", "muted", "Nog geen ECU-bestanden geanalyseerd."));
+    } else {
+      analysisTarget.replaceChildren(...history.analyses.map((analysis) => {
+        const card = node("article", "card");
+        card.append(node("strong", "", analysis.source_filename));
+        card.append(node(
+          "span", "muted",
+          `${analysis.status} · ${Number(analysis.size_bytes).toLocaleString("nl-NL")} bytes · ` +
+          `${analysis.sha256.slice(0, 16)}… · ${analysis.created_at}`
+        ));
+        const actions = node("div", "source-actions");
+        const open = node("button", "secondary", "Rapport openen");
+        open.type = "button";
+        open.addEventListener("click", async () => {
+          try {
+            showWorkbenchAnalysis(
+              await getJson(`/api/workbench/analyses/${encodeURIComponent(analysis.analysis_id)}`)
+            );
+          } catch (error) {
+            document.getElementById("ecu-import-state").textContent = error.message;
+          }
+        });
+        const rerun = node("button", "secondary", "Opnieuw analyseren");
+        rerun.type = "button";
+        rerun.addEventListener("click", async () => {
+          rerun.disabled = true;
+          try {
+            const result = await postJson(
+              `/api/workbench/analyses/${encodeURIComponent(analysis.analysis_id)}/reanalyze`,
+              {}
+            );
+            showWorkbenchAnalysis(result);
+            await loadWorkbenchHistory();
+          } catch (error) {
+            document.getElementById("ecu-import-state").textContent = error.message;
+          } finally {
+            rerun.disabled = false;
+          }
+        });
+        actions.append(open, rerun);
+        card.append(actions);
+        return card;
+      }));
+    }
+
+    if (!history.comparisons.length) {
+      comparisonTarget.replaceChildren(node("p", "muted", "Nog geen binaire vergelijkingen."));
+    } else {
+      comparisonTarget.replaceChildren(...history.comparisons.map((report) => {
+        const card = node("article", "card");
+        card.append(node(
+          "strong", "", `${report.analysis_a.filename} ↔ ${report.analysis_b.filename}`
+        ));
+        card.append(node(
+          "span", "muted",
+          `${report.differing_bytes.toLocaleString("nl-NL")} afwijkende bytes · ` +
+          `${report.changed_ranges.length} ranges · ${report.semantic_status}`
+        ));
+        card.addEventListener("click", () => showWorkbenchComparison(report));
+        card.tabIndex = 0;
+        card.setAttribute("role", "button");
+        card.setAttribute("aria-label", "Vergelijkingsrapport openen");
+        return card;
+      }));
+    }
+  } catch (error) {
+    analysisTarget.replaceChildren(
+      node("p", "notice", `Workbenchgeschiedenis niet beschikbaar: ${error.message}`)
+    );
+  }
+}
+
+document.getElementById("ecu-workbench-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const file = form.elements.file.files[0];
+  const status = document.getElementById("ecu-import-state");
+  const button = document.getElementById("ecu-import-button");
+  if (!file) return;
+  if (!file.name.toLowerCase().endsWith(".bin")) {
+    status.textContent = "Alleen ruwe .bin-bestanden zijn ondersteund.";
+    return;
+  }
+  const query = new URLSearchParams();
+  for (const [key, value] of new FormData(form).entries()) {
+    if (key !== "file" && String(value).trim()) query.set(key, String(value).trim());
+  }
+  button.disabled = true;
+  status.textContent =
+    `Upload en streaming SHA-256 berekenen (${Number(file.size).toLocaleString("nl-NL")} bytes)…`;
+  try {
+    const response = await fetch(`/api/workbench/import?${query}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "X-File-Name": encodeURIComponent(file.name)
+      },
+      body: file
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+    showWorkbenchAnalysis(result);
+    status.textContent = "Analyse opgeslagen in de lokale Workbench-geschiedenis.";
+    await loadWorkbenchHistory();
+  } catch (error) {
+    status.textContent = `Import/analyse mislukt: ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+});
+
+document.getElementById("ecu-compare-button").addEventListener("click", async () => {
+  const analysisAId = document.getElementById("ecu-compare-a").value;
+  const analysisBId = document.getElementById("ecu-compare-b").value;
+  const button = document.getElementById("ecu-compare-button");
+  if (!analysisAId || !analysisBId) {
+    document.getElementById("ecu-import-state").textContent =
+      "Importeer eerst twee bestanden om te vergelijken.";
+    return;
+  }
+  button.disabled = true;
+  try {
+    const report = await postJson("/api/workbench/compare", {
+      analysis_a_id: analysisAId,
+      analysis_b_id: analysisBId
+    });
+    showWorkbenchComparison(report);
+    await loadWorkbenchHistory();
+  } catch (error) {
+    document.getElementById("ecu-import-state").textContent =
+      `Vergelijking mislukt: ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+});
+
+document.getElementById("ecu-reference-import").addEventListener("click", async () => {
+  const artifactId = Number(document.getElementById("ecu-reference-select").value);
+  const button = document.getElementById("ecu-reference-import");
+  if (!artifactId) {
+    document.getElementById("ecu-import-state").textContent =
+      "Geen beschikbare binaire referentie geselecteerd.";
+    return;
+  }
+  button.disabled = true;
+  try {
+    const analysis = await postJson("/api/workbench/reference", {
+      artifact_id: artifactId
+    });
+    showWorkbenchAnalysis(analysis);
+    document.getElementById("ecu-import-state").textContent =
+      "Referentie opnieuw gehasht, veilig gearchiveerd en aan de geschiedenis toegevoegd.";
+    await loadWorkbenchHistory();
+  } catch (error) {
+    document.getElementById("ecu-import-state").textContent =
+      `Referentie kon niet worden toegevoegd: ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+});
+
 document.getElementById("refresh").addEventListener("click", () => {
   loadStatus();
   loadInventory();
@@ -839,5 +1066,6 @@ loadHashing();
 loadSources();
 loadCoverage();
 loadProjects();
+loadWorkbenchHistory();
 window.setInterval(loadSourceScanProgress, 15000);
 window.setInterval(loadHashing, 20000);
