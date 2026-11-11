@@ -936,8 +936,8 @@ document.getElementById("ecu-workbench-form").addEventListener("submit", async (
   const status = document.getElementById("ecu-import-state");
   const button = document.getElementById("ecu-import-button");
   if (!file) return;
-  if (!file.name.toLowerCase().endsWith(".bin")) {
-    status.textContent = "Alleen ruwe .bin-bestanden zijn ondersteund.";
+  if (!/\.(bin|ori)$/i.test(file.name)) {
+    status.textContent = "Alleen ruwe .bin- en .ori-bestanden zijn ondersteund.";
     return;
   }
   const query = new URLSearchParams();

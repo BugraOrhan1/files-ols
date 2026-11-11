@@ -116,8 +116,27 @@ class EcuWorkbenchTests(unittest.TestCase):
         self.assertEqual(analysis["report"]["status"], "NO_MATCH")
         self.assertEqual(len(history(self.storage)["analyses"]), 1)
 
+    def test_ori_import_is_hashed_as_raw_bytes_and_reanalysis_keeps_its_format(self):
+        content = b"raw original binary data"
+        original = self.root / "customer.ori"
+        original.write_bytes(content)
+
+        analysis = self._import_bin("customer.ori", content)
+
+        self.assertEqual(analysis["source"]["sha256"], hashlib.sha256(content).hexdigest())
+        self.assertEqual(analysis["source"]["size_bytes"], len(content))
+        self.assertEqual(analysis["report"]["file"]["format"], "raw_ori")
+        self.assertEqual(original.read_bytes(), content)
+
+        rerun = reanalyze(
+            self.storage,
+            analysis["analysis_id"],
+            SimpleNamespace(connection=self.index.connection),
+        )
+        self.assertEqual(rerun["report"]["file"]["format"], "raw_ori")
+
     def test_rejects_unsupported_and_incomplete_uploads(self):
-        with self.assertRaisesRegex(ValueError, "Only raw .bin"):
+        with self.assertRaisesRegex(ValueError, "Only raw .bin and .ori"):
             self._import_bin("firmware.hex", b":00000001FF")
         with self.assertRaisesRegex(ValueError, "ended early"):
             import_binary_stream(
@@ -126,6 +145,36 @@ class EcuWorkbenchTests(unittest.TestCase):
                 expected_size=10,
                 storage_root=self.storage,
                 index_database=SimpleNamespace(connection=self.index.connection),
+            )
+        self.assertEqual(history(self.storage)["analyses"], [])
+
+    def test_missing_indexed_reference_path_is_reported_without_analysis(self):
+        outcome = self._import_project("missing-reference-project.ols", b"OLS source")
+        project_id = self.index.connection.execute(
+            "SELECT id FROM projects WHERE source_id=(SELECT id FROM source_files WHERE path=?)",
+            (outcome.path,),
+        ).fetchone()[0]
+        with self.index.connection:
+            cursor = self.index.connection.execute(
+                """
+                INSERT INTO reference_artifacts(
+                    project_id,manifest_path,manifest_sha256,artifact_index,kind,path,
+                    sha256,size_bytes,version_name,source_slot_index,relation_status,
+                    representation,metadata_json
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    project_id, str(self.root / "manifest.json"), "a" * 64, 0,
+                    "binary_version", str(self.root / "missing-reference.bin"),
+                    hashlib.sha256(b"missing").hexdigest(), len(b"missing"),
+                    "Original", 0, "confirmed", "full_binary", "{}",
+                ),
+            )
+        with self.assertRaises(FileNotFoundError):
+            import_reference_artifact(
+                self.storage,
+                cursor.lastrowid,
+                SimpleNamespace(connection=self.index.connection),
             )
         self.assertEqual(history(self.storage)["analyses"], [])
 
@@ -173,11 +222,34 @@ class EcuWorkbenchTests(unittest.TestCase):
                 """,
                 (cursor.lastrowid, outcome.sha256),
             )
+            self.index.connection.execute(
+                """
+                INSERT INTO reference_artifacts(
+                    project_id,manifest_path,manifest_sha256,artifact_index,kind,path,
+                    sha256,size_bytes,version_name,source_slot_index,relation_status,
+                    representation,metadata_json
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    analysis_project_id, str(self.root / "other-manifest.json"),
+                    "b" * 64, 0, "binary_version",
+                    str(self.root / "unvalidated-reference.bin"), digest,
+                    len(data), "Modified", 1, "unverified", "full_binary", "{}",
+                ),
+            )
 
         analysis = self._import_bin("customer.bin", data)
-        reference = analysis["report"]["references"]["exact_references"][0]
+        exact_matches = analysis["report"]["references"]["exact_references"]
         self.assertEqual(analysis["report"]["status"], "CONFIRMED_REFERENCE")
-        self.assertEqual(reference["status"], "CONFIRMED_REFERENCE")
+        self.assertEqual(len(exact_matches), 2)
+        self.assertEqual(
+            {item["status"] for item in exact_matches},
+            {"CONFIRMED_REFERENCE", "EXACT_CONTENT_MATCH"},
+        )
+        reference = next(
+            item for item in exact_matches
+            if item["status"] == "CONFIRMED_REFERENCE"
+        )
         with self.index.connection:
             self.index.connection.execute(
                 "UPDATE file_locations SET sha256=? WHERE path=? AND file_kind='ols'",

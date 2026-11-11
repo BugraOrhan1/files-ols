@@ -160,14 +160,14 @@
         </div>
       </div>
       <p class="muted">
-        Ondersteunt ruwe BIN-bestanden. HEX-import is uitgeschakeld totdat een
+        Ondersteunt ruwe BIN- en ORI-bestanden als bytes. HEX-import is uitgeschakeld totdat een
         gevalideerde importer met expliciete adres-/gapsemantiek beschikbaar is.
         Het originele bestand wordt niet gewijzigd; de browser uploadt het via
         loopback naar een afzonderlijke lokale analysekopie.
       </p>
       <form id="ecu-workbench-form" class="project-search-form">
-        <label for="ecu-file">Origineel ECU-bestand (.bin)</label>
-        <input id="ecu-file" name="file" type="file" accept=".bin,application/octet-stream" required>
+        <label for="ecu-file">Origineel ECU-bestand (.bin of .ori)</label>
+        <input id="ecu-file" name="file" type="file" accept=".bin,.ori,application/octet-stream" required>
         <div class="search-grid">
           <label>ECU-type<input name="ecu_type" autocomplete="off"></label>
           <label>ECU-fabrikant<input name="ecu_manufacturer" autocomplete="off"></label>

@@ -2,3 +2,8 @@ __pycache__/
 *.py[cod]
 .venv/
 data/
+
+# Do not add ECU source images or WinOLS project files to the application repo.
+*.bin
+*.ori
+*.ols

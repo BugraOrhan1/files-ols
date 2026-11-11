@@ -14,6 +14,68 @@ from ols_platform.database import IndexDatabase
 
 
 class DashboardTests(unittest.TestCase):
+    def test_ori_upload_keeps_index_read_only_and_workbench_storage_separate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "index.sqlite3"
+            database = IndexDatabase(database_path)
+            database.close()
+
+            def index_snapshot():
+                uri = f"{database_path.resolve().as_uri()}?mode=ro"
+                connection = sqlite3.connect(uri, uri=True)
+                try:
+                    tables = connection.execute(
+                        """
+                        SELECT name FROM sqlite_master
+                        WHERE type='table' AND name NOT LIKE 'sqlite_%'
+                        ORDER BY name
+                        """
+                    ).fetchall()
+                    counts = tuple(
+                        (
+                            name,
+                            connection.execute(
+                                f'SELECT COUNT(*) FROM "{name}"'
+                            ).fetchone()[0],
+                        )
+                        for (name,) in tables
+                    )
+                    return connection.execute("PRAGMA user_version").fetchone()[0], counts
+                finally:
+                    connection.close()
+
+            before = index_snapshot()
+            server = ThreadingHTTPServer(
+                ("127.0.0.1", 0), create_handler(database_path)
+            )
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            base_url = f"http://127.0.0.1:{server.server_port}"
+            try:
+                request = Request(
+                    f"{base_url}/api/workbench/import",
+                    data=b"ori-fixture-data",
+                    headers={
+                        "Content-Type": "application/octet-stream",
+                        "X-File-Name": "customer.ori",
+                        "Origin": base_url,
+                    },
+                    method="POST",
+                )
+                with urlopen(request) as response:
+                    result = json.loads(response.read())
+                    self.assertEqual(response.status, 201)
+                    self.assertEqual(result["source"]["size_bytes"], 16)
+                    self.assertEqual(result["report"]["file"]["format"], "raw_ori")
+                self.assertEqual(index_snapshot(), before)
+                self.assertTrue(
+                    (Path(directory) / "ecu-workbench" / "workbench.sqlite3").is_file()
+                )
+            finally:
+                server.shutdown()
+                server.server_close()
+                worker.join(timeout=3)
+
     def test_ecu_workbench_import_history_reanalysis_and_compare_routes(self):
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "index.sqlite3"
@@ -47,6 +109,24 @@ class DashboardTests(unittest.TestCase):
                 with self.assertRaises(HTTPError) as error:
                     urlopen(rebound_post)
                 self.assertEqual(error.exception.code, 403)
+
+                unsupported_request = Request(
+                    f"{base_url}/api/workbench/import",
+                    data=b":00000001FF",
+                    headers={
+                        "Content-Type": "application/octet-stream",
+                        "X-File-Name": "firmware.hex",
+                        "Origin": base_url,
+                    },
+                    method="POST",
+                )
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(unsupported_request)
+                self.assertEqual(error.exception.code, 400)
+
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(f"{base_url}/api/workbench/analyses/not-a-real-id")
+                self.assertEqual(error.exception.code, 404)
 
                 first_request = Request(
                     f"{base_url}/api/workbench/import?ecu_type=ECU-A",
@@ -143,6 +223,9 @@ class DashboardTests(unittest.TestCase):
                     dashboard = response.read()
                     self.assertIn(b"WinOLS bibliotheek", dashboard)
                     self.assertIn(b"ECU File Workbench", dashboard)
+                    self.assertIn(
+                        b'accept=".bin,.ori,application/octet-stream"', dashboard
+                    )
                     self.assertEqual(
                         response.headers["Content-Security-Policy"],
                         "default-src 'self'; script-src 'self'; style-src 'self'; "
@@ -155,6 +238,7 @@ class DashboardTests(unittest.TestCase):
                     dashboard_script = response.read()
                     self.assertIn(b"loadProjects", dashboard_script)
                     self.assertIn(b"loadMultiSourceInventory", dashboard_script)
+                    self.assertIn(b"/\\.(bin|ori)$/i.test(file.name)", dashboard_script)
                 with urlopen(f"{base_url}/diagnostics") as response:
                     self.assertIn(b"Importdiagnose", response.read())
                 with urlopen(f"{base_url}/diagnostics.js") as response:

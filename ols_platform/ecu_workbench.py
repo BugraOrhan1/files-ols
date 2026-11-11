@@ -391,10 +391,11 @@ def import_binary_stream(
     identifications: dict[str, Any] | None = None,
     max_bytes: int = _MAX_UPLOAD_BYTES,
 ) -> dict[str, Any]:
-    if Path(filename).suffix.lower() != ".bin":
+    file_suffix = Path(filename).suffix.lower()
+    if file_suffix not in {".bin", ".ori"}:
         raise ValueError(
-            "Only raw .bin files are supported. Intel HEX and other formats "
-            "need a validated importer and explicit representation handling."
+            "Only raw .bin and .ori files are supported. Intel HEX and other "
+            "formats need a validated importer and explicit representation handling."
         )
     if expected_size <= 0 or expected_size > max_bytes:
         raise ValueError(f"BIN upload must be 1-{max_bytes} bytes.")
@@ -440,7 +441,7 @@ def import_binary_stream(
         report = {
             "status": references["status"],
             "file": {
-                "format": "raw_bin",
+                "format": f"raw_{file_suffix[1:]}",
                 "ecu_file_validity": "not established; no content-format decoder is configured",
                 "sha256": sha256,
                 "size_bytes": expected_size,
@@ -696,7 +697,7 @@ def reanalyze(
     report = {
         "status": references["status"],
         "file": {
-            "format": "raw_bin",
+            "format": previous["report"]["file"].get("format", "raw_bin"),
             "sha256": actual_hash,
             "size_bytes": actual_size,
             "hash_method": "streaming SHA-256 over every stored-copy byte",

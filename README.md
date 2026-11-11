@@ -469,7 +469,9 @@ validation state, but no training operation exists.
 
 ## ECU File Workbench
 
-The dashboard's **ECU File Workbench** accepts raw `.bin` files only. Select a
+The dashboard's **ECU File Workbench** accepts raw `.bin` and `.ori` byte
+streams. An `.ori` suffix is treated as an original raw binary input; it is not
+decoded as a WinOLS project or a different address-bearing format. Select a
 file in the browser; it is streamed to the loopback dashboard in bounded
 1-MiB reads, SHA-256 hashed over every byte, and stored as a content-addressed
 copy under `data\ecu-workbench\files`. The original is never modified. The
