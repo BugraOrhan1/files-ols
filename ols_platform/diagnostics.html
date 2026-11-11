@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Importdiagnose — WinOLS projectindex</title>
+  <link rel="stylesheet" href="/dashboard.css">
+  <script src="/diagnostics.js" defer></script>
+</head>
+<body>
+  <header>
+    <div>
+      <p class="eyebrow">IMPORTKWALITEIT</p>
+      <h1>Importdiagnose</h1>
+      <p class="lede">Parseruitvoer, opslag en onafhankelijke validatie per project.</p>
+    </div>
+    <span class="local-badge">Alleen op deze computer</span>
+  </header>
+  <main>
+    <nav class="page-nav" aria-label="Applicatiepagina's">
+      <a href="/">Projecten</a>
+      <a class="active" href="/diagnostics">Importdiagnose</a>
+    </nav>
+    <section>
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">FILTERS</p>
+          <h2>Projectstatus</h2>
+        </div>
+        <button id="refresh" type="button">Vernieuwen</button>
+      </div>
+      <div class="filters">
+        <label for="processing-status">Verwerking</label>
+        <select id="processing-status">
+          <option value="">Alle statussen</option>
+          <option value="partially_processed">Gedeeltelijk verwerkt</option>
+          <option value="fully_processed">Volledig verwerkt</option>
+          <option value="failed">Mislukt of geblokkeerd</option>
+        </select>
+        <label class="check"><input id="parser-errors" type="checkbox"> Alleen parserfouten</label>
+        <label class="check"><input id="needs-reference" type="checkbox" checked> Referentievalidatie nodig</label>
+      </div>
+      <div id="notice" class="notice" role="status"></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Bronbestand</th><th>Status</th><th>Formaat</th><th>Versierecords / slots</th>
+              <th>Ongelabeld</th><th>Kaarten</th><th>Parserfouten</th><th>Referentie</th>
+            </tr>
+          </thead>
+          <tbody id="diagnostics">
+            <tr><td colspan="8" class="muted">Diagnoses laden…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+    <section aria-labelledby="export-queue-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">REFERENTIE-EXPORTS</p>
+          <h2 id="export-queue-title">Minimale exportwachtrij</h2>
+        </div>
+        <button id="refresh-export-queue" type="button" class="secondary">Vernieuwen</button>
+      </div>
+      <p class="muted">
+        Alleen exports die een geregistreerde onzekerheid kunnen onderzoeken.
+        Een wachtrijtaak is geen bevestiging van parsergegevens.
+      </p>
+      <div id="export-queue-notice" class="notice" role="status"></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Project</th><th>Prioriteit</th><th>Benodigde export</th><th>Versies</th><th>Reden</th><th>Status</th><th>Pogingen</th><th>Historie</th></tr>
+          </thead>
+          <tbody id="export-queue">
+            <tr><td colspan="8" class="muted">Exportwachtrij laden…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+    <section id="detail-section" hidden aria-labelledby="detail-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">PROJECTRAPPORT</p>
+          <h2 id="detail-title">Diagnosedetails</h2>
+        </div>
+        <button id="close-detail" type="button" class="secondary">Sluiten</button>
+      </div>
+      <div class="filters">
+        <label for="version-match-status">Versiematches</label>
+        <select id="version-match-status">
+          <option value="all">Alle kandidaten</option>
+          <option value="confirmed">Bevestigd</option>
+          <option value="unresolved">Onbeslist</option>
+          <option value="exact_binary">Exacte binaire slotmatch</option>
+        </select>
+      </div>
+      <p class="muted">
+        Het projectrapport scheidt parsergegevens van het referentiepakket,
+        versiegebonden binaire matches, kaartmetadata en ontbrekende of
+        onopgeloste referenties. Een prefixmatch bevestigt geen volledige versie.
+      </p>
+      <pre id="detail" class="detail"></pre>
+    </section>
+  </main>
+  <footer>
+    <p>“Slot met data” bevestigt alleen dat bytes en een hash zijn aangetroffen; het bewijst geen geldige, benoemde of actieve WinOLS-versie.</p>
+  </footer>
+</body>
+</html>

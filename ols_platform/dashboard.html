@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WinOLS projectindex</title>
+  <link rel="stylesheet" href="/dashboard.css">
+  <script src="/dashboard.js" defer></script>
+</head>
+<body>
+  <header>
+    <div>
+      <p class="eyebrow">LOKALE PROJECTINDEX</p>
+      <h1>WinOLS bibliotheek</h1>
+      <p class="lede">Projecten, versies en parserkwaliteit — alleen-lezen.</p>
+    </div>
+    <span class="local-badge">Alleen op deze computer</span>
+  </header>
+  <main>
+    <nav class="page-nav" aria-label="Applicatiepagina's">
+      <a class="active" href="/">Projecten</a>
+      <a href="/diagnostics">Importdiagnose</a>
+    </nav>
+    <section aria-labelledby="sources-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">DATABRONNEN</p>
+          <h2 id="sources-title">Geregistreerde locaties</h2>
+        </div>
+        <button id="refresh-sources" type="button" class="secondary">Vernieuwen</button>
+      </div>
+      <p class="muted">
+        Een dry-run inventariseert bestanden en vult de hervatbare OLS-queue;
+        dit valideert geen parserresultaten. Indexeer batches met de CLI.
+      </p>
+      <form id="source-form" class="source-form">
+        <label for="source-slot">Bronmap</label>
+        <select id="source-slot" name="slot_id" required>
+          <option value="1">Database 1</option>
+          <option value="2">Database 2</option>
+          <option value="3">Database 3</option>
+          <option value="4">Database 4</option>
+          <option value="5">default</option>
+        </select>
+        <label for="source-path">Exact pad (UNC of lokaal)</label>
+        <input id="source-path" name="path" type="text" required
+          placeholder="\\Dell\d\Database 2">
+        <button type="submit">Bronmap instellen en controleren</button>
+      </form>
+      <div id="source-dedup" class="cards" aria-live="polite"></div>
+      <div id="duplicate-locations" class="cards" aria-live="polite"></div>
+      <div id="sources" class="cards" aria-live="polite">
+        <p class="muted">Bronnen laden…</p>
+      </div>
+      <div id="source-notice" class="notice" role="status"></div>
+    </section>
+    <section aria-labelledby="coverage-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">PARSERDEKKING</p>
+          <h2 id="coverage-title">Formaten en problemen</h2>
+        </div>
+      </div>
+      <div id="coverage" class="cards" aria-live="polite">
+        <p class="muted">Parserdekking laden…</p>
+      </div>
+    </section>
+    <section aria-labelledby="status-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">INDEXSTATUS</p>
+          <h2 id="status-title">Overzicht</h2>
+        </div>
+        <button id="refresh" type="button">Vernieuwen</button>
+      </div>
+      <div id="status" class="cards" aria-live="polite">
+        <p class="muted">Status laden…</p>
+      </div>
+    </section>
+    <section aria-labelledby="filesystem-inventory-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">BESTANDSINVENTAR</p>
+          <h2 id="filesystem-inventory-title">Eerdere filesystem-inventarisatie</h2>
+        </div>
+      </div>
+      <div id="inventory-overview" class="cards" aria-live="polite">
+        <p class="muted">Inventaris laden…</p>
+      </div>
+    </section>
+    <section aria-labelledby="inventory-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">VIJF BRONNEN</p>
+          <h2 id="inventory-title">Multi-source inventarisatie</h2>
+        </div>
+      </div>
+      <p class="muted">
+        Metadata-inventarisatie toont fysieke locaties. Naam- en grootteovereenkomst
+        zijn slechts duplicaatkandidaten; alleen volledige SHA-256-match bevestigt inhoud.
+      </p>
+      <h3>Actuele scanvoortgang</h3>
+      <div id="source-scan-progress" class="cards" aria-live="polite">
+        <p class="muted">Bronvoortgang laden…</p>
+      </div>
+      <div id="multi-source-overview" class="cards" aria-live="polite">
+        <p class="muted">Nog geen multi-source inventarisatie opgeslagen.</p>
+      </div>
+      <div id="inventory-sources" class="cards" aria-live="polite"></div>
+      <div id="inventory-extensions" class="cards" aria-live="polite"></div>
+      <h3>Mogelijke duplicaten (metadata, niet bevestigd)</h3>
+      <div id="inventory-duplicate-candidates" class="cards" aria-live="polite"></div>
+      <h3>Beperkte SHA-256-steekproef</h3>
+      <div id="hash-benchmark" class="cards" aria-live="polite"></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Bron</th><th>Bestandspad</th><th>Extensie</th><th>Grootte</th>
+              <th>Bekend / gewijzigd</th><th>Geïndexeerd</th><th>Hash nodig</th>
+            </tr>
+          </thead>
+          <tbody id="inventory-locations">
+            <tr><td colspan="7" class="muted">Locaties laden…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+    <section aria-labelledby="hashing-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">INHOUDSIDENTIFICATIE</p>
+          <h2 id="hashing-title">OLS SHA-256-hashing</h2>
+        </div>
+      </div>
+      <p class="muted">
+        Hashes worden alleen definitief na volledige streaminglezing en stabiele
+        grootte-/tijdcontroles. Hashstatus staat los van parserstatus; originele
+        bestanden worden alleen-lezen geopend.
+      </p>
+      <p class="muted">
+        Beheer via de CLI: <code>hashing pause</code>, <code>hashing resume</code>,
+        <code>hashing stop</code> en <code>hashing status</code>. Een gestopte
+        worker hervat na opnieuw starten vanaf de eerstvolgende onvoltooide taak.
+      </p>
+      <div id="hashing-summary" class="cards" aria-live="polite">
+        <p class="muted">Hashstatus laden…</p>
+      </div>
+      <h3>Voortgang per databron</h3>
+      <div id="hashing-sources" class="cards" aria-live="polite"></div>
+      <h3>Bevestigde exacte duplicaten (SHA-256 + grootte)</h3>
+      <div id="hashing-duplicates" class="cards" aria-live="polite"></div>
+    </section>
+    <section aria-labelledby="projects-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">PROJECTEN</p>
+          <h2 id="projects-title">Geïndexeerde bestanden</h2>
+        </div>
+        <form id="search-form">
+          <label class="sr-only" for="query">Zoek merk, ECU, software-ID of pad</label>
+          <input id="query" name="query" type="search" placeholder="Zoek merk, ECU of software-ID">
+          <button type="submit">Zoeken</button>
+        </form>
+      </div>
+      <div id="notice" class="notice" role="status"></div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Bronbestand</th><th>Formaat</th><th>Versies</th><th>Kaarten</th><th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="projects">
+            <tr><td colspan="5" class="muted">Projecten laden…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+    <section id="detail-section" hidden aria-labelledby="detail-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">PROJECTDETAILS</p>
+          <h2 id="detail-title">Project</h2>
+        </div>
+        <button id="close-detail" type="button" class="secondary">Sluiten</button>
+      </div>
+      <pre id="detail" class="detail"></pre>
+    </section>
+  </main>
+  <footer>
+    <p>Parserresultaten kunnen onvolledig zijn. Een versie of kaart wordt pas betrouwbaar nadat deze onafhankelijk is gevalideerd.</p>
+  </footer>
+</body>
+</html>

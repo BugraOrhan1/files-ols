@@ -1,0 +1,1217 @@
+import json
+import tempfile
+import unittest
+import os
+import threading
+import time
+from unittest.mock import patch
+from pathlib import Path
+
+from ols_platform.database import IndexDatabase
+from ols_platform.importer import import_sources
+from ols_platform.project_search import parser_coverage, search_projects
+from ols_platform.reader import (
+    ParsedMap,
+    ParsedVersion,
+    ProjectSnapshot,
+    ReadIssue,
+)
+from ols_platform.sources import (
+    build_hashing_plan,
+    build_hashing_report,
+    move_source,
+    register_source,
+    run_multi_source_inventory,
+    run_hashing,
+    run_hash_worker,
+    run_source_queue,
+    scan_registered_source,
+    test_source,
+)
+from deployment.database_integrity import snapshot_database
+
+
+class FixtureReader:
+    parser_name = "fixture-parser"
+    parser_version = "1"
+
+    def inspect(self, source):
+        if not source.is_file():
+            raise FileNotFoundError(source)
+        return ProjectSnapshot(
+            parser_name=self.parser_name,
+            parser_version=self.parser_version,
+            format_version=503,
+            metadata={
+                "make": "Example",
+                "model": "Roadster",
+                "ecu_type": "ECU-A",
+                "sw_number": "SW-123",
+            },
+            versions=(ParsedVersion("Original", "", 0, 1, 0, 8, "", 0),),
+            maps=(ParsedMap(
+                "Fuel map", "", "MAP", "UWORD", 8, 4, 100, "mg", 1.0, 0.0
+            ),),
+            issues=(ReadIssue("unresolved_fixture", "Fixture has unresolved data."),),
+        )
+
+
+class SourceAndSearchTests(unittest.TestCase):
+    def _create_hash_fixture(self, root: Path, file_count: int):
+        source_paths = [root / f"source-{index}" for index in range(1,6)]
+        for path in source_paths:
+            path.mkdir()
+        for index in range(file_count):
+            source_paths[index % len(source_paths)].joinpath(
+                f"file-{index}.ols"
+            ).write_bytes(f"project-{index}".encode() * 5000)
+        database = IndexDatabase(root / "index.sqlite3")
+        sources = [register_source(database,path) for path in source_paths]
+        for slot_id,source in enumerate(sources,start=1):
+            database.configure_source_slot(slot_id,source["id"])
+            scan_registered_source(database,source["id"],benchmark_bytes=0)
+        return database,sources
+
+    def test_hash_worker_runs_successive_batches_and_resumes_after_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database,sources=self._create_hash_fixture(Path(directory),3)
+            try:
+                first=run_hash_worker(
+                    database,workers=1,batch_size=1,batch_delay_seconds=0,
+                    retry_delay_seconds=0,max_batches=1,
+                )
+                self.assertEqual(first["status"],"stopped")
+                self.assertEqual(first["batches_completed"],1)
+                self.assertEqual(first["files_completed"],1)
+                self.assertEqual(first["queue"]["totals"]["hashed"],1)
+                self.assertEqual(first["queue"]["worker"]["status"],"stopped")
+                database.set_hash_control("paused")
+                database.set_hash_control("running")
+
+                resumed=run_hash_worker(
+                    database,workers=2,batch_size=1,batch_delay_seconds=0,
+                    retry_delay_seconds=0,max_batches=3,
+                )
+                self.assertEqual(resumed["status"],"complete")
+                self.assertEqual(resumed["batches_completed"],2)
+                self.assertEqual(resumed["files_completed"],2)
+                self.assertEqual(resumed["queue"]["totals"]["hashed"],3)
+                self.assertEqual(
+                    database.connection.execute(
+                        "SELECT COUNT(*) FROM hash_attempts WHERE status='HASHED'"
+                    ).fetchone()[0],
+                    3,
+                )
+                self.assertEqual(
+                    database.hash_worker_status()["files_completed"],2
+                )
+                self.assertEqual(
+                    resumed["queue"]["worker"]["bytes_read"],
+                    resumed["bytes_read"],
+                )
+                self.assertGreaterEqual(
+                    resumed["last_batch"]["timings"]["read_call_seconds"],0
+                )
+                self.assertGreaterEqual(
+                    resumed["last_batch"]["timings"]["sha256_update_seconds"],0
+                )
+                self.assertGreaterEqual(
+                    resumed["last_batch"]["timings"]["database_write_seconds"],0
+                )
+                empty=run_hash_worker(
+                    database,workers=1,batch_size=2,batch_delay_seconds=0,
+                    retry_delay_seconds=0,
+                )
+                self.assertEqual(empty["status"],"complete")
+                self.assertEqual(empty["files_completed"],0)
+                self.assertEqual(empty["queue"]["totals"]["pending"],0)
+                self.assertEqual(len(sources),5)
+            finally:
+                database.close()
+
+    def test_hashing_report_uses_wall_clock_batch_rates_and_remaining_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database,sources=self._create_hash_fixture(Path(directory),1)
+            try:
+                database.sync_hash_jobs([sources[0]["id"]])
+                source_key=str(sources[0]["id"])
+                runs=(
+                    (
+                        "2026-01-01 00:00:00","2026-01-01 00:00:10",
+                        {"bytes_read":4*1024*1024,"files_completed":2,
+                         "outcomes":{"HASHED":2},"errors":0,
+                         "by_source":{source_key:{"bytes_read":4*1024*1024}},
+                         "timings":{"read_call_seconds":2.0,
+                                    "sha256_update_seconds":0.1,
+                                    "database_write_seconds":0.2,
+                                    "worker_wall_seconds":10.0}},
+                    ),
+                    (
+                        "2026-01-01 00:00:10","2026-01-01 00:00:30",
+                        {"bytes_read":6*1024*1024,"files_completed":3,
+                         "outcomes":{"HASHED":3},"errors":1,
+                         "by_source":{source_key:{"bytes_read":6*1024*1024}},
+                         "timings":{"read_call_seconds":3.0,
+                                    "sha256_update_seconds":0.2,
+                                    "database_write_seconds":0.3,
+                                    "worker_wall_seconds":20.0}},
+                    ),
+                )
+                with database.connection:
+                    for started_at,finished_at,report in runs:
+                        database.connection.execute(
+                            """
+                            INSERT INTO hash_runs(
+                                status,worker_count,chunk_size,report_json,
+                                started_at,finished_at
+                            ) VALUES('BATCH_COMPLETE',2,1048576,?,?,?)
+                            """,
+                            (
+                                json.dumps(report),started_at,finished_at,
+                            ),
+                        )
+
+                report=build_hashing_report(database)
+                performance=report["recent_hash_performance"]
+                self.assertEqual(performance["runs"],2)
+                self.assertEqual(performance["window_seconds"],30)
+                self.assertEqual(performance["files_hashed"],5)
+                self.assertEqual(performance["bytes_read"],10*1024*1024)
+                self.assertAlmostEqual(performance["mib_per_second"],1/3,3)
+                self.assertEqual(performance["files_per_hour"],600)
+                self.assertEqual(performance["errors"],1)
+                self.assertEqual(
+                    report["totals"]["remaining_eta_basis"],
+                    "Actual un-hashed OLS bytes divided by the wall-clock rate "
+                    "across the ten most recent completed hash runs.",
+                )
+                self.assertAlmostEqual(
+                    report["totals"]["remaining_seconds_at_recent_rate"],
+                    report["totals"]["pending_physical_bytes"]/(1024*1024/3),
+                    1,
+                )
+                timing=report["recent_hash_timing_breakdown"]
+                self.assertEqual(timing["instrumented_runs"],2)
+                self.assertEqual(timing["read_call_seconds"],5.0)
+                self.assertEqual(timing["database_write_seconds"],0.5)
+                source_report=next(
+                    source for source in report["by_source"]
+                    if source["source_id"]==sources[0]["id"]
+                )
+                self.assertEqual(
+                    source_report["recent_bytes_read"],10*1024*1024
+                )
+                self.assertAlmostEqual(
+                    source_report["mib_per_second"],1/3,3
+                )
+                self.assertEqual(len(sources),5)
+            finally:
+                database.close()
+
+    def test_hash_worker_retries_transient_failure_and_changed_fingerprint(self):
+        from ols_platform.sources import _FileChangedDuringHash, _hash_location
+
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            database,sources=self._create_hash_fixture(root,1)
+            try:
+                original=_hash_location
+                attempts={"count":0}
+                def transient_error(job,chunk_size,progress_callback=None):
+                    attempts["count"]+=1
+                    if attempts["count"]==1:
+                        raise OSError("temporary network read failure")
+                    return original(job,chunk_size,progress_callback)
+                with patch(
+                    "ols_platform.sources._hash_location",
+                    side_effect=transient_error,
+                ):
+                    reports=[]
+                    for _ in range(5):
+                        report=run_hash_worker(
+                            database,workers=1,batch_size=1,
+                            batch_delay_seconds=0,retry_delay_seconds=0,
+                            retry_limit=2,max_batches=3,
+                        )
+                        reports.append(report)
+                        if report["status"]=="complete":
+                            break
+                        self.assertEqual(report["status"],"stopped",report)
+                self.assertEqual(report["status"],"complete",report)
+                self.assertEqual(sum(item["errors"] for item in reports),1,reports)
+                self.assertEqual(attempts["count"],2)
+                statuses=[
+                    row[0] for row in database.connection.execute(
+                        "SELECT status FROM hash_attempts ORDER BY id"
+                    )
+                ]
+                self.assertEqual(statuses,["RETRY_PENDING","HASHED"])
+
+                source_id=sources[0]["id"]
+                with database.connection:
+                    database.connection.execute(
+                        """
+                        UPDATE file_locations SET sha256=NULL,content_id=NULL,
+                            state='discovered' WHERE source_id=?
+                        """,
+                        (source_id,),
+                    )
+                    database.connection.execute(
+                        """
+                        UPDATE hash_jobs SET status='HASH_PENDING',sha256=NULL,
+                            attempts=0 WHERE source_id=?
+                        """,
+                        (source_id,),
+                    )
+                changed={"count":0}
+                def changes_once(job,chunk_size,progress_callback=None):
+                    changed["count"]+=1
+                    if changed["count"]==1:
+                        raise _FileChangedDuringHash(
+                            "file changed during read",
+                            started_at="2026-11-10T00:00:00+00:00",
+                            finished_at="2026-11-10T00:00:01+00:00",
+                            bytes_read=3,
+                        )
+                    return original(job,chunk_size,progress_callback)
+                with patch(
+                    "ols_platform.sources._hash_location",
+                    side_effect=changes_once,
+                ):
+                    changed_report=run_hash_worker(
+                        database,workers=1,batch_size=1,batch_delay_seconds=0,
+                        retry_delay_seconds=0,retry_limit=2,max_batches=3,
+                    )
+                self.assertEqual(changed_report["status"],"complete")
+                self.assertEqual(changed["count"],2)
+                self.assertEqual(
+                    [
+                        row[0] for row in database.connection.execute(
+                            "SELECT status FROM hash_attempts ORDER BY id"
+                        )
+                    ][-2:],
+                    ["FILE_CHANGED","HASHED"],
+                )
+            finally:
+                database.close()
+
+    def test_hash_worker_pause_resume_and_single_active_lease(self):
+        from ols_platform.sources import _hash_location
+
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            database,sources=self._create_hash_fixture(root,1)
+            database_path=root/"index.sqlite3"
+            database.close()
+            started=threading.Event()
+            release=threading.Event()
+            result=[]
+            failure=[]
+            original=_hash_location
+
+            def blocked_hash(job,chunk_size,progress_callback=None):
+                started.set()
+                if not release.wait(5):
+                    raise TimeoutError("test hash was not released")
+                return original(job,chunk_size,progress_callback)
+
+            def run():
+                worker_database=IndexDatabase(database_path)
+                try:
+                    result.append(run_hash_worker(
+                        worker_database,workers=1,batch_size=1,
+                        batch_delay_seconds=0,retry_delay_seconds=0,
+                    ))
+                except Exception as exc:
+                    failure.append(exc)
+                finally:
+                    worker_database.close()
+
+            with patch(
+                "ols_platform.sources._hash_location",side_effect=blocked_hash
+            ):
+                thread=threading.Thread(target=run)
+                thread.start()
+                self.assertTrue(started.wait(5))
+                control=IndexDatabase(database_path)
+                try:
+                    with self.assertRaises(RuntimeError):
+                        control.acquire_hash_worker(
+                            owner_token="second",process_id=os.getpid(),workers=1,
+                            batch_size=1,chunk_size=1024*1024,
+                            batch_delay_seconds=0,retry_limit=2,
+                            retry_delay_seconds=0,
+                        )
+                    control.set_hash_control("paused")
+                    release.set()
+                    deadline=time.monotonic()+5
+                    while time.monotonic()<deadline:
+                        if control.hash_worker_status()["status"]=="paused":
+                            break
+                        time.sleep(0.02)
+                    self.assertEqual(
+                        control.hash_worker_status()["status"],"paused"
+                    )
+                    control.set_hash_control("running")
+                finally:
+                    control.close()
+                thread.join(5)
+                self.assertFalse(thread.is_alive())
+            self.assertEqual(failure,[])
+            self.assertEqual(result[0]["status"],"complete")
+            self.assertEqual(result[0]["batches_completed"],1)
+            self.assertEqual(result[0]["queue"]["totals"]["hashed"],1)
+
+    def test_source_root_relocation_rebases_queue_paths_atomically(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            database,sources=self._create_hash_fixture(root,2)
+            try:
+                hashed=run_hashing(
+                    database,workers=1,chunk_size=64*1024,max_files=2
+                )
+                self.assertEqual(hashed["files_completed"],2)
+                before=snapshot_database(database.connection)
+                source_ids=[source["id"] for source in sources]
+                database.sync_hash_jobs(source_ids)
+                new_roots={}
+                mappings={}
+                for source in sources:
+                    target=root/f"local-{source['id']}"
+                    target.mkdir()
+                    new_roots[str(source["id"])]=str(target)
+                    mappings[source["id"]]={
+                        "old_path":source["path"],"new_path":str(target)
+                    }
+                moved=database.relocate_source_roots(mappings)
+                self.assertEqual(len(moved),5)
+                for source in sources:
+                    expected=Path(new_roots[str(source["id"])])/"file-0.ols"
+                    if source["id"]==sources[0]["id"]:
+                        for table in ("file_locations","index_queue","hash_jobs"):
+                            path=database.connection.execute(
+                                f"SELECT path FROM {table} WHERE source_id=?",
+                                (source["id"],),
+                            ).fetchone()[0]
+                            self.assertEqual(Path(path),expected)
+                self.assertEqual(
+                    database.connection.execute(
+                        "SELECT COUNT(*) FROM hash_jobs WHERE status='HASHED'"
+                    ).fetchone()[0],
+                    2,
+                )
+                self.assertEqual(
+                    database.connection.execute(
+                        "SELECT COUNT(*) FROM hash_attempts WHERE status='HASHED'"
+                    ).fetchone()[0],
+                    2,
+                )
+                after=snapshot_database(database.connection)
+                self.assertEqual(after["record_digests"],before["record_digests"])
+            finally:
+                database.close()
+
+    def test_hash_queue_hashes_full_content_and_records_exact_duplicate_locations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_paths = [root / f"source-{index}" for index in range(1, 6)]
+            for path in source_paths:
+                path.mkdir()
+            payload = (b"WinOLS full file content" * 5000)
+            (source_paths[0] / "one.ols").write_bytes(payload)
+            (source_paths[1] / "renamed.ols").write_bytes(payload)
+            (source_paths[2] / "same-size.ols").write_bytes(b"x" * len(payload))
+            database = IndexDatabase(root / "index.sqlite3")
+            try:
+                sources = [register_source(database, path) for path in source_paths]
+                for slot_id, source in enumerate(sources, start=1):
+                    database.configure_source_slot(slot_id, source["id"])
+                    scan_registered_source(
+                        database,source["id"],benchmark_bytes=0
+                    )
+                plan = build_hashing_plan(database)
+                self.assertTrue(plan["all_sources_available"])
+                self.assertEqual(plan["pending_locations"], 3)
+                self.assertEqual(plan["unmaterialized_queue_jobs"], 3)
+                result = run_hashing(
+                    database,workers=2,chunk_size=64*1024,max_files=3
+                )
+                self.assertEqual(result["status"],"COMPLETE")
+                self.assertEqual(result["files_completed"],3)
+                self.assertEqual(result["bytes_read"],len(payload)*3)
+                self.assertEqual(result["queue"]["totals"]["hashed"],3)
+                self.assertEqual(
+                    result["queue"]["deduplication"]["unique_ols_contents"],2
+                )
+                self.assertEqual(
+                    result["queue"]["deduplication"]["exact_duplicate_locations"],1
+                )
+                group = database.list_duplicate_content_locations(limit=10)[0]
+                self.assertEqual(group["locations_count"],2)
+                self.assertEqual(
+                    database.list_duplicate_content_locations(
+                        limit=10,source_ids=[sources[0]["id"]]
+                    ),
+                    [],
+                )
+                self.assertEqual(group["physical_bytes"],len(payload)*2)
+                self.assertEqual(
+                    group["duplicate_bytes_saved_from_reprocessing"],len(payload)
+                )
+                attempts = database.connection.execute(
+                    "SELECT COUNT(*),SUM(bytes_read) FROM hash_attempts WHERE status='HASHED'"
+                ).fetchone()
+                self.assertEqual(attempts[0],3)
+                self.assertEqual(attempts[1],len(payload)*3)
+                self.assertEqual(database.summary()["projects"],0)
+                self.assertEqual(
+                    build_hashing_report(database)["deduplication"]["unique_ols_bytes"],
+                    len(payload)*2,
+                )
+                parsed=run_source_queue(
+                    database,sources[0]["id"],reader=FixtureReader(),
+                    max_file_bytes=1024*1024,batch_size=1,
+                )
+                self.assertEqual(parsed["cached_content_hashes_reused"],1)
+                self.assertEqual(parsed["counts"],{"partial":1})
+                duplicate=run_source_queue(
+                    database,sources[1]["id"],reader=FixtureReader(),
+                    max_file_bytes=1024*1024,batch_size=1,
+                )
+                self.assertEqual(
+                    duplicate["counts"],{"duplicate_content_skipped":1}
+                )
+                again=run_hashing(
+                    database,workers=1,chunk_size=64*1024,max_files=3
+                )
+                self.assertEqual(again["files_completed"],0)
+                self.assertEqual(
+                    database.connection.execute(
+                        "SELECT COUNT(*) FROM hash_attempts WHERE status='HASHED'"
+                    ).fetchone()[0],3
+                )
+            finally:
+                database.close()
+
+    def test_hash_worker_never_commits_partial_or_changed_file_hash(self):
+        from ols_platform.sources import _FileChangedDuringHash
+
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            sources_paths=[root/f"source-{index}" for index in range(1,6)]
+            for path in sources_paths:
+                path.mkdir()
+            (sources_paths[0]/"change.ols").write_bytes(b"before")
+            database=IndexDatabase(root/"index.sqlite3")
+            try:
+                sources=[register_source(database,path) for path in sources_paths]
+                for slot_id,source in enumerate(sources,start=1):
+                    database.configure_source_slot(slot_id,source["id"])
+                    scan_registered_source(database,source["id"],benchmark_bytes=0)
+                with patch(
+                    "ols_platform.sources._hash_location",
+                    side_effect=_FileChangedDuringHash(
+                        "changed mid-read",
+                        started_at="2026-01-01T00:00:00+00:00",
+                        finished_at="2026-01-01T00:00:01+00:00",
+                        bytes_read=3,
+                    ),
+                ):
+                    result=run_hashing(
+                        database,workers=1,chunk_size=64*1024,max_files=1
+                    )
+                self.assertEqual(result["outcomes"],{"FILE_CHANGED":1})
+                location=database.connection.execute(
+                    "SELECT sha256 FROM file_locations WHERE filename='change.ols'"
+                ).fetchone()
+                self.assertIsNone(location["sha256"])
+                attempt=database.connection.execute(
+                    "SELECT status,bytes_read,started_at,finished_at FROM hash_attempts"
+                ).fetchone()
+                self.assertEqual(attempt["status"],"FILE_CHANGED")
+                self.assertEqual(attempt["bytes_read"],3)
+                self.assertNotEqual(attempt["started_at"],attempt["finished_at"])
+            finally:
+                database.close()
+
+    def test_hashing_retries_after_source_disconnect_and_preserves_audit_records(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            source_paths=[root/f"source-{index}" for index in range(1,6)]
+            for path in source_paths:
+                path.mkdir()
+            target=source_paths[0]/"retry.ols"
+            target.write_bytes(b"retry after restore")
+            database=IndexDatabase(root/"index.sqlite3")
+            try:
+                sources=[register_source(database,path) for path in source_paths]
+                for slot_id,source in enumerate(sources,start=1):
+                    database.configure_source_slot(slot_id,source["id"])
+                    scan_registered_source(database,source["id"],benchmark_bytes=0)
+                before=database.connection.execute(
+                    "SELECT COUNT(*) FROM reference_check_history"
+                ).fetchone()[0]
+                target.unlink()
+                source_paths[0].rmdir()
+                unavailable=run_hashing(
+                    database,workers=1,max_files=1
+                )
+                self.assertEqual(
+                    unavailable["queue"]["queue_statuses"]["SOURCE_UNAVAILABLE"],1
+                )
+                self.assertEqual(
+                    unavailable["queue"]["totals"]["hashed"],0
+                )
+                source_paths[0].mkdir()
+                target.write_bytes(b"retry after restore")
+                scan_registered_source(
+                    database,sources[0]["id"],benchmark_bytes=0
+                )
+                restored=run_hashing(
+                    database,workers=1,max_files=1,retry_failed=True
+                )
+                self.assertEqual(restored["queue"]["totals"]["hashed"],1)
+                self.assertEqual(
+                    database.connection.execute(
+                        "SELECT COUNT(*) FROM hash_attempts"
+                    ).fetchone()[0],1
+                )
+                self.assertEqual(
+                    database.connection.execute(
+                        "SELECT COUNT(*) FROM reference_check_history"
+                    ).fetchone()[0],before
+                )
+            finally:
+                database.close()
+
+    def test_multi_source_inventory_preserves_locations_and_bounds_hashing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_paths = [root / f"source-{index}" for index in range(1, 6)]
+            for path in source_paths:
+                path.mkdir()
+            (source_paths[0] / "shared.ols").write_bytes(b"same")
+            (source_paths[1] / "shared.ols").write_bytes(b"same")
+            (source_paths[2] / "shared.ols").write_bytes(b"diff")
+            (source_paths[0] / "extra.bin").write_bytes(b"other")
+            database = IndexDatabase(root / "index.sqlite3")
+            try:
+                sources = [register_source(database, path) for path in source_paths]
+                for slot_id, source in enumerate(sources, start=1):
+                    database.configure_source_slot(slot_id, source["id"])
+                report = run_multi_source_inventory(
+                    database, progress_every=2, max_hash_files=2, max_hash_bytes=8
+                )
+                self.assertEqual(report["status"], "complete")
+                self.assertEqual(len(report["sources"]), 5)
+                self.assertEqual(report["totals"]["found_paths"], 4)
+                self.assertEqual(report["totals"]["ols_paths"], 3)
+                self.assertEqual(report["totals"]["physical_bytes"], 17)
+                self.assertEqual(report["totals"]["ols_physical_bytes"], 12)
+                self.assertEqual(report["hash_benchmark"]["files_hashed"], 2)
+                self.assertLessEqual(report["hash_benchmark"]["bytes_read"], 8)
+                self.assertEqual(report["totals"]["unhashed_ols_locations"], 1)
+                self.assertEqual(len(report["possible_duplicate_groups"]), 1)
+                self.assertEqual(
+                    report["possible_duplicate_groups"][0]["locations_count"], 3
+                )
+                self.assertIn(
+                    "not verified",
+                    report["possible_duplicate_groups"][0]["basis"],
+                )
+                locations = database.list_inventory_locations(limit=100)
+                self.assertEqual(len(locations), 4)
+                self.assertEqual(
+                    len({item["source_id"] for item in locations}), 3
+                )
+                exact = database.source_dedup_summary()
+                self.assertEqual(exact["contents_in_multiple_locations"], 1)
+                self.assertEqual(
+                    report["extension_totals"]["ols"]["files"], 3
+                )
+            finally:
+                database.close()
+
+    def test_unavailable_source_does_not_remove_its_historical_locations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            available_path = root / "available"
+            interrupted_path = root / "temporary-share"
+            available_path.mkdir()
+            interrupted_path.mkdir()
+            (available_path / "active.ols").write_bytes(b"active")
+            (interrupted_path / "remembered.ols").write_bytes(b"remembered")
+            database = IndexDatabase(root / "index.sqlite3")
+            try:
+                sources = [
+                    register_source(database, available_path),
+                    register_source(database, interrupted_path),
+                ]
+                for slot_id, source in enumerate(sources, start=1):
+                    database.configure_source_slot(slot_id, source["id"])
+                scan_registered_source(
+                    database, sources[1]["id"], benchmark_bytes=0
+                )
+                interrupted_path.joinpath("remembered.ols").unlink()
+                interrupted_path.rmdir()
+                report = run_multi_source_inventory(
+                    database, max_hash_files=1, max_hash_bytes=6
+                )
+                self.assertEqual(report["status"], "partial")
+                unavailable = report["sources"][1]
+                self.assertEqual(unavailable["status"], "unavailable")
+                historical = database.connection.execute(
+                    "SELECT is_present FROM file_locations WHERE source_id=?",
+                    (sources[1]["id"],),
+                ).fetchone()
+                self.assertEqual(historical["is_present"], 1)
+                self.assertEqual(report["totals"]["inaccessible_sources"], 4)
+            finally:
+                database.close()
+
+    def test_metadata_scan_resumes_an_interrupted_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "source"
+            nested = source_path / "nested"
+            nested.mkdir(parents=True)
+            (nested / "resumed.ols").write_bytes(b"resume")
+            database = IndexDatabase(root / "index.sqlite3")
+            original_scandir = os.scandir
+            calls = 0
+
+            def interrupt_nested_scan(path):
+                nonlocal calls
+                calls += 1
+                if calls == 3:
+                    raise KeyboardInterrupt
+                return original_scandir(path)
+
+            try:
+                source = register_source(database, source_path)
+                with patch(
+                    "ols_platform.sources.os.scandir",
+                    side_effect=interrupt_nested_scan,
+                ):
+                    first = scan_registered_source(
+                        database, source["id"], benchmark_bytes=0
+                    )
+                self.assertEqual(first["status"], "interrupted")
+                resumed = scan_registered_source(
+                    database, source["id"], benchmark_bytes=0
+                )
+                self.assertEqual(resumed["status"], "available")
+                self.assertEqual(resumed["ols_paths"], 1)
+                self.assertEqual(
+                    database.list_inventory_locations(limit=10)[0]["filename"],
+                    "resumed.ols",
+                )
+            finally:
+                database.close()
+
+    def test_partial_directory_inventory_is_reported_without_marking_source_complete(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "source"
+            nested = source_path / "nested"
+            nested.mkdir(parents=True)
+            (source_path / "visible.ols").write_bytes(b"visible")
+            (nested / "blocked.ols").write_bytes(b"not reached")
+            database = IndexDatabase(root / "index.sqlite3")
+            original_scandir = os.scandir
+            calls = 0
+
+            def deny_nested_scan(path):
+                nonlocal calls
+                calls += 1
+                if calls == 4:
+                    raise PermissionError("fixture denies nested directory")
+                return original_scandir(path)
+
+            try:
+                source = register_source(database, source_path)
+                database.configure_source_slot(1, source["id"])
+                with patch(
+                    "ols_platform.sources.os.scandir",
+                    side_effect=deny_nested_scan,
+                ):
+                    report = run_multi_source_inventory(
+                        database, max_hash_files=1, max_hash_bytes=7
+                    )
+                self.assertEqual(report["status"], "partial")
+                self.assertEqual(report["sources"][0]["status"], "scan_warnings")
+                self.assertEqual(report["totals"]["found_paths"], 1)
+                self.assertEqual(report["totals"]["sources_incomplete"], 1)
+                self.assertEqual(report["totals"]["incomplete_directories"], 1)
+                self.assertEqual(report["hash_benchmark"]["status"], "not_run")
+                resumed = run_multi_source_inventory(
+                    database, max_hash_files=1, max_hash_bytes=7
+                )
+                self.assertEqual(resumed["status"], "partial")
+                self.assertEqual(resumed["sources"][0]["status"], "available")
+                self.assertEqual(resumed["totals"]["found_paths"], 2)
+            finally:
+                database.close()
+
+    def test_exact_content_dedup_keeps_every_location_and_distinguishes_same_size_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            roots = [root / f"root-{index}" for index in range(1, 4)]
+            for path in roots:
+                path.mkdir()
+            (roots[0] / "same.ols").write_bytes(b"DATA")
+            (roots[1] / "renamed.ols").write_bytes(b"DATA")
+            (roots[2] / "same.ols").write_bytes(b"DIFF")
+            database = IndexDatabase(root / "index.sqlite3")
+            try:
+                sources = [register_source(database, path) for path in roots]
+                for slot_id, source in enumerate(sources, start=1):
+                    database.configure_source_slot(slot_id, source["id"])
+                    scan = scan_registered_source(
+                        database, source["id"], benchmark_bytes=0
+                    )
+                    self.assertEqual(scan["status"], "available")
+
+                first = run_source_queue(
+                    database, sources[0]["id"], reader=FixtureReader(),
+                    max_file_bytes=1024, batch_size=1,
+                )
+                same_bytes = run_source_queue(
+                    database, sources[1]["id"], reader=FixtureReader(),
+                    max_file_bytes=1024, batch_size=1,
+                )
+                different_same_size = run_source_queue(
+                    database, sources[2]["id"], reader=FixtureReader(),
+                    max_file_bytes=1024, batch_size=1,
+                )
+                self.assertEqual(first["counts"], {"partial": 1})
+                self.assertEqual(same_bytes["counts"], {"duplicate_content_skipped": 1})
+                self.assertEqual(different_same_size["counts"], {"partial": 1})
+                self.assertEqual(database.summary()["projects"], 2)
+                self.assertEqual(
+                    database.connection.execute(
+                        "SELECT COUNT(*) FROM file_contents WHERE file_kind='ols'"
+                    ).fetchone()[0],
+                    2,
+                )
+                locations = database.connection.execute(
+                    """
+                    SELECT path,sha256,content_id FROM file_locations
+                    WHERE is_present=1 ORDER BY path
+                    """
+                ).fetchall()
+                self.assertEqual(len(locations), 3)
+                self.assertEqual(locations[0]["sha256"], locations[1]["sha256"])
+                self.assertNotEqual(locations[0]["sha256"], locations[2]["sha256"])
+                self.assertEqual(
+                    len(database.list_duplicate_content_locations()), 1
+                )
+                self.assertEqual(
+                    database.source_dedup_summary()["contents_in_multiple_locations"],
+                    1,
+                )
+                second_scan = scan_registered_source(
+                    database, sources[1]["id"], benchmark_bytes=0
+                )
+                self.assertEqual(second_scan["queue_pending"], 0)
+                self.assertEqual(
+                    database.list_index_queue(sources[1]["id"])[0]["status"],
+                    "duplicate_content_skipped",
+                )
+            finally:
+                database.close()
+
+    def test_successful_scan_marks_only_its_missing_locations_absent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            left = root / "left"
+            right = root / "right"
+            left.mkdir()
+            right.mkdir()
+            (left / "left.ols").write_bytes(b"first")
+            (right / "right.ols").write_bytes(b"second")
+            database = IndexDatabase(root / "index.sqlite3")
+            try:
+                sources = [register_source(database, path) for path in (left, right)]
+                for source in sources:
+                    scan_registered_source(database, source["id"], benchmark_bytes=0)
+                (left / "left.ols").unlink()
+                scan_registered_source(database, sources[0]["id"], benchmark_bytes=0)
+                states = database.connection.execute(
+                    "SELECT source_id,is_present FROM file_locations ORDER BY source_id"
+                ).fetchall()
+                self.assertEqual(
+                    [(row["source_id"], row["is_present"]) for row in states],
+                    [(sources[0]["id"], 0), (sources[1]["id"], 1)],
+                )
+                database.close()
+                database = IndexDatabase(root / "index.sqlite3")
+                self.assertEqual(
+                    database.connection.execute(
+                        "SELECT COUNT(*) FROM source_scan_runs"
+                    ).fetchone()[0],
+                    3,
+                )
+                self.assertEqual(
+                    database.connection.execute(
+                        "SELECT COUNT(*) FROM projects"
+                    ).fetchone()[0],
+                    0,
+                )
+            finally:
+                database.close()
+
+    def test_existing_queue_entries_are_backfilled_as_locations_without_hashing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "existing"
+            source_path.mkdir()
+            source_file = source_path / "queued.ols"
+            source_file.write_bytes(b"not hashed during migration")
+            database_path = root / "index.sqlite3"
+            database = IndexDatabase(database_path)
+            source = register_source(database, source_path)
+            stats = source_file.stat()
+            database.queue_source_file(
+                source_id=source["id"],
+                path=os.path.abspath(source_file),
+                size_bytes=stats.st_size,
+                modified_ns=stats.st_mtime_ns,
+            )
+            database.close()
+
+            database = IndexDatabase(database_path)
+            try:
+                location = database.connection.execute(
+                    "SELECT path,size_bytes,sha256,is_present FROM file_locations"
+                ).fetchone()
+                self.assertEqual(location["path"], os.path.abspath(source_file))
+                self.assertEqual(location["size_bytes"], stats.st_size)
+                self.assertIsNone(location["sha256"])
+                self.assertEqual(location["is_present"], 1)
+                self.assertEqual(
+                    database.source_dedup_summary()["unhashed_ols_locations"], 1
+                )
+            finally:
+                database.close()
+
+    def test_failed_changed_content_is_not_linked_to_the_previous_project(self):
+        class BrokenReader(FixtureReader):
+            def inspect(self, source):
+                raise ValueError("unreadable project")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "projects"
+            source_path.mkdir()
+            path = source_path / "changing.ols"
+            path.write_bytes(b"first content")
+            database = IndexDatabase(root / "index.sqlite3")
+            try:
+                source = register_source(database, source_path)
+                scan_registered_source(database, source["id"], benchmark_bytes=0)
+                run_source_queue(
+                    database, source["id"], reader=FixtureReader(),
+                    max_file_bytes=1024, batch_size=1,
+                )
+                previous = database.connection.execute(
+                    """
+                    SELECT c.sha256,p.project_id FROM file_contents c
+                    JOIN file_processing p ON p.content_id=c.id
+                    WHERE p.project_id IS NOT NULL
+                    """
+                ).fetchone()
+                path.write_bytes(b"different content")
+                scan_registered_source(database, source["id"], benchmark_bytes=0)
+                result = run_source_queue(
+                    database, source["id"], reader=BrokenReader(),
+                    max_file_bytes=1024, batch_size=1,
+                )
+                self.assertEqual(result["counts"], {"failed": 1})
+                current = database.connection.execute(
+                    """
+                    SELECT c.sha256,p.project_id FROM file_contents c
+                    JOIN file_processing p ON p.content_id=c.id
+                    WHERE c.sha256!=?
+                    """,
+                    (previous["sha256"],),
+                ).fetchone()
+                self.assertIsNone(current["project_id"])
+                self.assertEqual(database.summary()["projects"], 1)
+            finally:
+                database.close()
+
+    def test_parser_fingerprint_change_queues_one_reprocessing_per_content(self):
+        class UpdatedReader(FixtureReader):
+            parser_version = "2"
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "projects"
+            source_path.mkdir()
+            (source_path / "first.ols").write_bytes(b"identical project")
+            (source_path / "copy.ols").write_bytes(b"identical project")
+            database = IndexDatabase(root / "index.sqlite3")
+            try:
+                source = register_source(database, source_path)
+                scan_registered_source(database, source["id"], benchmark_bytes=0)
+                first_run = run_source_queue(
+                    database, source["id"], reader=FixtureReader(),
+                    max_file_bytes=1024, batch_size=10,
+                )
+                self.assertEqual(first_run["counts"], {
+                    "partial": 1,
+                    "duplicate_content_skipped": 1,
+                })
+                updated = run_source_queue(
+                    database, source["id"], reader=UpdatedReader(),
+                    max_file_bytes=1024, batch_size=10,
+                )
+                self.assertEqual(updated["parser_fingerprint_reprocess_queued"], 1)
+                self.assertEqual(updated["counts"], {"partial": 1})
+                self.assertEqual(
+                    database.connection.execute(
+                        "SELECT COUNT(*) FROM file_processing"
+                    ).fetchone()[0],
+                    2,
+                )
+                self.assertEqual(database.summary()["projects"], 1)
+            finally:
+                database.close()
+
+    def test_source_registration_access_scan_and_resumable_index_queue(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "projects"
+            source.mkdir()
+            ols_file = source / "one.ols"
+            ols_file.write_bytes(b"fixture source")
+            (source / "notes.txt").write_text("not parsed", encoding="utf-8")
+            database = IndexDatabase(root / "index.sqlite3")
+            try:
+                missing = register_source(database, root / "later")
+                self.assertEqual(missing["status"], "unavailable")
+                source_record = register_source(database, source)
+                self.assertEqual(source_record["status"], "available")
+                self.assertEqual(test_source(database, source_record["id"])["status"], "available")
+                report = scan_registered_source(database, source_record["id"])
+                self.assertEqual(report["status"], "available")
+                self.assertEqual(report["files"], 2)
+                self.assertEqual(report["ols_files"], 1)
+                self.assertEqual(report["new_ols_files"], 1)
+                self.assertEqual(report["queue_pending"], 1)
+                self.assertEqual(
+                    report["network_read_benchmark"]["bytes_read"],
+                    len(b"fixture source"),
+                )
+                self.assertGreater(
+                    report["network_read_benchmark"]["mib_per_second"], 0
+                )
+
+                first = run_source_queue(
+                    database,
+                    source_record["id"],
+                    reader=FixtureReader(),
+                    max_file_bytes=1024,
+                    batch_size=1,
+                )
+                self.assertEqual(first["counts"], {"partial": 1})
+                self.assertEqual(first["remaining"], 0)
+                second = run_source_queue(
+                    database,
+                    source_record["id"],
+                    reader=FixtureReader(),
+                    max_file_bytes=1024,
+                    batch_size=1,
+                )
+                self.assertEqual(second["processed"], 0)
+                self.assertEqual(database.summary()["projects"], 1)
+                self.assertEqual(database.list_sources()[1]["found_files"], 2)
+                self.assertEqual(database.list_sources()[1]["indexed_files"], 1)
+
+                unchanged_scan = scan_registered_source(
+                    database, source_record["id"], benchmark_bytes=0
+                )
+                self.assertEqual(unchanged_scan["queue_pending"], 0)
+                self.assertEqual(unchanged_scan["cached_fingerprint_files"], 1)
+                self.assertIn(
+                    "Stat matches are not treated as content identity",
+                    unchanged_scan["note"],
+                )
+                ols_file.write_bytes(b"fixture source has changed size")
+                changed_scan = scan_registered_source(
+                    database, source_record["id"], benchmark_bytes=0
+                )
+                self.assertEqual(changed_scan["stat_changed_ols_files"], 1)
+                self.assertEqual(changed_scan["queue_pending"], 1)
+                changed_import = run_source_queue(
+                    database,
+                    source_record["id"],
+                    reader=FixtureReader(),
+                    max_file_bytes=1024,
+                    batch_size=1,
+                )
+                self.assertEqual(changed_import["counts"], {"partial": 1})
+                self.assertEqual(database.summary()["projects"], 1)
+            finally:
+                database.close()
+
+    def test_moved_and_removed_sources_require_real_access_check(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old_path = root / "old"
+            new_path = root / "new"
+            old_path.mkdir()
+            new_path.mkdir()
+            database = IndexDatabase(root / "index.sqlite3")
+            try:
+                source = register_source(database, old_path)
+                moved = move_source(database, source["id"], new_path)
+                self.assertEqual(
+                    os.path.normcase(moved["path"]),
+                    os.path.normcase(os.path.abspath(new_path)),
+                )
+                self.assertEqual(test_source(database, source["id"])["status"], "available")
+                new_path.rmdir()
+                unavailable = test_source(database, source["id"])
+                self.assertEqual(unavailable["status"], "unavailable")
+                self.assertIn("does not currently exist", unavailable["last_error"])
+                with self.assertRaisesRegex(OSError, "unavailable"):
+                    scan_registered_source(database, source["id"])
+            finally:
+                database.close()
+
+    def test_temporary_disconnect_is_retryable_and_resumes_after_reconnect(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "network-share"
+            source_path.mkdir()
+            ols_file = source_path / "recover.ols"
+            ols_file.write_bytes(b"recoverable project")
+            database = IndexDatabase(root / "index.sqlite3")
+            try:
+                source = register_source(database, source_path)
+                scan = scan_registered_source(
+                    database, source["id"], benchmark_bytes=0
+                )
+                self.assertEqual(scan["queue_pending"], 1)
+                database.connection.execute(
+                    "UPDATE index_queue SET status='in_progress' WHERE source_id=?",
+                    (source["id"],),
+                )
+                database.connection.commit()
+                ols_file.unlink()
+                source_path.rmdir()
+                unavailable = test_source(database, source["id"])
+                self.assertEqual(unavailable["status"], "unavailable")
+                self.assertEqual(database.summary()["projects"], 0)
+                self.assertEqual(
+                    database.list_index_queue(source["id"])[0]["status"], "in_progress"
+                )
+                with self.assertRaisesRegex(OSError, "unavailable"):
+                    run_source_queue(
+                        database,
+                        source["id"],
+                        reader=FixtureReader(),
+                        max_file_bytes=1024,
+                        batch_size=1,
+                    )
+                self.assertEqual(
+                    database.list_index_queue(source["id"])[0]["status"],
+                    "interrupted",
+                )
+                source_path.mkdir()
+                ols_file.write_bytes(b"recoverable project")
+                resumed = scan_registered_source(
+                    database, source["id"], benchmark_bytes=0
+                )
+                self.assertEqual(resumed["queue_pending"], 1)
+                result = run_source_queue(
+                    database,
+                    source["id"],
+                    reader=FixtureReader(),
+                    max_file_bytes=1024,
+                    batch_size=1,
+                )
+                self.assertEqual(result["counts"], {"partial": 1})
+                self.assertEqual(database.summary()["projects"], 1)
+            finally:
+                database.close()
+
+    def test_permission_failure_is_reported_as_source_unavailable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_path = root / "restricted"
+            source_path.mkdir()
+            database = IndexDatabase(root / "index.sqlite3")
+            try:
+                source = register_source(database, source_path)
+                with patch(
+                    "ols_platform.sources.os.scandir",
+                    side_effect=PermissionError("read permission denied"),
+                ):
+                    checked = test_source(database, source["id"])
+                self.assertEqual(checked["status"], "unavailable")
+                self.assertIn("PermissionError", checked["last_error"])
+            finally:
+                database.close()
+
+    def test_exact_filters_search_provenance_and_parser_coverage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "one.ols"
+            source.write_bytes(b"some project data")
+            database = IndexDatabase(root / "index.sqlite3")
+            try:
+                outcome = next(import_sources(
+                    sources=[source],
+                    reader=FixtureReader(),
+                    database=database,
+                    max_file_bytes=1024,
+                    progress=False,
+                ))
+                self.assertEqual(outcome.status, "partial")
+                result = search_projects(
+                    database,
+                    metadata={"ecu_type": "ECU-A", "sw_number": "SW-123"},
+                    map_name="Fuel map",
+                    columns=8,
+                    rows=4,
+                )
+                self.assertEqual(result["result_count"], 1)
+                project = result["results"][0]
+                self.assertEqual(project["confidence"], "LIKELY")
+                self.assertEqual(project["versions"][0]["name"], "Original")
+                self.assertIn("not a technical tune", project["match_reason"])
+                self.assertEqual(result["ranker"], "deterministic-evidence")
+                self.assertGreater(project["rank_score"], 0)
+                self.assertTrue(project["ranking_uncertainties"])
+
+                coverage = parser_coverage(database)
+                self.assertEqual(coverage["project_count"], 1)
+                self.assertEqual(coverage["formats"][0]["format_version"], 503)
+                self.assertEqual(
+                    coverage["current_problem_groups"][0]["code"], "unresolved_fixture"
+                )
+                with self.assertRaisesRegex(ValueError, "Unsupported metadata"):
+                    search_projects(database, metadata={"password": "no"})
+                candidate_id = database.record_training_candidate(
+                    project_id=1,
+                    version_id=1,
+                    provenance="unit test fixture",
+                    validation_status="INCONCLUSIVE",
+                )
+                self.assertEqual(database.list_training_candidates()[0]["id"], candidate_id)
+                with self.assertRaisesRegex(ValueError, "does not belong"):
+                    database.record_training_candidate(
+                        project_id=1,
+                        version_id=999,
+                        provenance="bad reference",
+                        validation_status="NOT_VALIDATED",
+                    )
+            finally:
+                database.close()
+
+
+if __name__ == "__main__":
+    unittest.main()
