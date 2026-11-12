@@ -873,6 +873,10 @@ The Phase 11E audit compared read-only observations from `py-ols` and `jinglinse
 
 Phase 11F's structural regression results and the Phase 11G independent code-review verdict are documented in [PHASE11F_STATUS.md](./PHASE11F_STATUS.md) and [PHASE11G_REVIEW.md](./PHASE11G_REVIEW.md). The review found and fixed an invalid version-record geometry case that could mislabel a binary slot. Phase 11 remains in progress; independent WinOLS validation and ECU compatibility remain `NOT_TESTED`.
 
+### Phase 12 parser validation
+
+Phase 12 reran the parser-structure regressions and the real-parser integration tests against the eight read-only OLS samples using a temporary database. All 26 focused and integration tests passed, and all 14 tracked OLS/BIN fixture sizes and SHA-256 values remained unchanged. This validates only the adapter's tested behavior; independent WinOLS validation remains `NOT_TESTED`. See [PHASE12_STATUS.md](./PHASE12_STATUS.md).
+
 ## Phase 5 limits
 
 The inventory command is a dry-run and is not the 6-TB indexer. It has not been
