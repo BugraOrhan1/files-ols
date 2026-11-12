@@ -1932,19 +1932,47 @@ class IndexDatabase:
 
     def recover_hash_run(self) -> dict:
         with self.connection:
+            worker = self.connection.execute(
+                "SELECT status,process_id FROM hash_worker_state WHERE id=1"
+            ).fetchone()
+            process_id = worker["process_id"] if worker else None
+            if process_id is not None:
+                process_id = int(process_id)
+                if process_id <= 0:
+                    raise RuntimeError(
+                        "Hash worker process ID is invalid; refusing recovery."
+                    )
+                if _is_process_alive(process_id):
+                    raise RuntimeError(
+                        f"Hash worker process {process_id} appears active; "
+                        "refusing recovery."
+                    )
+            elif worker and worker["status"] in {"running", "paused"}:
+                raise RuntimeError(
+                    "Hash worker status is active but its process ID is unknown; "
+                    "refusing recovery."
+                )
             control = self.connection.execute(
                 "SELECT status,run_id FROM hash_control WHERE id=1"
             ).fetchone()
             run_id = control["run_id"] if control else None
+            recovered_run_id = None
             if run_id is not None:
-                self.connection.execute(
-                    """
-                    UPDATE hash_runs SET status='INTERRUPTED',
-                        finished_at=CURRENT_TIMESTAMP
-                    WHERE id=? AND status='RUNNING'
-                    """,
+                run = self.connection.execute(
+                    "SELECT status FROM hash_runs WHERE id=?",
                     (run_id,),
-                )
+                ).fetchone()
+                if run and run["status"] == "RUNNING":
+                    cursor = self.connection.execute(
+                        """
+                        UPDATE hash_runs SET status='INTERRUPTED',
+                            finished_at=CURRENT_TIMESTAMP
+                        WHERE id=? AND status='RUNNING'
+                        """,
+                        (run_id,),
+                    )
+                    if cursor.rowcount:
+                        recovered_run_id = run_id
             cursor = self.connection.execute(
                 """
                 UPDATE hash_jobs SET status='RETRY_PENDING',run_id=NULL,
@@ -1968,7 +1996,7 @@ class IndexDatabase:
                 """
             )
         return {
-            "recovered_run_id":run_id,
+            "recovered_run_id":recovered_run_id,
             "jobs_requeued":cursor.rowcount,
             "control":self.hash_control_status(),
         }

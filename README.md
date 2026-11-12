@@ -963,3 +963,7 @@ until a GitHub Actions run for the branch is available and reviewed.
 The bounded security and dashboard interaction review is recorded in
 [PHASE21_STATUS.md](./PHASE21_STATUS.md); it is not a complete application
 security or accessibility certification.
+
+Temporary interrupted-hash recovery safeguards and their regression
+evidence are recorded in [PHASE22_STATUS.md](./PHASE22_STATUS.md). Recovery
+must still only be run after an operator confirms no worker process is active.

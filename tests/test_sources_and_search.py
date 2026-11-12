@@ -132,6 +132,132 @@ class SourceAndSearchTests(unittest.TestCase):
             finally:
                 database.close()
 
+    def test_interrupted_hash_run_recovers_after_database_reopen(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database, sources = self._create_hash_fixture(root, 1)
+            database_path = root / "index.sqlite3"
+            try:
+                database.sync_hash_jobs([sources[0]["id"]])
+                run_id = database.begin_hash_run(
+                    worker_count=1,
+                    chunk_size=64 * 1024,
+                )
+                claimed = database.claim_hash_jobs(
+                    run_id=run_id,
+                    source_ids=[sources[0]["id"]],
+                    limit=1,
+                )
+                self.assertEqual(len(claimed), 1)
+                with database.connection:
+                    database.connection.execute(
+                        """
+                        UPDATE hash_worker_state SET status='running',
+                            owner_token='simulated-crash',process_id=?,
+                            active_run_id=? WHERE id=1
+                        """,
+                        (2_147_483_647, run_id),
+                    )
+            finally:
+                database.close()
+
+            recovered = IndexDatabase(database_path)
+            try:
+                report = recovered.recover_hash_run()
+
+                self.assertEqual(report["recovered_run_id"], run_id)
+                self.assertEqual(report["jobs_requeued"], 1)
+                run_status = recovered.connection.execute(
+                    "SELECT status FROM hash_runs WHERE id=?",
+                    (run_id,),
+                ).fetchone()["status"]
+                job = recovered.connection.execute(
+                    "SELECT status,run_id,error FROM hash_jobs WHERE id=?",
+                    (claimed[0]["id"],),
+                ).fetchone()
+                self.assertEqual(run_status, "INTERRUPTED")
+                self.assertEqual(job["status"], "RETRY_PENDING")
+                self.assertIsNone(job["run_id"])
+                self.assertEqual(
+                    job["error"],
+                    "Recovered after interrupted hash process.",
+                )
+                self.assertEqual(recovered.hash_control_status()["status"], "idle")
+                self.assertEqual(recovered.hash_worker_status()["status"], "stopped")
+
+                resumed = run_hash_worker(
+                    recovered,
+                    workers=1,
+                    batch_size=1,
+                    batch_delay_seconds=0,
+                    retry_delay_seconds=0,
+                )
+                self.assertEqual(resumed["status"], "complete")
+                self.assertEqual(resumed["files_completed"], 1)
+                self.assertEqual(resumed["queue"]["totals"]["hashed"], 1)
+                self.assertEqual(
+                    recovered.connection.execute(
+                        "SELECT COUNT(*) FROM hash_attempts WHERE status='HASHED'"
+                    ).fetchone()[0],
+                    1,
+                )
+
+                repeated = recovered.recover_hash_run()
+                self.assertIsNone(repeated["recovered_run_id"])
+                self.assertEqual(repeated["jobs_requeued"], 0)
+                self.assertEqual(
+                    recovered.connection.execute(
+                        "SELECT status FROM hash_jobs WHERE id=?",
+                        (claimed[0]["id"],),
+                    ).fetchone()["status"],
+                    "HASHED",
+                )
+            finally:
+                recovered.close()
+
+    def test_hash_recovery_refuses_a_live_worker_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = IndexDatabase(Path(directory) / "index.sqlite3")
+            try:
+                run_id = database.begin_hash_run(
+                    worker_count=1,
+                    chunk_size=64 * 1024,
+                )
+                with database.connection:
+                    database.connection.execute(
+                        """
+                        UPDATE hash_worker_state SET status='running',
+                            owner_token='live-test-worker',process_id=?,
+                            active_run_id=? WHERE id=1
+                        """,
+                        (os.getpid(), run_id),
+                    )
+
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "appears active; refusing recovery",
+                ):
+                    database.recover_hash_run()
+
+                self.assertEqual(
+                    database.hash_control_status()["status"],
+                    "running",
+                )
+                self.assertEqual(
+                    database.connection.execute(
+                        "SELECT status FROM hash_runs WHERE id=?",
+                        (run_id,),
+                    ).fetchone()["status"],
+                    "RUNNING",
+                )
+                worker = database.connection.execute(
+                    "SELECT status,process_id FROM hash_worker_state WHERE id=1"
+                ).fetchone()
+                self.assertEqual(worker["status"], "running")
+                self.assertEqual(worker["process_id"], os.getpid())
+            finally:
+                database.close()
+
     def test_hashing_report_uses_wall_clock_batch_rates_and_remaining_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
             database,sources=self._create_hash_fixture(Path(directory),1)
