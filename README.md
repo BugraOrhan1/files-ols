@@ -967,3 +967,5 @@ security or accessibility certification.
 Temporary interrupted-hash recovery safeguards and their regression
 evidence are recorded in [PHASE22_STATUS.md](./PHASE22_STATUS.md). Recovery
 must still only be run after an operator confirms no worker process is active.
+
+The targeted dashboard UX review is in [PHASE24_STATUS.md](./PHASE24_STATUS.md).
