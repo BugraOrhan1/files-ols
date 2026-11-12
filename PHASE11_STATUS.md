@@ -394,6 +394,208 @@ regression coverage, not the underlying independent data validation. Phase 11
 remains **in progress** until the required WinOLS exports and structural
 version/map relationships are independently confirmed.
 
-## Phase 11E independent parser audit
+## Phase 11E: offline reference audit without an active WinOLS license
 
-Read-only comparisons of `py-ols` and `jinglinsen/ols-parser` covered all eight samples; parser outputs remain observations, not ground truth. The audit and machine-readable report are in [PHASE11E_STATUS.md](./PHASE11E_STATUS.md) and [reports/phase11e_parser_audit.json](./reports/phase11e_parser_audit.json). The full suite ran 105 tests (103 passed, 0 failed, 2 environment-dependent skips); the two real-parser tests passed separately. All sample hashes remained unchanged. Independent WinOLS validation is `NOT_TESTED`; Phase 11 remains in progress.
+### Scope and safety
+
+This offline pass did not automate or launch WinOLS and created no WinOLS
+exports. No active WinOLS license is available, so independent content
+validation remains **`NOT_TESTED`**. The audit was bounded to the eight known
+OLS samples, ten previously recorded binary artifacts, four tracked `.DTF`
+files, existing manifests, and existing reports. It did not enumerate the
+6-TB collection.
+
+The index was opened only through SQLite read-only/query-only mode to read
+diagnostics for local project IDs 1–8 and run the canonical package gates. No
+reference-package run was appended. No hash-queue query or worker control was
+performed. PID `45712` was observed still running; it was not stopped,
+restarted, paused, or reconfigured. The OLS sources were read-only and their
+SHA-256 values matched both the index and the Phase 11C sample table. The
+secondary parser checked each sample's hash immediately before and after its
+read; all eight remained unchanged.
+
+### Per-sample coverage
+
+The IDs below are local index IDs, not WinOLS project IDs. Vehicle labels and
+metadata are parser observations, not independent identity evidence.
+
+| Local ID | OLS sample | Parser format | Named parser versions / enumerated slots | Maps / axes | Empty values among 15 metadata fields | Parser warnings | Existing reference artifacts |
+|---:|---|---:|---|---:|---:|---|---|
+| 1 | `100004.ols` (VW Golf) | 597 | `Original` at slot 3 / 4 | 0 / 0 | 0 | 1 unlabeled-slot warning | 4 extensionless binary files |
+| 2 | `100007.ols` (Peugeot 307) | 597 | `Original` at slot 3 / 4 | 0 / 0 | 4 | missing metadata; unlabeled slots | 4 `.bin` files |
+| 3 | `100008.ols` (make/model not returned) | 597 | `Original` at slot 2 / 3 | 0 / 0 | 11 | missing metadata; unlabeled slots | none |
+| 4 | `100009.ols` (BMW 7er) | 597 | `Original` at slot 1 / 2 | 4 MAP / 8 | 2 | missing metadata; 4 incomplete axes; unnamed maps; unlabeled slot | 2 `.bin` files |
+| 5 | `100010.ols` (MB C220) | 597 | `Original` at slot 2 / 3 | 0 / 0 | 0 | unlabeled slots | none |
+| 6 | `10001004.ols` (Audi RS6) | 503 | `Original` at slot 2 / 3 | 0 / 0 | 0 | unlabeled slots | none |
+| 7 | `10001005.ols` (MB GT-S AMG) | 503 | `Original` at slot 2 / 3 | 0 / 0 | 1 | missing metadata; unlabeled slots | none |
+| 8 | `100010054.ols` (Audi A8) | 503 | `Original` at slot 3 / 4 | 11 MAP + 1 CURVE / 23 | 0 | 12 incomplete axes; unnamed maps; unlabeled slots | empty reference template; 4 unregistered `.DTF` candidates |
+
+These are only the records returned by `py-ols`; the slot counts do not prove
+that every project version was recovered. Across the samples the parser
+reported 26 slots and 8 named records, leaving 18 slots unnamed. It returned
+16 unnamed map definitions, and the 31 axes lack complete unit/identifier
+metadata. The eight source hashes and sizes are in the Phase 11C table above;
+all eight were rechecked against the current indexed files during this audit.
+
+### Existing binary artifacts and exact observations
+
+The three legacy manifests contain four VW, four Peugeot, and two BMW binary
+artifacts. Their current sizes and SHA-256 values all match the declarations
+(`10/10`), but those hashes prove byte identity only. None of the artifacts
+has confirmed export origin, WinOLS version/settings, reviewed version name,
+or a project/version/slot relationship. The canonical packets list no
+`exported_versions`, declare incomplete coverage, and retain unknown
+relationships. Each artifact has the same six provenance gaps: unknown
+artifact source, export method, producing WinOLS version, binary format,
+checksum/syncblock setting, and exported address range. At package level,
+project identity and the OLS-to-WinOLS relation are not confirmed, reviewer
+evidence is incomplete, and no version inventory has been independently
+reviewed.
+
+| Project / filename label only | Size | Current SHA-256 | Partial OLS byte-range candidate |
+|---|---:|---|---:|
+| VW Golf — Original | 5,767,168 | `842fec191899cda0bd88d0968b45407b5a3a8a3e240de47cf803adbc47bc255b` | slot 0 |
+| VW Golf — P&B | 5,767,168 | `2e9b9e313fe71c56088d34910e1166b33fb47ecdd4df2a99a8740adb6b8e61f1` | slot 2 |
+| VW Golf — Stage 1 + P&B | 5,767,168 | `a0b0f3cb5de58c80ad4ccb927599ea032ad7a6be5f101f392cb95915fd6e38c3` | slot 3 |
+| VW Golf — Stage 1 | 5,767,168 | `9b77470737c12517424924fdaa27b9f5fe3ff283387408879d46d77a52205622` | slot 1 |
+| Peugeot 307 — EGR OFF | 2,097,152 | `e662016a19ea37464b43ddfda40a5999563a8b053a6190a04270ffd0b76a918f` | slot 1 |
+| Peugeot 307 — Original | 2,097,152 | `74ba24da1fca6583090c9dd4c6cdbdd889ab4df5ba60d2b617b08267bcb911c6` | slot 0 |
+| Peugeot 307 — Stage 2 + EGR OFF | 2,097,152 | `c32ce984b47032d008735a5f82f07cf93305928e06b9c70459a9e9f9f8cd2d51` | slot 3 |
+| Peugeot 307 — Stage 2 | 2,097,152 | `0e153715dbbd54a1386102239cead4341057ff98bb32e88e987e6187334f29a8` | slot 2 |
+| BMW 7er — Original | 2,621,440 | `ab794b422a71c7211230372c1aeceda613955443fdb93e18cfda3f5f7c0b9093` | slot 0 |
+| BMW 7er — Stage 1 | 2,621,440 | `1e6aa221b88bf1b90bfdfb19eed4cd1e472c99ebcbda6c9d94fb6907322810ae` | slot 1 |
+
+All ten exact full-file candidate lists were empty. Each listed slot is only a
+partial post-marker/payload byte-range candidate. Every export is four bytes
+longer than its corresponding parser payload, and the trailing four bytes
+match the bytes immediately following that payload in the OLS. The suffix
+meaning is not established, so this is not treated as a full-binary or
+version match.
+
+Bounded bytewise comparisons were run only within each of the three existing
+filename-labeled `Original` groups. They are observations of bytes, not
+confirmation that the filenames describe true Original/Tuned pairs.
+
+| Project | Compared filename label | Differing bytes | Changed ranges |
+|---|---|---:|---:|
+| VW Golf | P&B | 5,019 | 959 |
+| VW Golf | Stage 1 + P&B | 13,701 | 1,739 |
+| VW Golf | Stage 1 | 9,978 | 1,104 |
+| Peugeot 307 | EGR OFF | 4 | 4 |
+| Peugeot 307 | Stage 2 + EGR OFF | 5,354 | 794 |
+| Peugeot 307 | Stage 2 | 5,350 | 790 |
+| BMW 7er | Stage 1 | 4,558 | 1,458 |
+
+All 22 examined OLS/export/DTF files had distinct full SHA-256 hashes. The
+full changed-range lists and per-file provenance/integrity fields are in the
+local ignored report `data\reference-reports\phase11e-offline-audit.json`;
+per-package gate output is in `phase11e-project-{1,2,4,8}-offline-audit.json`.
+These generated reports are not committed because they include machine-local
+paths. The reproducible package command is documented in the README.
+
+### Four unregistered Audi A8 `.DTF` files
+
+Each tracked DTF is 4,194,304 bytes. Their distinct hashes and shared first
+32 bytes are recorded here:
+
+| Filename label only | SHA-256 |
+|---|---|
+| Audi A8 — Original | `3bf73004ce0f35a70aa5c73f2c93e1b82d5defaef930f59dd277df285eb86c8e` |
+| Audi A8 — stage 1 = Vmax 280Km-h | `267cd914bc1daa2e1fdd9a033664aab5f52b5a92cd20743899d111175fdf4191` |
+| Audi A8 — stage 2 = Vmax 300Km-H | `28bc0bb64679b3f010ed867792318438af4afc1bb55547bc20d99e2d1b44780b` |
+| Audi A8 — Swiftec Vmax Off | `17f11b2d73c4a4d2f554ddbc51f2e066cfb523c2e70f122b8e56d0c3b9b18274` |
+
+The shared prefix is `c00000000040000000003480fc3f008058000080000000000100313033373532`.
+No local documentation or authoritative format source was found in the
+targeted lookup. The extension, filename text, same size, and common prefix
+are not enough to establish that these are raw BINs, OLS payloads, exports
+from project 8, or valid version pairs. They remain unregistered and
+`NOT_COMPARABLE`; no content-difference analysis was run on them.
+
+### Canonical package gate results
+
+The new `reference-package-audit` command reuses package inspection,
+version-matching, metadata, and map gates while opening the database
+read-only/query-only. It does not write an audit run.
+
+| Local project ID | Package status | Version evidence | Version comparison | Metadata / maps |
+|---:|---|---|---|---|
+| 1 | `INCONCLUSIVE` | `NOT_TESTED` | `INCONCLUSIVE` for 4 candidates | `NOT_TESTED` / `NOT_TESTED` |
+| 2 | `INCONCLUSIVE` | `NOT_TESTED` | `INCONCLUSIVE` for 4 candidates | `NOT_TESTED` / `NOT_TESTED` |
+| 4 | `INCONCLUSIVE` | `NOT_TESTED` | `INCONCLUSIVE` for 2 candidates | `NOT_TESTED` / `NOT_TESTED` |
+| 8 | `NOT_TESTED` | `NOT_TESTED` | `NOT_TESTED`; no artifacts | `NOT_TESTED` / `NOT_TESTED` |
+
+For IDs 1, 2, and 4, the source OLS hash is `PASS`; the three package-level
+statuses do not become `PASS` because project/export provenance, named
+version inventory, slot relationships, representation, and complete coverage
+are absent. Hashing and byte-range candidates do not fill those gaps.
+
+### Alternative parser investigation
+
+The bounded public-source review found
+[`jinglinsen/ols-parser`](https://github.com/jinglinsen/ols-parser), a C
+parser at revision `c77616e8e4dbe8b4fd6a41828c6c3d63b22cf2c6`, licensed
+0BSD. Its README claims a shared modern format for version 200 and later.
+The checkout has no parser test suite; its single-file CLI reads each entire
+OLS file into memory. The default Makefile's `cc` and Unix `clean` target did
+not work in this Windows environment; building with the available
+`make CC=gcc` succeeded.
+
+The parser was run read-only on all eight real samples. All eight processes
+returned exit 0 and recognized header versions 503/597, with no emitted
+warnings. It reported zero maps for every sample, including the two files
+where `py-ols` returns 16 map definitions. It returned only one version for
+`100009.ols` despite two enumerated slots; on other samples it grouped
+segments into synthetic `Version 0` labels, not WinOLS names. Successful
+header parsing is therefore observed, not proof of correct version/map
+semantics or an independent WinOLS reference. The parser is not integrated.
+
+| OLS sample | C parser versions | py-ols enumerated slots | C parser maps |
+|---|---:|---:|---:|
+| `100004.ols` | 1 | 4 | 0 |
+| `100007.ols` | 1 | 4 | 0 |
+| `100008.ols` | 1 | 3 | 0 |
+| `100009.ols` | 1 | 2 | 0 |
+| `100010.ols` | 1 | 3 | 0 |
+| `10001004.ols` | 1 | 3 | 0 |
+| `10001005.ols` | 3 | 3 | 0 |
+| `100010054.ols` | 4 | 4 | 0 |
+
+The upstream repository had one open PR, [#1](https://github.com/jinglinsen/ols-parser/pull/1),
+for JSON output, portability, and build checks; no sample-compatibility
+evidence was present there. Its text output and sample-run hashes/logs remain
+in the local ignored `data\reference-reports\secondary-parser\` directory.
+
+### Reproduction, next actions, and status
+
+- Run a read-only package audit:
+  `python -m ols_platform.cli --database data\ols-index.sqlite3 reference-package-audit data\reference-packets\<id>\manifest.json --output data\reference-reports\audit.json`
+- Run a byte-only pair comparison without opening or writing SQLite:
+  `python -m ols_platform.cli --database data\ols-index.sqlite3 compare <original> <candidate> --no-store --output data\reference-reports\comparison.json`
+- For projects 1, 2, and 4, an authorized WinOLS user must confirm the actual
+  project identity and complete version list, then provide one raw export per
+  confirmed version, project metadata, a map list with WinOLS indices/order
+  and addresses, relevant axis details, export method/version/settings, and
+  evidence tying each export to the exact OLS hash and WinOLS version.
+- For projects 3, 5, 6, and 7, no binary reference was found in the bounded
+  inventory. The same project metadata, version inventory, per-version raw
+  exports, map list, and relevant axis exports are needed.
+- For project 8, first establish what the four DTF files represent and whether
+  any is related to `100010054.ols`; do not register them as raw BINs on
+  filename alone. Then obtain the same independently reviewed project,
+  version, map, and export evidence as above.
+- For every received export, record file size and SHA-256, producing WinOLS
+  version, method/settings, file meaning, manual reviewer and fields checked,
+  and explicit OLS-project/version/export relationship in the existing
+  canonical packet. Do not mark coverage complete until the full inventory
+  was actually checked.
+
+The independent-parser experiment, Windows worker-liveness fix, and verified
+test/static-check results are documented in
+[PHASE11E_STATUS.md](./PHASE11E_STATUS.md), with the sample-level observations
+in [reports/phase11e_parser_audit.json](./reports/phase11e_parser_audit.json).
+The full suite ran 105 tests (103 passed, 0 failed, 2 skipped); the two
+environment-dependent real-parser tests were then run separately and passed.
+All eight sample hashes were unchanged. Phase 11 remains **in progress**; no
+project/version relationship, map definition, Original/Tuned pair, ECU
+compatibility, or independent WinOLS content validation is confirmed.

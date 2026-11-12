@@ -1,10 +1,12 @@
 import hashlib
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
 from ols_platform.database import IndexDatabase
+from ols_platform.cli import main
 from ols_platform.importer import import_sources
 from ols_platform.reader import (
     ParsedAxis,
@@ -13,6 +15,7 @@ from ols_platform.reader import (
     ProjectSnapshot,
 )
 from ols_platform.reference_package import (
+    audit_reference_package,
     compare_map_metadata,
     compare_project_metadata,
     import_reference_package,
@@ -263,6 +266,119 @@ class ReferencePackageTests(unittest.TestCase):
         self.assertEqual(manifest["project_identity"]["status"], "unknown")
         self.assertEqual(report["status"], "NOT_TESTED")
         self.assertIn("No WinOLS export has been generated", Path(paths["checklist"]).read_text())
+
+    def test_offline_audit_reuses_gates_without_persisting_a_run(self):
+        self._write(
+            {
+                **self._base_manifest(),
+                "exported_versions": [],
+                "artifacts": [],
+                "coverage_complete": False,
+                "manual_review": {"status": "NOT_TESTED"},
+                "project_relation": {"status": "unknown", "evidence": ""},
+            }
+        )
+        before = self.database.connection.execute(
+            "SELECT COUNT(*) FROM reference_package_runs"
+        ).fetchone()[0]
+
+        report = audit_reference_package(self.database, self.manifest_path)
+
+        after = self.database.connection.execute(
+            "SELECT COUNT(*) FROM reference_package_runs"
+        ).fetchone()[0]
+        self.assertEqual(report["status"], "NOT_TESTED")
+        self.assertFalse(report["database_writes"])
+        self.assertEqual(report["version_comparison"]["status"], "NOT_TESTED")
+        self.assertEqual(report["metadata_comparison"]["status"], "NOT_TESTED")
+        self.assertEqual(report["map_comparison"]["status"], "NOT_TESTED")
+        self.assertEqual(before, after)
+        output_path = self.root / "offline-audit.json"
+        exit_code = main(
+            [
+                "--database",
+                str(self.database.path),
+                "reference-package-audit",
+                str(self.manifest_path),
+                "--output",
+                str(output_path),
+            ]
+        )
+        self.assertEqual(exit_code, 0)
+        cli_report = json.loads(output_path.read_text(encoding="utf-8"))
+        self.assertEqual(cli_report["status"], "NOT_TESTED")
+        self.assertFalse(cli_report["database_writes"])
+        self.assertEqual(
+            self.database.connection.execute(
+                "SELECT COUNT(*) FROM reference_package_runs"
+            ).fetchone()[0],
+            before,
+        )
+        original_source = self.source.read_bytes()
+        with self.assertRaisesRegex(ValueError, "Refusing to overwrite"):
+            main(
+                [
+                    "--database",
+                    str(self.database.path),
+                    "reference-package-audit",
+                    str(self.manifest_path),
+                    "--output",
+                    str(self.source),
+                ]
+            )
+        self.assertEqual(self.source.read_bytes(), original_source)
+
+    def test_offline_audit_never_passes_incomplete_coverage(self):
+        manifest = self._base_manifest()
+        self._add_binary_artifact(
+            manifest,
+            key="version-a",
+            name="Version A",
+            slot=0,
+            content=b"abcd",
+        )
+        self._add_binary_artifact(
+            manifest,
+            key="version-b",
+            name="Version B",
+            slot=1,
+            content=b"wxyz",
+        )
+        manifest["coverage_complete"] = False
+        self._write(manifest)
+
+        report = audit_reference_package(self.database, self.manifest_path)
+
+        self.assertNotEqual(report["status"], "PASS")
+        self.assertEqual(
+            report["package_inspection"]["coverage_complete_declared"],
+            False,
+        )
+
+    def test_read_only_database_rejects_writes(self):
+        database_path = self.root / "readonly.sqlite3"
+        writable = IndexDatabase(database_path)
+        writable.connection.execute(
+            "CREATE TABLE readonly_probe (value TEXT NOT NULL)"
+        )
+        writable.connection.execute(
+            "INSERT INTO readonly_probe (value) VALUES ('preserved')"
+        )
+        writable.connection.commit()
+        writable.close()
+
+        readonly = IndexDatabase(database_path, read_only=True)
+        try:
+            with self.assertRaisesRegex(sqlite3.OperationalError, "readonly"):
+                readonly.connection.execute(
+                    "INSERT INTO readonly_probe (value) VALUES ('blocked')"
+                )
+            value = readonly.connection.execute(
+                "SELECT value FROM readonly_probe"
+            ).fetchone()["value"]
+        finally:
+            readonly.close()
+        self.assertEqual(value, "preserved")
 
     def test_complete_package_has_per_version_exact_matches_and_idempotent_import(self):
         manifest = self._base_manifest()

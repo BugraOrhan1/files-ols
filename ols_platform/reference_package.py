@@ -817,6 +817,44 @@ def inspect_package(database: Any, manifest_path: Path) -> dict[str, Any]:
     }
 
 
+def audit_reference_package(database: Any, manifest_path: Path) -> dict[str, Any]:
+    inspection = inspect_package(database, manifest_path)
+    version_comparison = match_package_versions(database, manifest_path)
+    metadata_comparison = compare_project_metadata(database, manifest_path)
+    map_comparison = compare_map_metadata(database, manifest_path)
+    statuses = [
+        inspection["status"],
+        version_comparison["status"],
+        metadata_comparison["status"],
+        map_comparison["status"],
+    ]
+    manifest, manifest_hash = _read_manifest(manifest_path)
+    if "FAIL" in statuses:
+        status = "FAIL"
+    elif all(item == "NOT_TESTED" for item in statuses):
+        status = "NOT_TESTED"
+    elif (
+        all(item == "PASS" for item in statuses)
+        and inspection["coverage_complete_declared"] is True
+    ):
+        status = "PASS"
+    else:
+        status = "INCONCLUSIVE"
+    return {
+        "audit_type": "offline_reference_package_audit",
+        "audit_version": 1,
+        "package_manifest": str(manifest_path.resolve()),
+        "manifest_sha256": manifest_hash,
+        "project_id": manifest.get("project_id"),
+        "status": status,
+        "database_writes": False,
+        "package_inspection": inspection,
+        "version_comparison": version_comparison,
+        "metadata_comparison": metadata_comparison,
+        "map_comparison": map_comparison,
+    }
+
+
 def import_reference_package(database: Any, manifest_path: Path) -> dict[str, Any]:
     from .winols_reference import import_manifest
 
