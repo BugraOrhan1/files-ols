@@ -380,6 +380,162 @@ class ReferencePackageTests(unittest.TestCase):
             readonly.close()
         self.assertEqual(value, "preserved")
 
+    def test_canonical_manifest_integer_fields_reject_booleans_and_floats(self):
+        manifest_cases = [
+            (
+                "schema_version",
+                lambda manifest: manifest.update(schema_version=True),
+                "Unsupported or missing package schema_version.",
+            ),
+            (
+                "project_id",
+                lambda manifest: manifest.update(project_id=True),
+                "project_id must be a positive integer.",
+            ),
+            (
+                "source.size_bytes",
+                lambda manifest: manifest["source"].update(size_bytes=True),
+                "source.size_bytes must be a non-negative integer.",
+            ),
+            (
+                "source.format_version",
+                lambda manifest: manifest["source"].update(format_version=True),
+                "source.format_version must be a non-negative integer.",
+            ),
+            (
+                "version.source_slot_index",
+                lambda manifest: manifest["exported_versions"][1].update(
+                    source_slot_index=True
+                ),
+                "Version version-b has an invalid source_slot_index.",
+            ),
+            (
+                "version.source_slot_index_negative",
+                lambda manifest: manifest["exported_versions"][1].update(
+                    source_slot_index=-1
+                ),
+                "Version version-b has an invalid source_slot_index.",
+            ),
+            (
+                "schema_version_float",
+                lambda manifest: manifest.update(schema_version=1.0),
+                "Unsupported or missing package schema_version.",
+            ),
+            (
+                "source.size_bytes_float",
+                lambda manifest: manifest["source"].update(
+                    size_bytes=float(manifest["source"]["size_bytes"])
+                ),
+                "source.size_bytes must be a non-negative integer.",
+            ),
+        ]
+        for field, mutate, expected_error in manifest_cases:
+            with self.subTest(field=field):
+                manifest = self._base_manifest()
+                mutate(manifest)
+                self._write(manifest)
+                report = inspect_package(self.database, self.manifest_path)
+                self.assertIn(expected_error, report["errors"])
+
+        for field, value, expected_error in (
+            (
+                "artifact.size_bytes",
+                True,
+                "Artifact 0: Declared size_bytes is invalid.",
+            ),
+            (
+                "artifact.size_bytes",
+                -1,
+                "Artifact 0: Declared size_bytes is invalid.",
+            ),
+            (
+                "artifact.source_slot_index",
+                True,
+                "Artifact 0: Artifact source_slot_index is invalid.",
+            ),
+            (
+                "artifact.source_slot_index",
+                -1,
+                "Artifact 0: Artifact source_slot_index is invalid.",
+            ),
+        ):
+            with self.subTest(field=field):
+                manifest = self._base_manifest()
+                self._add_binary_artifact(
+                    manifest,
+                    key="version-b",
+                    name="Version B",
+                    slot=1,
+                    content=b"x",
+                )
+                artifact = manifest["artifacts"][0]
+                artifact[field.split(".", 1)[1]] = value
+                self._write(manifest)
+                report = inspect_package(self.database, self.manifest_path)
+                self.assertIn(expected_error, report["errors"])
+
+    def test_required_canonical_source_metadata_and_indexed_format_are_validated(self):
+        required_fields = {
+            "path": "source.path must be a non-empty string.",
+            "filename": "source.filename must be a non-empty string.",
+            "size_bytes": "source.size_bytes must be a non-negative integer.",
+            "format_version": (
+                "source.format_version must be a non-negative integer."
+            ),
+        }
+        for field, expected_error in required_fields.items():
+            with self.subTest(missing=field):
+                manifest = self._base_manifest()
+                del manifest["source"][field]
+                self._write(manifest)
+                report = inspect_package(self.database, self.manifest_path)
+                self.assertIn(expected_error, report["errors"])
+
+        for field, value, expected_error in (
+            ("size_bytes", -1, "source.size_bytes must be a non-negative integer."),
+            ("size_bytes", "16", "source.size_bytes must be a non-negative integer."),
+            (
+                "format_version",
+                -1,
+                "source.format_version must be a non-negative integer.",
+            ),
+            (
+                "format_version",
+                "503",
+                "source.format_version must be a non-negative integer.",
+            ),
+        ):
+            with self.subTest(field=field, value=value):
+                manifest = self._base_manifest()
+                manifest["source"][field] = value
+                self._write(manifest)
+                report = inspect_package(self.database, self.manifest_path)
+                self.assertIn(expected_error, report["errors"])
+
+        manifest = self._base_manifest()
+        manifest["source"]["format_version"] += 1
+        self._write(manifest)
+        report = inspect_package(self.database, self.manifest_path)
+        self.assertIn(
+            "Manifest source format_version differs from the indexed OLS.",
+            report["errors"],
+        )
+
+    def test_manifest_json_shape_and_forward_compatible_fields(self):
+        self.manifest_path.write_text("[]", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "root must be a JSON object"):
+            inspect_package(self.database, self.manifest_path)
+
+        self.manifest_path.write_text("{", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "Invalid package manifest JSON"):
+            inspect_package(self.database, self.manifest_path)
+
+        manifest = self._base_manifest()
+        manifest["future_optional_field"] = {"revision": 2}
+        self._write(manifest)
+        report = inspect_package(self.database, self.manifest_path)
+        self.assertNotIn("future_optional_field", report["errors"])
+
     def test_complete_package_has_per_version_exact_matches_and_idempotent_import(self):
         manifest = self._base_manifest()
         self._add_binary_artifact(

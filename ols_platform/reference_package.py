@@ -7,6 +7,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
+from .json_validation import is_json_integer
 from .winols_reference import sha256_file
 
 
@@ -333,11 +334,15 @@ def inspect_package(database: Any, manifest_path: Path) -> dict[str, Any]:
     errors: list[str] = []
     warnings: list[str] = []
     project_id = manifest.get("project_id")
-    if manifest.get("schema_version") != PACKAGE_SCHEMA_VERSION:
+    schema_version = manifest.get("schema_version")
+    if (
+        not is_json_integer(schema_version)
+        or schema_version != PACKAGE_SCHEMA_VERSION
+    ):
         errors.append("Unsupported or missing package schema_version.")
     if manifest.get("package_type") != PACKAGE_TYPE:
         errors.append("Manifest package_type is not a WinOLS reference package.")
-    if not isinstance(project_id, int) or project_id <= 0:
+    if not is_json_integer(project_id) or project_id <= 0:
         errors.append("project_id must be a positive integer.")
         diagnostic = None
     else:
@@ -353,6 +358,31 @@ def inspect_package(database: Any, manifest_path: Path) -> dict[str, Any]:
         "current_sha256": None,
         "status": "NOT_TESTED",
     }
+    source_metadata_valid = isinstance(source, dict)
+    if not source_metadata_valid:
+        errors.append("source must be an object.")
+        source_report["status"] = "FAIL"
+    else:
+        if not isinstance(source.get("path"), str) or not source["path"].strip():
+            errors.append("source.path must be a non-empty string.")
+            source_metadata_valid = False
+        if (
+            not isinstance(source.get("filename"), str)
+            or not source["filename"].strip()
+        ):
+            errors.append("source.filename must be a non-empty string.")
+            source_metadata_valid = False
+        if not is_json_integer(source.get("size_bytes")) or source["size_bytes"] < 0:
+            errors.append("source.size_bytes must be a non-negative integer.")
+            source_metadata_valid = False
+        if (
+            not is_json_integer(source.get("format_version"))
+            or source["format_version"] < 0
+        ):
+            errors.append("source.format_version must be a non-negative integer.")
+            source_metadata_valid = False
+        if not source_metadata_valid:
+            source_report["status"] = "FAIL"
     if not isinstance(source, dict) or not _safe_sha256(source.get("sha256")):
         errors.append("source.sha256 must be a valid SHA-256 digest.")
         source_report["status"] = "FAIL"
@@ -373,13 +403,6 @@ def inspect_package(database: Any, manifest_path: Path) -> dict[str, Any]:
                     errors.append("OLS source changed since it was indexed.")
                     source_report["status"] = "FAIL"
                 elif isinstance(source.get("path"), str) and source.get("path"):
-                    declared_size = source.get("size_bytes")
-                    if (
-                        declared_size is not None
-                        and declared_size != diagnostic["source"]["size_bytes"]
-                    ):
-                        errors.append("Manifest source size differs from the indexed OLS.")
-                        source_report["status"] = "FAIL"
                     try:
                         declared_source = Path(source["path"])
                         if not declared_source.is_absolute():
@@ -395,8 +418,28 @@ def inspect_package(database: Any, manifest_path: Path) -> dict[str, Any]:
                             "Manifest source path is unavailable; the indexed source "
                             "was verified by hash."
                         )
-                    if source_report["status"] != "FAIL":
+                    if (
+                        source_metadata_valid
+                        and source_report["status"] != "FAIL"
+                    ):
                         source_report["status"] = "PASS"
+    if isinstance(source, dict) and diagnostic is not None:
+        declared_size = source.get("size_bytes")
+        if (
+            is_json_integer(declared_size)
+            and declared_size != diagnostic["source"]["size_bytes"]
+        ):
+            errors.append("Manifest source size differs from the indexed OLS.")
+            source_report["status"] = "FAIL"
+        declared_format_version = source.get("format_version")
+        if (
+            is_json_integer(declared_format_version)
+            and declared_format_version != diagnostic["format_version"]
+        ):
+            errors.append(
+                "Manifest source format_version differs from the indexed OLS."
+            )
+            source_report["status"] = "FAIL"
 
     relation = manifest.get("project_relation", {})
     if not isinstance(relation, dict):
@@ -479,7 +522,7 @@ def inspect_package(database: Any, manifest_path: Path) -> dict[str, Any]:
         if not _known_text(name):
             warnings.append(f"Version {key} has no exported version name.")
         slot = version.get("source_slot_index")
-        if slot is not None and (not isinstance(slot, int) or slot < 0):
+        if slot is not None and (not is_json_integer(slot) or slot < 0):
             errors.append(f"Version {key} has an invalid source_slot_index.")
         elif (
             slot is not None
@@ -547,7 +590,7 @@ def inspect_package(database: Any, manifest_path: Path) -> dict[str, Any]:
                 warnings.append(
                     f"Artifact {ordinal} has no declared size_bytes and/or sha256."
                 )
-            elif not isinstance(expected_size, int) or expected_size < 0:
+            elif not is_json_integer(expected_size) or expected_size < 0:
                 artifact_status = "FAIL"
                 artifact_errors.append("Declared size_bytes is invalid.")
             elif not _safe_sha256(expected_hash):
@@ -565,7 +608,7 @@ def inspect_package(database: Any, manifest_path: Path) -> dict[str, Any]:
             artifact_errors.append("Invalid artifact relation_status.")
         artifact_slot = artifact.get("source_slot_index")
         if artifact_slot is not None and (
-            not isinstance(artifact_slot, int) or artifact_slot < 0
+            not is_json_integer(artifact_slot) or artifact_slot < 0
         ):
             artifact_status = "FAIL"
             artifact_errors.append("Artifact source_slot_index is invalid.")
@@ -982,7 +1025,7 @@ def match_package_versions(
     manifest, manifest_hash = _read_manifest(manifest_path)
     inspected = inspect_package(database, manifest_path)
     project_id = manifest.get("project_id")
-    if not isinstance(project_id, int):
+    if not is_json_integer(project_id):
         raise ValueError("Package project_id must be a positive integer.")
     project = database.get_project(project_id)
     if project is None:
@@ -1041,7 +1084,7 @@ def match_package_versions(
         artifact_integrity_ok = (
             _safe_sha256(expected_hash)
             and expected_hash.lower() == export_hash.lower()
-            and isinstance(expected_size, int)
+            and is_json_integer(expected_size)
             and expected_size == export_size
         )
         report["artifact_integrity_status"] = (
@@ -1189,7 +1232,7 @@ def match_package_versions(
     slot_claimants: dict[int, list[dict[str, Any]]] = {}
     for item in version_reports:
         slot = item["explicit_source_slot_index"]
-        if isinstance(slot, int):
+        if is_json_integer(slot):
             slot_claimants.setdefault(slot, []).append(item)
     for slot, claimants in slot_claimants.items():
         if len(claimants) > 1:
@@ -1477,7 +1520,7 @@ def compare_map_metadata(
 ) -> dict[str, Any]:
     manifest, manifest_hash = _read_manifest(manifest_path)
     project_id = manifest.get("project_id")
-    if not isinstance(project_id, int):
+    if not is_json_integer(project_id):
         raise ValueError("Package project_id must be a positive integer.")
     diagnostic = database.get_diagnostic(project_id)
     if diagnostic is None:
@@ -1594,7 +1637,7 @@ def compare_map_metadata(
                 "PASS"
                 if _safe_sha256(artifact.get("sha256"))
                 and artifact.get("sha256").lower() == actual_hash.lower()
-                and isinstance(artifact.get("size_bytes"), int)
+                and is_json_integer(artifact.get("size_bytes"))
                 and artifact.get("size_bytes") == path.stat().st_size
                 and matching_inspection is not None
                 and matching_inspection["status"] == "PASS"
@@ -1606,7 +1649,7 @@ def compare_map_metadata(
             ):
                 integrity_status = "FAIL"
             if (
-                isinstance(artifact.get("size_bytes"), int)
+                is_json_integer(artifact.get("size_bytes"))
                 and artifact.get("size_bytes") != path.stat().st_size
             ):
                 integrity_status = "FAIL"
@@ -1915,7 +1958,7 @@ def compare_project_metadata(
 ) -> dict[str, Any]:
     manifest, manifest_hash = _read_manifest(manifest_path)
     project_id = manifest.get("project_id")
-    if not isinstance(project_id, int):
+    if not is_json_integer(project_id):
         raise ValueError("Package project_id must be a positive integer.")
     diagnostic = database.get_diagnostic(project_id)
     if diagnostic is None:
@@ -1998,7 +2041,7 @@ def compare_project_metadata(
                 "PASS"
                 if _safe_sha256(declared_hash)
                 and declared_hash.lower() == actual_hash.lower()
-                and isinstance(declared_size, int)
+                and is_json_integer(declared_size)
                 and declared_size == actual_size
                 and matching_inspection is not None
                 and matching_inspection["status"] == "PASS"
@@ -2008,7 +2051,7 @@ def compare_project_metadata(
                 _safe_sha256(declared_hash)
                 and declared_hash.lower() != actual_hash.lower()
             ) or (
-                isinstance(declared_size, int) and declared_size != actual_size
+                is_json_integer(declared_size) and declared_size != actual_size
             ):
                 integrity_status = "FAIL"
             artifact_checks.append(

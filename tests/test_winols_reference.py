@@ -12,6 +12,7 @@ from ols_platform.binary_reference_analysis import analyze_project, store_analys
 from ols_platform.winols_reference import (
     build_project_report,
     import_manifest,
+    load_manifest,
     validate_project,
     write_templates,
 )
@@ -94,6 +95,36 @@ class WinOlsReferenceTests(unittest.TestCase):
         self.manifest_path.write_text(
             json.dumps(manifest), encoding="utf-8"
         )
+
+    def test_legacy_manifest_integer_fields_reject_booleans(self):
+        for field, value, expected_error in (
+            (
+                "schema_version",
+                True,
+                "Unsupported reference manifest schema",
+            ),
+            (
+                "schema_version",
+                1.0,
+                "Unsupported reference manifest schema",
+            ),
+            (
+                "project_id",
+                True,
+                "project_id must be a positive integer",
+            ),
+            (
+                "project_id",
+                float(self.project_id),
+                "project_id must be a positive integer",
+            ),
+        ):
+            with self.subTest(field=field, value=value):
+                manifest = self._manifest([])
+                manifest[field] = value
+                self._write_manifest(manifest)
+                with self.assertRaisesRegex(ValueError, expected_error):
+                    load_manifest(self.manifest_path)
 
     def test_template_preserves_source_identity_and_unknowns(self):
         paths = write_templates(

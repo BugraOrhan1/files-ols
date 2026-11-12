@@ -148,16 +148,6 @@ or establish that two files are compatible tune/original pairs.
 python -m ols_platform.cli compare original.bin tuned.bin
 ```
 
-For an offline comparison that does not create or write to the SQLite index,
-use `--no-store` and optionally save the JSON report:
-
-```powershell
-python -m ols_platform.cli --database data\ols-index.sqlite3 compare original.bin tuned.bin --no-store --output data\reference-reports\binary-comparison.json
-```
-
-The database path is ignored in `--no-store` mode; both inputs are streamed
-read-only. A byte difference does not identify a tuning relationship.
-
 For WinOLS reference manifests, first review the generated per-project
 manifest, then import it and run validation. Binary exports without an explicit
 slot mapping can produce candidate matches, but these remain inconclusive if
