@@ -461,6 +461,13 @@ class EcuWorkbenchTests(unittest.TestCase):
             b"different raw image",
             {"ecu_type": "ECU-A", "hw_number": "HW-1"},
         )
+        self.assertEqual(metadata_match["report"]["status"], "LIKELY_CANDIDATE")
+        self.assertEqual(
+            metadata_match["report"]["ecu_identity"]["status"], "INCONCLUSIVE"
+        )
+        self.assertEqual(
+            metadata_match["report"]["references"]["exact_references"], []
+        )
         candidate = metadata_match["report"]["references"]["metadata_candidates"][0]
         self.assertEqual(candidate["status"], "LIKELY")
         self.assertTrue(candidate["parser_snapshot_matches_current_content"])

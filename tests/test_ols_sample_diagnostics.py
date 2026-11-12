@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from ols_platform.database import IndexDatabase
+from ols_platform.importer import import_sources
 from ols_platform.ols_sample_diagnostics import (
     build_sample_report,
 )
@@ -185,6 +187,173 @@ class OlsSampleDiagnosticsTests(unittest.TestCase):
         self.assertEqual(snapshot.format_version, 0)
         self.assertIn("parser_failure", [issue.code for issue in snapshot.issues])
 
+    def test_partial_parser_output_is_not_promoted_after_parse_exception(self):
+        map_record = SimpleNamespace(name="partially parsed")
+
+        class FakeParser:
+            data = b""
+
+            def __init__(self, source):
+                self.source = source
+                self.version = 597
+                self.make = ""
+                self.binary_versions = []
+                self.parameters = [map_record]
+
+            def _seq_read_one_map(self):
+                return map_record
+
+            def parse(self):
+                self._seq_read_one_map()
+                raise ValueError("truncated map table")
+
+        module = SimpleNamespace(
+            OLSReader=FakeParser,
+            read_ols=lambda source: source,
+            __version__="test",
+        )
+        with patch.object(PyOlsReader, "_load_parser", return_value=module):
+            snapshot = PyOlsReader().inspect(self.source)
+
+        self.assertEqual(snapshot.maps, ())
+        self.assertEqual(snapshot.versions, ())
+        self.assertEqual([issue.code for issue in snapshot.issues], ["parser_failure"])
+        self.assertIn("truncated map table", snapshot.issues[0].message)
+
+    def test_supported_format_versions_are_reported_as_observed(self):
+        for version in (503, 597):
+            with self.subTest(version=version):
+                parser = _fake_parser_class(
+                    data=self.source.read_bytes(), version=version
+                )
+                snapshot = _reader_for_parser(parser).inspect(self.source)
+                self.assertEqual(snapshot.format_version, version)
+
+    def test_binary_slot_bounds_and_layout_conflicts_are_explicit(self):
+        self.source.write_bytes(b"0123456789abcdef")
+        versions = [
+            ParsedVersion("One", "", 0, 2, 4, 8, "", 0),
+        ]
+
+        slots, layout, issues = PyOlsReader._enumerate_binary_slots(
+            self.source, versions, self.source.stat().st_size
+        )
+
+        self.assertEqual(layout["status"], "enumerated_from_parser_binary_record")
+        self.assertEqual(
+            [(slot.blob_offset, slot.blob_size, slot.binary_status) for slot in slots],
+            [(4, 8, "present_nonempty_unverified"), (12, 8, "out_of_file_bounds")],
+        )
+        self.assertIn("binary_slot_out_of_bounds", [issue.code for issue in issues])
+
+        conflicting_layouts = [
+            ParsedVersion("One", "", 0, 2, 4, 8, "", 0),
+            ParsedVersion("Two", "", 1, 2, 13, 8, "", 0),
+        ]
+        slots, layout, issues = PyOlsReader._enumerate_binary_slots(
+            self.source, conflicting_layouts, self.source.stat().st_size
+        )
+        self.assertEqual(slots, [])
+        self.assertEqual(layout["status"], "inconsistent")
+        self.assertIn("inconsistent_binary_layout", [issue.code for issue in issues])
+
+    def test_conflicting_version_records_do_not_choose_a_name_or_break_import(self):
+        self.source.write_bytes(b"MARKdata")
+        versions = [
+            SimpleNamespace(
+                name="Original",
+                description="",
+                version_index=0,
+                version_count=1,
+                blob_offset=0,
+                blob_size=8,
+            ),
+            SimpleNamespace(
+                name="Modified",
+                description="",
+                version_index=0,
+                version_count=1,
+                blob_offset=0,
+                blob_size=8,
+            ),
+        ]
+        parser = _fake_parser_class(
+            data=self.source.read_bytes(), binary_versions=versions
+        )
+        reader = _reader_for_parser(parser)
+        snapshot = reader.inspect(self.source)
+        self.assertEqual(snapshot.versions, ())
+        self.assertEqual(snapshot.raw_counts["named_version_records"], 2)
+        self.assertEqual(snapshot.raw_counts["conflicting_version_slots"], 1)
+        self.assertEqual(
+            len(snapshot.data_structure["version_record_observations"]), 2
+        )
+        self.assertIn(
+            "conflicting_version_records",
+            [issue.code for issue in snapshot.issues],
+        )
+        database = IndexDatabase(self.root / "temporary.sqlite3")
+        try:
+            outcome = next(
+                import_sources(
+                    sources=[self.source],
+                    reader=reader,
+                    database=database,
+                    max_file_bytes=1024,
+                    progress=False,
+                )
+            )
+            self.assertEqual(outcome.status, "partial")
+            stored_versions = database.connection.execute(
+                "SELECT name FROM project_versions"
+            ).fetchall()
+            stored_slot = database.connection.execute(
+                """
+                SELECT v.name, s.name_status, s.version_id
+                FROM project_version_slots s
+                LEFT JOIN project_versions v ON v.id=s.version_id
+                """
+            ).fetchone()
+        finally:
+            database.close()
+
+        self.assertEqual(stored_versions, [])
+        self.assertEqual(tuple(stored_slot), (None, "conflicting_records", None))
+
+    def test_exact_duplicate_version_records_are_deduplicated_for_storage(self):
+        self.source.write_bytes(b"MARKdata")
+        version = SimpleNamespace(
+            name="Original",
+            description="",
+            version_index=0,
+            version_count=1,
+            blob_offset=0,
+            blob_size=8,
+        )
+        parser = _fake_parser_class(
+            data=self.source.read_bytes(), binary_versions=[version, version]
+        )
+        database = IndexDatabase(self.root / "duplicate.sqlite3")
+        try:
+            outcome = next(
+                import_sources(
+                    sources=[self.source],
+                    reader=_reader_for_parser(parser),
+                    database=database,
+                    max_file_bytes=1024,
+                    progress=False,
+                )
+            )
+            count = database.connection.execute(
+                "SELECT COUNT(*) FROM project_versions"
+            ).fetchone()[0]
+        finally:
+            database.close()
+
+        self.assertEqual(outcome.status, "partial")
+        self.assertEqual(count, 1)
+        self.assertIn("duplicate_version_records", outcome.message)
+
     def test_parser_data_size_cannot_expand_source_slot_bounds(self):
         self.source.write_bytes(b"tiny")
         version = SimpleNamespace(
@@ -261,12 +430,49 @@ class OlsSampleDiagnosticsTests(unittest.TestCase):
         self.assertIn("invalid_map_data_offset", issue_codes)
         self.assertIn("map_dimensions_exceed_source_bounds", issue_codes)
 
+    def test_unreasonable_dimensions_are_rejected_without_integer_overflow(self):
+        issues = PyOlsReader._map_structure_issues(
+            ParsedMap(
+                "huge",
+                "",
+                "MAP",
+                "UWORD",
+                10**100,
+                10**100,
+                0,
+                "",
+                1.0,
+                0.0,
+            ),
+            source_size=1024,
+        )
+
+        self.assertIn(
+            "map_dimensions_exceed_source_bounds",
+            [issue.code for issue in issues],
+        )
+
     def test_unknown_format_version_and_parser_success_do_not_claim_validation(self):
         parser = _fake_parser_class(data=self.source.read_bytes(), version=9999)
         report = build_sample_report(self.source, _reader_for_parser(parser))
 
         self.assertEqual(report["parser"]["format_version_evidence"], "NOT_TESTED")
         self.assertEqual(report["reference_validation"]["status"], "NOT_TESTED")
+
+    def test_repeated_diagnostics_are_deterministic_for_unchanged_input(self):
+        reader = _reader_for_parser(
+            _fake_parser_class(data=self.source.read_bytes(), version=597)
+        )
+
+        first = build_sample_report(self.source, reader)
+        second = build_sample_report(self.source, reader)
+
+        self.assertEqual(first, second)
+        self.assertEqual(first["source"]["size_bytes"], self.source.stat().st_size)
+        self.assertEqual(
+            first["source"]["sha256"],
+            hashlib.sha256(self.source.read_bytes()).hexdigest(),
+        )
 
     def test_partial_map_records_are_reported_against_declared_count(self):
         data = bytearray(0x110)

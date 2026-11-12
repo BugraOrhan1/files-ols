@@ -4,7 +4,7 @@ import importlib.util
 import hashlib
 import json
 import sys
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from types import ModuleType
 from typing import Protocol
@@ -251,10 +251,10 @@ class PyOlsReader:
                 )
             )
 
-        versions: list[ParsedVersion] = []
+        version_records: list[ParsedVersion] = []
         for item in project.binary_versions:
             slot_count = int(getattr(item, "version_count", 0) or 0)
-            versions.append(
+            version_records.append(
                 ParsedVersion(
                     name=str(getattr(item, "name", "") or ""),
                     description=str(getattr(item, "description", "") or ""),
@@ -268,8 +268,36 @@ class PyOlsReader:
                     is_root=bool(getattr(item, "is_root", False)),
                 )
             )
+        versions_by_slot: dict[int, ParsedVersion] = {}
+        conflicting_version_slots: set[int] = set()
+        duplicate_version_records = 0
+        for version in version_records:
+            if version.slot_index in conflicting_version_slots:
+                continue
+            previous = versions_by_slot.get(version.slot_index)
+            if previous is None:
+                versions_by_slot[version.slot_index] = version
+            elif previous == version:
+                duplicate_version_records += 1
+            else:
+                conflicting_version_slots.add(version.slot_index)
+                versions_by_slot.pop(version.slot_index)
+        versions = [
+            versions_by_slot[index] for index in sorted(versions_by_slot)
+        ]
+        if duplicate_version_records:
+            issues.append(
+                ReadIssue(
+                    "duplicate_version_records",
+                    f"Collapsed {duplicate_version_records} exact duplicate "
+                    "version record(s) for storage.",
+                )
+            )
         if not versions:
-            issues.append(ReadIssue("no_versions_found", "No binary versions were returned."))
+            if not version_records:
+                issues.append(
+                    ReadIssue("no_versions_found", "No binary versions were returned.")
+                )
 
         data = getattr(parser, "data", b"") or b""
         source_size = source.stat().st_size
@@ -283,7 +311,7 @@ class PyOlsReader:
                 )
             )
         version_slots, version_layout, slot_issues = self._enumerate_binary_slots(
-            source, versions, source_size
+            source, version_records, source_size
         )
         issues.extend(slot_issues)
 
@@ -428,7 +456,7 @@ class PyOlsReader:
             )
 
         total_declared_slots = max(
-            (version.declared_slot_count for version in versions), default=0
+            (version.declared_slot_count for version in version_records), default=0
         )
         named_slot_indexes = {version.slot_index for version in versions}
         unlabeled_slots = sum(
@@ -460,7 +488,10 @@ class PyOlsReader:
             "is_kp_file": int(bool(getattr(project, "is_kp_file", False))),
             "binary_data_big_endian": int(bool(getattr(project, "big_endian_data", False))),
             "declared_binary_slots": total_declared_slots,
-            "named_version_records": len(versions),
+            "named_version_records": len(version_records),
+            "unique_unambiguous_version_records": len(versions),
+            "duplicate_version_records": duplicate_version_records,
+            "conflicting_version_slots": len(conflicting_version_slots),
             "enumerated_binary_slots": len(version_slots),
             "unlabeled_binary_slots": unlabeled_slots,
             "available_binary_slots": sum(
@@ -492,6 +523,9 @@ class PyOlsReader:
                 "container": "KP" if getattr(project, "is_kp_file", False) else "OLS",
                 "format_version": int(project.version or 0),
                 "metadata_field_status": metadata_field_status,
+                "version_record_observations": [
+                    asdict(item) for item in version_records
+                ],
                 "map_list": map_header,
                 "binary_layout": version_layout,
             },
@@ -673,6 +707,23 @@ class PyOlsReader:
             }, issues
 
         names_by_slot: dict[int, ParsedVersion] = {}
+        conflicting_slots: set[int] = set()
+        for version in versions:
+            previous = names_by_slot.get(version.slot_index)
+            if previous is not None and previous != version:
+                conflicting_slots.add(version.slot_index)
+                names_by_slot.pop(version.slot_index)
+                issues.append(
+                    ReadIssue(
+                        "conflicting_version_records",
+                        f"Multiple version records disagree for slot "
+                        f"{version.slot_index}; no name was selected.",
+                        "error",
+                    )
+                )
+            elif version.slot_index not in conflicting_slots:
+                names_by_slot[version.slot_index] = version
+
         for version in versions:
             if version.slot_index < 0 or version.slot_index >= slot_count:
                 issues.append(
@@ -683,21 +734,8 @@ class PyOlsReader:
                         "error",
                     )
                 )
-                continue
-            previous = names_by_slot.get(version.slot_index)
-            if previous is not None and (
-                previous.name != version.name
-                or previous.description != version.description
-            ):
-                issues.append(
-                    ReadIssue(
-                        "conflicting_version_names",
-                        f"Multiple named records disagree for slot {version.slot_index}.",
-                        "error",
-                    )
-                )
-            else:
-                names_by_slot[version.slot_index] = version
+        for slot_index in conflicting_slots:
+            names_by_slot.pop(slot_index, None)
 
         slots: list[ParsedVersionSlot] = []
         with source.open("rb") as file:
@@ -712,7 +750,9 @@ class PyOlsReader:
                             version.name if version else "",
                             version.description if version else "",
                             "", "", "", 0, "out_of_file_bounds",
-                            "named_record" if version else "unresolved",
+                            "conflicting_records"
+                            if slot_index in conflicting_slots
+                            else "named_record" if version else "unresolved",
                         )
                     )
                     issues.append(
@@ -768,7 +808,11 @@ class PyOlsReader:
                             if complete
                             else "short_read"
                         ),
-                        name_status="named_record" if version else "unresolved",
+                        name_status=(
+                            "conflicting_records"
+                            if slot_index in conflicting_slots
+                            else "named_record" if version else "unresolved"
+                        ),
                     )
                 )
         trailer_offset = base_offset + slot_count * blob_size
