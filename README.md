@@ -823,11 +823,12 @@ python -m unittest discover -s tests -v
 The eight-project integration test is skipped unless `PY_OLS_PATH` points to a
 separate py-ols checkout and all eight sample files are available in the
 workspace. Unit tests still run without the external parser.
-The Phase 11D full run used the configured separate parser checkout and all
-eight samples: 91 tests passed, with 0 failures and 0 skips. Both real-parser
-integration tests ran. The unittest child process exit was `0`; the PowerShell
-tool wrapper reported `1` for the same invocation, so these results and exit
-codes are recorded separately in `PHASE11_STATUS.md`.
+The historical Phase 11D run used the configured separate parser checkout and
+all eight samples: 91 tests passed, with 0 failures and 0 skips. The later
+Phase 11G review reran the suite with 116 tests passed and no skips; Phase 16
+records the latest integrated run. The Phase 11D wrapper-exit discrepancy is
+preserved in `PHASE11_STATUS.md` as a historical result, not the current test
+status.
 
 ### Read-only OLS parser diagnostics
 
@@ -884,6 +885,20 @@ Phase 13 fixed search pagination applying before evidence ranking: default ranki
 ### Phase 14 comparison and workbench
 
 Phase 14 validated bounded streaming comparisons, explicit byte-difference reporting, reference gating, and inconclusive semantic classifications. The focused comparison, workbench, binary-reference, and package suites passed 39 tests using temporary data. No ECU compatibility or independent WinOLS correctness is claimed; see [PHASE14_STATUS.md](./PHASE14_STATUS.md).
+
+### Phase 15 dashboard accessibility
+
+Comparison-history reports are native buttons and can be opened by mouse,
+Enter, or Space. Keyboard focus is visible; the targeted regression and
+real-browser interaction results are in [PHASE15_STATUS.md](./PHASE15_STATUS.md).
+
+### Phase 16 integrated release readiness
+
+The integrated test suite and local static checks are recorded in
+[PHASE16_STATUS.md](./PHASE16_STATUS.md). The verdict is
+`GO_WITH_LIMITATIONS` for the tested local application scope only. Independent
+WinOLS validation and ECU compatibility remain `NOT_TESTED`; this is not a
+claim that the parser or ECU interpretation is independently validated.
 
 ## Phase 5 limits
 

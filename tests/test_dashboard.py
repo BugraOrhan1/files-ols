@@ -14,6 +14,22 @@ from ols_platform.database import IndexDatabase
 
 
 class DashboardTests(unittest.TestCase):
+    def test_comparison_history_cards_are_native_keyboard_buttons(self):
+        dashboard_script = (
+            Path(__file__).resolve().parents[1]
+            / "ols_platform"
+            / "dashboard.js"
+        ).read_text(encoding="utf-8")
+        comparison_card = dashboard_script.split(
+            'if (!history.comparisons.length)', maxsplit=1
+        )[1].split("\n    }\n  } catch (error)", maxsplit=1)[0]
+
+        self.assertIn('node("button", "card card-button")', comparison_card)
+        self.assertIn('card.type = "button"', comparison_card)
+        self.assertIn('card.addEventListener("click"', comparison_card)
+        self.assertNotIn("card.tabIndex", comparison_card)
+        self.assertNotIn('setAttribute("role", "button")', comparison_card)
+
     def test_ori_upload_keeps_index_read_only_and_workbench_storage_separate(self):
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "index.sqlite3"

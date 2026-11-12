@@ -906,7 +906,8 @@ async function loadWorkbenchHistory() {
       comparisonTarget.replaceChildren(node("p", "muted", "Nog geen binaire vergelijkingen."));
     } else {
       comparisonTarget.replaceChildren(...history.comparisons.map((report) => {
-        const card = node("article", "card");
+        const card = node("button", "card card-button");
+        card.type = "button";
         card.append(node(
           "strong", "", `${report.analysis_a.filename} ↔ ${report.analysis_b.filename}`
         ));
@@ -916,9 +917,6 @@ async function loadWorkbenchHistory() {
           `${report.changed_ranges.length} ranges · ${report.semantic_status}`
         ));
         card.addEventListener("click", () => showWorkbenchComparison(report));
-        card.tabIndex = 0;
-        card.setAttribute("role", "button");
-        card.setAttribute("aria-label", "Vergelijkingsrapport openen");
         return card;
       }));
     }
