@@ -132,6 +132,26 @@ class BinaryComparisonTests(unittest.TestCase):
         self.assertTrue(read_sizes)
         self.assertTrue(all(0 < size <= chunk_size for size in read_sizes))
 
+    def test_invalid_limits_and_changed_range_cap_fail_explicitly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = root / "original.bin"
+            tuned = root / "tuned.bin"
+            original.write_bytes(b"aXaXa")
+            tuned.write_bytes(b"aaaaa")
+
+            with self.assertRaisesRegex(ValueError, "must be positive"):
+                compare_binary_files(original, tuned, chunk_size=0)
+            with self.assertRaisesRegex(ValueError, "must be positive"):
+                compare_binary_files(original, tuned, max_ranges=0)
+            with self.assertRaisesRegex(RuntimeError, "changed-range limit"):
+                compare_binary_files(
+                    original,
+                    tuned,
+                    chunk_size=2,
+                    max_ranges=1,
+                )
+
     def test_comparison_is_persisted_idempotently(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -881,6 +881,10 @@ Phase 12 reran the parser-structure regressions and the real-parser integration 
 
 Phase 13 fixed search pagination applying before evidence ranking: default ranking is now evaluated across the filtered SQL result set before `LIMIT/OFFSET`, with a regression for multiple `any`-mode identifier matches. The focused temporary-database suite passed 35 tests. A 250-project synthetic search measured a 0.000906-second median locally; this is not a full-corpus benchmark. See [PHASE13_STATUS.md](./PHASE13_STATUS.md).
 
+### Phase 14 comparison and workbench
+
+Phase 14 validated bounded streaming comparisons, explicit byte-difference reporting, reference gating, and inconclusive semantic classifications. The focused comparison, workbench, binary-reference, and package suites passed 39 tests using temporary data. No ECU compatibility or independent WinOLS correctness is claimed; see [PHASE14_STATUS.md](./PHASE14_STATUS.md).
+
 ## Phase 5 limits
 
 The inventory command is a dry-run and is not the 6-TB indexer. It has not been
