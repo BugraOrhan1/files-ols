@@ -257,6 +257,158 @@ class OlsSampleDiagnosticsTests(unittest.TestCase):
         self.assertEqual(layout["status"], "inconsistent")
         self.assertIn("inconsistent_binary_layout", [issue.code for issue in issues])
 
+    def test_invalid_version_record_fields_do_not_label_enumerated_slots(self):
+        self.source.write_bytes(b"AAAABBBBCCCCDDDD")
+        versions = [
+            SimpleNamespace(
+                name="First",
+                description="",
+                version_index=0,
+                version_count=2,
+                blob_offset=0,
+                blob_size=8,
+            ),
+            SimpleNamespace(
+                name="InvalidSecond",
+                description="",
+                version_index=1,
+                version_count=0,
+                blob_offset=8,
+                blob_size=0,
+            ),
+        ]
+
+        snapshot = _reader_for_parser(
+            _fake_parser_class(
+                data=self.source.read_bytes(), binary_versions=versions
+            )
+        ).inspect(self.source)
+
+        self.assertEqual(snapshot.version_slots, ())
+        self.assertEqual(
+            snapshot.data_structure["binary_layout"]["status"], "invalid_records"
+        )
+        self.assertEqual(
+            snapshot.data_structure["binary_layout"]["invalid_record_count"], 1
+        )
+        self.assertIn(
+            "invalid_binary_version_record",
+            [issue.code for issue in snapshot.issues],
+        )
+        database = IndexDatabase(self.root / "invalid-record.sqlite3")
+        try:
+            outcome = next(
+                import_sources(
+                    sources=[self.source],
+                    reader=_reader_for_parser(
+                        _fake_parser_class(
+                            data=self.source.read_bytes(), binary_versions=versions
+                        )
+                    ),
+                    database=database,
+                    max_file_bytes=1024,
+                    progress=False,
+                )
+            )
+            slot_count = database.connection.execute(
+                "SELECT COUNT(*) FROM project_version_slots"
+            ).fetchone()[0]
+        finally:
+            database.close()
+        self.assertEqual(outcome.status, "partial")
+        self.assertEqual(slot_count, 0)
+
+    def test_invalid_slot_geometry_variants_are_not_used_to_infer_layout(self):
+        self.source.write_bytes(b"AAAABBBBCCCCDDDD")
+        invalid_records = (
+            ParsedVersion("Zero count", "", 1, 0, 8, 8, "", 0),
+            ParsedVersion("Negative count", "", 1, -1, 8, 8, "", 0),
+            ParsedVersion("Zero size", "", 1, 2, 8, 0, "", 0),
+            ParsedVersion("Negative size", "", 1, 2, 8, -8, "", 0),
+            ParsedVersion("Negative offset", "", 1, 2, -8, 8, "", 0),
+            ParsedVersion("Negative index", "", -1, 2, 8, 8, "", 0),
+        )
+
+        for invalid in invalid_records:
+            with self.subTest(version=invalid.name):
+                versions = [
+                    ParsedVersion("First", "", 0, 2, 0, 8, "", 0),
+                    invalid,
+                ]
+                slots, layout, issues = PyOlsReader._enumerate_binary_slots(
+                    self.source, versions, self.source.stat().st_size
+                )
+                self.assertEqual(slots, [])
+                self.assertEqual(layout["status"], "invalid_records")
+                self.assertTrue(
+                    any(
+                        issue.code == "invalid_binary_version_record"
+                        for issue in issues
+                    )
+                )
+
+    def test_out_of_range_slot_is_reported_without_claiming_its_name(self):
+        self.source.write_bytes(b"AAAABBBBCCCCDDDD")
+        versions = [ParsedVersion("Extra", "", 2, 2, 16, 8, "", 0)]
+
+        slots, layout, issues = PyOlsReader._enumerate_binary_slots(
+            self.source, versions, self.source.stat().st_size
+        )
+
+        self.assertEqual(layout["status"], "enumerated_from_parser_binary_record")
+        self.assertEqual(
+            [(slot.slot_index, slot.name, slot.name_status) for slot in slots],
+            [(0, "", "unresolved"), (1, "", "unresolved")],
+        )
+        self.assertIn(
+            "version_slot_index_out_of_bounds",
+            [issue.code for issue in issues],
+        )
+
+    def test_oversized_slot_count_is_rejected_without_enumerating(self):
+        self.source.write_bytes(b"AAAABBBB")
+        versions = [ParsedVersion("Large", "", 0, 21, 0, 8, "", 0)]
+
+        slots, layout, issues = PyOlsReader._enumerate_binary_slots(
+            self.source, versions, self.source.stat().st_size
+        )
+
+        self.assertEqual(slots, [])
+        self.assertEqual(layout["status"], "out_of_supported_bounds")
+        self.assertIn("unsupported_binary_layout", [issue.code for issue in issues])
+
+    def test_multiple_conflicts_never_restore_a_slot_label(self):
+        self.source.write_bytes(b"MARKdata")
+        records = [
+            SimpleNamespace(
+                name=name,
+                description="",
+                version_index=0,
+                version_count=1,
+                blob_offset=0,
+                blob_size=8,
+            )
+            for name in ("First", "Second", "Second", "First")
+        ]
+        snapshot = _reader_for_parser(
+            _fake_parser_class(
+                data=self.source.read_bytes(), binary_versions=records
+            )
+        ).inspect(self.source)
+
+        self.assertEqual(snapshot.versions, ())
+        self.assertEqual(snapshot.raw_counts["conflicting_version_slots"], 1)
+        self.assertEqual(snapshot.version_slots[0].name, "")
+        self.assertEqual(snapshot.version_slots[0].name_status, "conflicting_records")
+        self.assertEqual(
+            [
+                issue.code
+                for issue in snapshot.issues
+                if issue.code == "conflicting_version_records"
+            ],
+            ["conflicting_version_records"],
+        )
+
     def test_conflicting_version_records_do_not_choose_a_name_or_break_import(self):
         self.source.write_bytes(b"MARKdata")
         versions = [

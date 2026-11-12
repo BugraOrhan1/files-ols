@@ -669,6 +669,50 @@ class PyOlsReader:
         if not versions:
             return [], {"status": "not_enumerable_without_binary_record"}, issues
 
+        names_by_slot: dict[int, ParsedVersion] = {}
+        conflicting_slots: set[int] = set()
+        for version in versions:
+            previous = names_by_slot.get(version.slot_index)
+            if previous is not None and previous != version:
+                conflicting_slots.add(version.slot_index)
+                names_by_slot.pop(version.slot_index)
+                issues.append(
+                    ReadIssue(
+                        "conflicting_version_records",
+                        f"Multiple version records disagree for slot "
+                        f"{version.slot_index}; no name was selected.",
+                        "error",
+                    )
+                )
+            elif version.slot_index not in conflicting_slots:
+                names_by_slot[version.slot_index] = version
+
+        invalid_records = [
+            version
+            for version in versions
+            if version.slot_index < 0
+            or version.declared_slot_count <= 0
+            or version.blob_offset < 0
+            or version.blob_size <= 4
+        ]
+        if invalid_records:
+            issues.append(
+                ReadIssue(
+                    "invalid_binary_version_record",
+                    f"{len(invalid_records)} version record(s) have a negative slot "
+                    "index or offset, a non-positive declared slot count, or a "
+                    "blob size of four bytes or less; slot enumeration was skipped.",
+                    "error",
+                )
+            )
+            return [], {
+                "status": "invalid_records",
+                "invalid_record_count": len(invalid_records),
+            }, issues
+
+        for slot_index in conflicting_slots:
+            names_by_slot.pop(slot_index, None)
+
         layouts = {
             (
                 version.blob_offset - version.slot_index * version.blob_size,
@@ -676,7 +720,6 @@ class PyOlsReader:
                 version.declared_slot_count,
             )
             for version in versions
-            if version.blob_size > 0 and version.declared_slot_count > 0
         }
         if len(layouts) != 1:
             issues.append(
@@ -706,24 +749,6 @@ class PyOlsReader:
                 "slot_count": slot_count,
             }, issues
 
-        names_by_slot: dict[int, ParsedVersion] = {}
-        conflicting_slots: set[int] = set()
-        for version in versions:
-            previous = names_by_slot.get(version.slot_index)
-            if previous is not None and previous != version:
-                conflicting_slots.add(version.slot_index)
-                names_by_slot.pop(version.slot_index)
-                issues.append(
-                    ReadIssue(
-                        "conflicting_version_records",
-                        f"Multiple version records disagree for slot "
-                        f"{version.slot_index}; no name was selected.",
-                        "error",
-                    )
-                )
-            elif version.slot_index not in conflicting_slots:
-                names_by_slot[version.slot_index] = version
-
         for version in versions:
             if version.slot_index < 0 or version.slot_index >= slot_count:
                 issues.append(
@@ -734,8 +759,6 @@ class PyOlsReader:
                         "error",
                     )
                 )
-        for slot_index in conflicting_slots:
-            names_by_slot.pop(slot_index, None)
 
         slots: list[ParsedVersionSlot] = []
         with source.open("rb") as file:

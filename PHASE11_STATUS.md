@@ -397,3 +397,7 @@ version/map relationships are independently confirmed.
 ## Phase 11E independent parser audit
 
 Read-only comparisons of `py-ols` and `jinglinsen/ols-parser` covered all eight samples; parser outputs remain observations, not ground truth. The audit and machine-readable report are in [PHASE11E_STATUS.md](./PHASE11E_STATUS.md) and [reports/phase11e_parser_audit.json](./reports/phase11e_parser_audit.json). The full suite ran 105 tests (103 passed, 0 failed, 2 environment-dependent skips); the two real-parser tests passed separately. All sample hashes remained unchanged. Independent WinOLS validation is `NOT_TESTED`; Phase 11 remains in progress.
+
+## Phase 11F/11G structural review
+
+Phase 11F's tested scope and limitations are recorded in [PHASE11F_STATUS.md](./PHASE11F_STATUS.md). The Phase 11G review cross-checked the Phase 11E report, reviewed reader/evidence/comparison behavior, and fixed an invalid version-record geometry case that could mislabel a slot. The review report and verification results are in [PHASE11G_REVIEW.md](./PHASE11G_REVIEW.md). Independent WinOLS validation and ECU compatibility remain `NOT_TESTED`; Phase 11 remains in progress.
