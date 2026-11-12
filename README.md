@@ -959,3 +959,7 @@ exports.
 The configured push, pull-request and manual CI checks are described in
 [PHASE20_STATUS.md](./PHASE20_STATUS.md). Hosted acceptance is not claimed
 until a GitHub Actions run for the branch is available and reviewed.
+
+The bounded security and dashboard interaction review is recorded in
+[PHASE21_STATUS.md](./PHASE21_STATUS.md); it is not a complete application
+security or accessibility certification.
