@@ -27,8 +27,13 @@ Phase 11 remains in progress. **Independent WinOLS validation:
   `phase11e-audit` worktree had seven unrelated modifications in
   `PHASE11_STATUS.md`, `README.md`, `ols_platform/cli.py`,
   `ols_platform/database.py`, `ols_platform/reference_package.py`,
-  `tests/test_compare.py`, and `tests/test_reference_package.py`. They
-  remain unchanged and unstaged.
+  `tests/test_compare.py`, and `tests/test_reference_package.py`. During this
+  task its reflog advanced to `a020a64595a197c8b4e83d01e26ac1fd893fa3f1`
+  (`phase ik weet niet`), which committed exactly those seven paths. The
+  actor and reason for that commit are not established here; this task did
+  not create it, edit those files, or import it into the isolated feature
+  branch. The original worktree is now clean on `phase11e-audit` at that
+  commit.
 - No change was made to `main`; no PR was created or merged.
 - The feature branch was based on the fetched remote history; remote
   `origin/main` was `4ae04f1d2c4b54f866ddfd46486f878c8a299a3b`, an ancestor of
@@ -146,7 +151,8 @@ the after-test comparison found zero mismatches.
 - [x] Python compilation, JavaScript syntax, and Git whitespace checks pass.
 - [x] All 8 OLS and 6 BIN fixture sizes and SHA-256 values match the captured
   pre-test baseline.
-- [x] Original dirty worktree and unrelated modifications remain preserved.
+- [x] Original worktree was not edited by this task; its newly observed
+  commit remains separate from the feature branch.
 - [x] Hashworker PID `45712` was observed read-only and not controlled.
 - [x] No changes to `main`, automatic tuning, ECU writing, flashing,
   checksum-correction, live database, live queue, or full-corpus run.
