@@ -229,6 +229,45 @@ class OlsSampleDiagnosticsTests(unittest.TestCase):
                 snapshot = _reader_for_parser(parser).inspect(self.source)
                 self.assertEqual(snapshot.format_version, version)
 
+    def test_float_axis_offset_is_not_used_as_an_axis_address(self):
+        axis = SimpleNamespace(
+            points=2,
+            address=0x200,
+            data_type="UWORD",
+            unit="",
+            factor=1.0,
+            offset=1.25,
+            id="",
+            description="",
+            data_source=0,
+        )
+        map_record = SimpleNamespace(
+            name="Fuel",
+            description="",
+            param_type="MAP",
+            data_type="UWORD",
+            cols=2,
+            rows=1,
+            data_offset=0,
+            unit="",
+            factor=1.0,
+            offset=0.0,
+            folder_id=0,
+            type_code=0,
+            x_axis=axis,
+            y_axis=None,
+        )
+        parser = _fake_parser_class(
+            data=self.source.read_bytes(),
+            parameters=[map_record],
+        )
+
+        snapshot = _reader_for_parser(parser).inspect(self.source)
+
+        parsed_axis = snapshot.maps[0].axes[0]
+        self.assertEqual(parsed_axis.address, 0x200)
+        self.assertEqual(parsed_axis.offset, 1.25)
+
     def test_binary_slot_bounds_and_layout_conflicts_are_explicit(self):
         self.source.write_bytes(b"0123456789abcdef")
         versions = [
