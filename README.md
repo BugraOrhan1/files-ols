@@ -973,3 +973,6 @@ The targeted dashboard UX review is in [PHASE24_STATUS.md](./PHASE24_STATUS.md).
 Dependency and licensing limits, including the missing repository license
 decision and external GPL-3.0 parser, are recorded in
 [PHASE25_STATUS.md](./PHASE25_STATUS.md).
+
+The bounded synthetic comparison experiment and its performance limits are
+recorded in [PHASE23_STATUS.md](./PHASE23_STATUS.md).
