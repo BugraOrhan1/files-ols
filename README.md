@@ -957,8 +957,10 @@ parser output remains unverified until compared with independent WinOLS
 exports.
 
 The configured push, pull-request and manual CI checks are described in
-[PHASE20_STATUS.md](./PHASE20_STATUS.md). Hosted acceptance is not claimed
-until a GitHub Actions run for the branch is available and reviewed.
+[PHASE20_STATUS.md](./PHASE20_STATUS.md). GitHub Actions run
+[43147415557](https://github.com/BugraOrhan1/files-ols/actions/runs/43147415557)
+passed on the isolated feature branch after a POSIX path-relocation defect was
+fixed. CI success does not establish parser correctness or ECU compatibility.
 
 The bounded security and dashboard interaction review is recorded in
 [PHASE21_STATUS.md](./PHASE21_STATUS.md); it is not a complete application
@@ -976,3 +978,8 @@ decision and external GPL-3.0 parser, are recorded in
 
 The bounded synthetic comparison experiment and its performance limits are
 recorded in [PHASE23_STATUS.md](./PHASE23_STATUS.md).
+
+The integrated Phase 26 release-readiness checklist, final test evidence,
+worker observations, and `NO_GO` distribution decision are recorded in
+[PHASE26_STATUS.md](./PHASE26_STATUS.md). Independent WinOLS validation and
+ECU compatibility remain `NOT_TESTED`.
