@@ -2906,9 +2906,16 @@ class IndexDatabase:
                         f"""
                         UPDATE {table} SET path=? || substr(path,length(?)+1)
                         WHERE source_id=? AND
-                            (path=? OR substr(path,1,length(?)+1)=? || '\\')
+                            (
+                                path=? OR
+                                substr(path,1,length(?)+1)=? || '\\' OR
+                                substr(path,1,length(?)+1)=? || '/'
+                            )
                         """,
-                        (new_root,old_root,source_id,old_root,old_root,old_root),
+                        (
+                            new_root,old_root,source_id,old_root,
+                            old_root,old_root,old_root,old_root,
+                        ),
                     )
                     result[table] = cursor.rowcount
                 cursor = self.connection.execute(
@@ -2930,9 +2937,14 @@ class IndexDatabase:
                 cursor = self.connection.execute(
                     """
                     UPDATE source_files SET path=? || substr(path,length(?)+1)
-                    WHERE path=? OR substr(path,1,length(?)+1)=? || '\\'
+                    WHERE path=? OR
+                        substr(path,1,length(?)+1)=? || '\\' OR
+                        substr(path,1,length(?)+1)=? || '/'
                     """,
-                    (new_root,old_root,old_root,old_root,old_root),
+                    (
+                        new_root,old_root,old_root,old_root,old_root,
+                        old_root,old_root,
+                    ),
                 )
                 result["source_files"] = cursor.rowcount
                 self.connection.execute(
