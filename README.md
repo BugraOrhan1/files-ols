@@ -197,6 +197,19 @@ python -m ols_platform.cli reference-map-compare data\reference-packets\8\manife
 python -m ols_platform.cli reference-package-report 8 --output data\reference-reports\project-8-package.json
 ```
 
+For an offline audit that reuses the same inspection, version, metadata, and
+map gates without appending a run or otherwise writing to the index, use:
+
+```powershell
+python -m ols_platform.cli --database data\ols-index.sqlite3 reference-package-audit data\reference-packets\8\manifest.json --output data\reference-reports\project-8-offline-audit.json
+```
+
+The audit opens SQLite in read-only/query-only mode. Its JSON keeps each
+canonical gate separate and reports an overall `PASS` only when every gate
+passes and the packet declares complete coverage. Missing evidence remains
+`NOT_TESTED` or `INCONCLUSIVE`; the command does not create exports or import
+reference artifacts.
+
 Version comparisons stream the export against each source slot, post-marker
 payload, and contiguous boundary range. They report full-length equality,
 exact partial prefixes, size differences, and changed byte ranges separately.
@@ -217,8 +230,9 @@ metadata JSON must use `{"metadata": {"field": "value"}}`. Map rows must carry a
 join key. Addresses require matching declared representations. Incomplete
 metadata, axes, map inventory, project/version relations, or export provenance
 cannot produce an overall `PASS`. Map metadata does not validate numeric map
-values in a binary. All package inspection, matching, and comparison runs are
-append-only. The loopback-only Importdiagnose page includes packet inspection,
+values in a binary. The standalone package inspection, matching, and
+comparison commands are append-only; `reference-package-audit` is read-only.
+The loopback-only Importdiagnose page includes packet inspection,
 parser data, latest package runs, and missing references.
 Until a real packet is supplied, project 8 remains `NOT_TESTED`; synthetic
 unit fixtures are not WinOLS validation evidence.
@@ -864,6 +878,34 @@ independent artifact is absent and `INCONCLUSIVE` when its provenance or
 relationship is incomplete. No independent WinOLS exports were available for
 the eight samples during Phase 11D, so their structural validation remains
 `NOT_TESTED`.
+
+### Phase 11E offline evidence audit
+
+The read-only offline audit reuses the canonical reference-package gates and
+does not write to the SQLite index. The latest bounded audit covered the eight
+known OLS samples, ten existing binary artifacts, and four tracked `.DTF`
+files; it did not scan the larger corpus. All eight current OLS hashes matched
+the index, and all ten legacy artifact hashes and sizes matched their existing
+manifests. The Golf, Peugeot, and BMW package audits remain `INCONCLUSIVE`;
+the Audi A8 template remains `NOT_TESTED`. The binary checks identify only
+partial byte-range candidates and observed byte differences, not confirmed
+project/version links or Original/Tuned pairs.
+
+The four Audi A8 `.DTF` files are each 4 MiB and share a 32-byte prefix. Their
+format and export meaning are not established, so they are not parsed or
+compared as raw BIN files. A separate public-domain/0BSD C parser was tested
+read-only on the eight samples: all processes exited successfully, but it
+returned zero maps for every sample and synthetic version labels. It is not
+integrated; the parser observations do not constitute independent WinOLS
+validation. No active WinOLS license or new export was used. Full Phase 11
+remains in progress and independent content validation remains `NOT_TESTED`.
+
+The separate Phase 11E parser comparison records read-only observations from
+`py-ols` and `jinglinsen/ols-parser` on all eight samples. Neither parser is
+treated as ground truth, and their disagreements do not validate maps,
+versions, or extracted bytes. See the [Phase 11E audit and test results](PHASE11E_STATUS.md)
+and [machine-readable parser report](reports/phase11e_parser_audit.json).
+Independent WinOLS validation remains `NOT_TESTED`.
 
 ## Phase 5 limits
 

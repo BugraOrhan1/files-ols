@@ -271,9 +271,19 @@ class PyOlsReader:
         if not versions:
             issues.append(ReadIssue("no_versions_found", "No binary versions were returned."))
 
-        data = getattr(parser, "data", b"")
+        data = getattr(parser, "data", b"") or b""
+        source_size = source.stat().st_size
+        if hasattr(parser, "data") and len(data) != source_size:
+            issues.append(
+                ReadIssue(
+                    "parser_source_size_mismatch",
+                    f"Parser data has {len(data)} bytes but the source file has "
+                    f"{source_size} bytes.",
+                    "error",
+                )
+            )
         version_slots, version_layout, slot_issues = self._enumerate_binary_slots(
-            source, versions, len(data)
+            source, versions, source_size
         )
         issues.extend(slot_issues)
 
@@ -374,6 +384,7 @@ class PyOlsReader:
             )
 
         for map_item in maps:
+            issues.extend(self._map_structure_issues(map_item, source_size))
             for axis in map_item.axes:
                 if not axis.unit or not axis.identifier:
                     issues.append(
@@ -555,6 +566,70 @@ class PyOlsReader:
         return metadata
 
     @staticmethod
+    def _map_structure_issues(
+        item: ParsedMap, source_size: int
+    ) -> list[ReadIssue]:
+        issues: list[ReadIssue] = []
+        if item.columns < 0 or item.rows < 0:
+            issues.append(
+                ReadIssue(
+                    "invalid_map_dimensions",
+                    f"Map at 0x{item.data_offset:x} reports negative dimensions "
+                    f"{item.columns}x{item.rows}.",
+                    "error",
+                )
+            )
+        elif item.columns == 0 or item.rows == 0:
+            issues.append(
+                ReadIssue(
+                    "unresolved_map_dimensions",
+                    f"Map at 0x{item.data_offset:x} reports zero dimensions "
+                    f"{item.columns}x{item.rows}; values cannot be decoded from "
+                    "this shape.",
+                )
+            )
+        elif item.columns * item.rows > source_size:
+            issues.append(
+                ReadIssue(
+                    "map_dimensions_exceed_source_bounds",
+                    f"Map at 0x{item.data_offset:x} reports "
+                    f"{item.columns * item.rows} cells, more than the "
+                    f"{source_size}-byte source can contain even at one byte "
+                    "per cell.",
+                    "error",
+                )
+            )
+        if item.data_offset < 0:
+            issues.append(
+                ReadIssue(
+                    "invalid_map_data_offset",
+                    f"Map reports a negative data offset {item.data_offset}.",
+                    "error",
+                )
+            )
+        for axis in item.axes:
+            if axis.points < 0 or axis.address < 0:
+                issues.append(
+                    ReadIssue(
+                        "invalid_axis_bounds",
+                        f"Map at 0x{item.data_offset:x} has a negative "
+                        f"{axis.role}-axis point count or address.",
+                        "error",
+                    )
+                )
+            elif axis.points > source_size:
+                issues.append(
+                    ReadIssue(
+                        "axis_points_exceed_source_bounds",
+                        f"Map at 0x{item.data_offset:x} has {axis.points} "
+                        f"{axis.role}-axis points, more than the "
+                        f"{source_size}-byte source can contain.",
+                        "error",
+                    )
+                )
+        return issues
+
+    @staticmethod
     def _enumerate_binary_slots(source: Path, versions: list[ParsedVersion], file_size: int):
         issues: list[ReadIssue] = []
         if not versions:
@@ -599,6 +674,16 @@ class PyOlsReader:
 
         names_by_slot: dict[int, ParsedVersion] = {}
         for version in versions:
+            if version.slot_index < 0 or version.slot_index >= slot_count:
+                issues.append(
+                    ReadIssue(
+                        "version_slot_index_out_of_bounds",
+                        f"Named version record points to slot {version.slot_index}, "
+                        f"outside the declared range 0..{slot_count - 1}.",
+                        "error",
+                    )
+                )
+                continue
             previous = names_by_slot.get(version.slot_index)
             if previous is not None and (
                 previous.name != version.name
@@ -656,6 +741,15 @@ class PyOlsReader:
                     payload_nonzero = payload_nonzero or any(chunk)
                     remaining -= len(chunk)
                 complete = remaining == 0
+                if not complete:
+                    issues.append(
+                        ReadIssue(
+                            "binary_slot_short_read",
+                            f"Slot {slot_index} ended before its declared "
+                            f"{blob_size}-byte range was fully read.",
+                            "error",
+                        )
+                    )
                 slots.append(
                     ParsedVersionSlot(
                         slot_index=slot_index,
@@ -666,7 +760,7 @@ class PyOlsReader:
                         marker_hex=marker.hex(),
                         raw_sha256=raw_digest.hexdigest(),
                         payload_sha256=payload_digest.hexdigest(),
-                        payload_size=max(0, blob_size - len(marker)),
+                        payload_size=max(0, blob_size - len(marker) - remaining),
                         binary_status=(
                             "present_nonempty_unverified"
                             if complete and payload_nonzero

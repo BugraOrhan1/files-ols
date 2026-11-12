@@ -13,16 +13,80 @@ from .reader import ProjectSnapshot, ReadIssue
 SCHEMA_VERSION = 16
 
 
+def _is_process_alive(process_id: int) -> bool:
+    if process_id <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        # On Windows, os.kill(pid, 0) can terminate the target process.
+        SYNCHRONIZE = 0x00100000
+        ERROR_ACCESS_DENIED = 5
+        ERROR_INVALID_PARAMETER = 87
+        WAIT_OBJECT_0 = 0
+        WAIT_TIMEOUT = 258
+        WAIT_FAILED = 0xFFFFFFFF
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        open_process = kernel32.OpenProcess
+        open_process.argtypes = (
+            wintypes.DWORD, wintypes.BOOL, wintypes.DWORD,
+        )
+        open_process.restype = wintypes.HANDLE
+        wait_for_single_object = kernel32.WaitForSingleObject
+        wait_for_single_object.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        wait_for_single_object.restype = wintypes.DWORD
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = (wintypes.HANDLE,)
+        close_handle.restype = wintypes.BOOL
+
+        handle = open_process(SYNCHRONIZE, False, process_id)
+        if not handle:
+            error = ctypes.get_last_error()
+            if error == ERROR_ACCESS_DENIED:
+                return True
+            if error == ERROR_INVALID_PARAMETER:
+                return False
+            raise ctypes.WinError(error)
+        try:
+            result = wait_for_single_object(handle, 0)
+            if result == WAIT_OBJECT_0:
+                return False
+            if result == WAIT_TIMEOUT:
+                return True
+            if result == WAIT_FAILED:
+                raise ctypes.WinError(ctypes.get_last_error())
+            raise OSError(f"Unexpected process wait result: {result}")
+        finally:
+            if not close_handle(handle):
+                raise ctypes.WinError(ctypes.get_last_error())
+
+    try:
+        os.kill(process_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 class IndexDatabase:
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(path, timeout=30)
+    def __init__(self, path: Path, *, read_only: bool = False) -> None:
+        self.path = Path(path)
+        if read_only:
+            uri = f"{self.path.resolve().as_uri()}?mode=ro"
+            self.connection = sqlite3.connect(uri, uri=True, timeout=30)
+            self.connection.execute("PRAGMA query_only = ON")
+        else:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.connection = sqlite3.connect(self.path, timeout=30)
         self.connection.row_factory = sqlite3.Row
-        self.connection.execute("PRAGMA foreign_keys = ON")
-        self.connection.execute("PRAGMA journal_mode = WAL")
         self.connection.execute("PRAGMA busy_timeout = 30000")
-        self._initialize()
+        if not read_only:
+            self.connection.execute("PRAGMA foreign_keys = ON")
+            self.connection.execute("PRAGMA journal_mode = WAL")
+            self._initialize()
 
     def close(self) -> None:
         self.connection.close()
@@ -1920,21 +1984,12 @@ class IndexDatabase:
             ).fetchone()
             if current and current["status"] in {"running", "paused"}:
                 previous_pid = current["process_id"]
-                alive = False
                 if previous_pid:
-                    try:
-                        os.kill(int(previous_pid), 0)
-                        alive = True
-                    except ProcessLookupError:
-                        alive = False
-                    except PermissionError:
-                        alive = True
-                    except OSError:
-                        alive = False
-                if alive:
-                    raise RuntimeError(
-                        f"Hash worker process {previous_pid} is already active."
-                    )
+                    previous_pid = int(previous_pid)
+                    if _is_process_alive(previous_pid):
+                        raise RuntimeError(
+                            f"Hash worker process {previous_pid} is already active."
+                        )
                 active_run_id = current["active_run_id"]
                 if active_run_id is not None:
                     self.connection.execute(

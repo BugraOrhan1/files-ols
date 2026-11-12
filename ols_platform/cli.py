@@ -33,6 +33,7 @@ from .binary_reference_analysis import (
 )
 from .reference_package import (
     build_package_report,
+    audit_reference_package,
     compare_map_metadata,
     compare_project_metadata,
     import_reference_package,
@@ -47,6 +48,19 @@ from .winols_reference import (
     validate_project,
     write_templates,
 )
+
+
+def _write_report(
+    path: Path,
+    contents: str,
+    *,
+    protected_paths: list[Path],
+) -> None:
+    output_path = path.resolve()
+    if output_path in {item.resolve() for item in protected_paths}:
+        raise ValueError(f"Refusing to overwrite protected input: {output_path}")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(contents + "\n", encoding="utf-8")
 
 
 def _default_database() -> Path:
@@ -293,6 +307,14 @@ def build_parser() -> argparse.ArgumentParser:
     package_inspect.add_argument("--output", type=Path)
     package_inspect.set_defaults(action="reference-package-inspect")
 
+    package_audit = commands.add_parser(
+        "reference-package-audit",
+        help="Run canonical reference checks without writing to the SQLite index.",
+    )
+    package_audit.add_argument("manifest", type=Path)
+    package_audit.add_argument("--output", type=Path)
+    package_audit.set_defaults(action="reference-package-audit")
+
     package_import = commands.add_parser(
         "reference-package-import",
         help="Import a complete, hash-verified reference packet.",
@@ -343,6 +365,12 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("tuned", type=Path)
     compare.add_argument("--chunk-bytes", type=int, default=1024 * 1024)
     compare.add_argument("--max-ranges", type=int, default=100_000)
+    compare.add_argument(
+        "--no-store",
+        action="store_true",
+        help="Do not create or write to the SQLite index.",
+    )
+    compare.add_argument("--output", type=Path)
     compare.set_defaults(action="compare")
 
     sources = commands.add_parser(
@@ -559,29 +587,85 @@ def main(argv: list[str] | None = None) -> int:
         serve(args.database, args.port)
         return 0
     if args.action == "compare":
-        database = IndexDatabase(args.database)
-        try:
-            result = compare_binary_files(
-                args.original,
-                args.tuned,
-                chunk_size=args.chunk_bytes,
-                max_ranges=args.max_ranges,
-            )
-            store_comparison(args.database, result)
-            print(json.dumps({
-                "original": result.original_path,
-                "tuned": result.tuned_path,
-                "original_sha256": result.original_sha256,
-                "tuned_sha256": result.tuned_sha256,
-                "original_size": result.original_size,
-                "tuned_size": result.tuned_size,
-                "differing_bytes": result.differing_bytes,
-                "exact_match": result.exact_match,
-                "changed_ranges": [
-                    {"start": item.start, "end_exclusive": item.end_exclusive}
-                    for item in result.changed_ranges
+        result = compare_binary_files(
+            args.original,
+            args.tuned,
+            chunk_size=args.chunk_bytes,
+            max_ranges=args.max_ranges,
+        )
+        if not args.no_store:
+            database = IndexDatabase(args.database)
+            try:
+                store_comparison(args.database, result)
+            finally:
+                database.close()
+        output = json.dumps({
+            "original": result.original_path,
+            "tuned": result.tuned_path,
+            "original_sha256": result.original_sha256,
+            "tuned_sha256": result.tuned_sha256,
+            "original_size": result.original_size,
+            "tuned_size": result.tuned_size,
+            "differing_bytes": result.differing_bytes,
+            "exact_match": result.exact_match,
+            "changed_ranges": [
+                {"start": item.start, "end_exclusive": item.end_exclusive}
+                for item in result.changed_ranges
+            ],
+        }, indent=2)
+        if args.output:
+            _write_report(
+                args.output,
+                output,
+                protected_paths=[
+                    args.original,
+                    args.tuned,
+                    args.database,
+                    args.database.with_name(args.database.name + "-wal"),
+                    args.database.with_name(args.database.name + "-shm"),
                 ],
-            }, indent=2))
+            )
+            print(f"Binary comparison written to {args.output.resolve()}")
+        else:
+            print(output)
+        return 0
+
+    if args.action == "reference-package-audit":
+        database = IndexDatabase(args.database, read_only=True)
+        try:
+            report = audit_reference_package(database, args.manifest)
+            output = json.dumps(report, indent=2, ensure_ascii=False)
+            if args.output:
+                protected_paths = [
+                    args.database,
+                    args.database.with_name(args.database.name + "-wal"),
+                    args.database.with_name(args.database.name + "-shm"),
+                    args.manifest,
+                    args.manifest.resolve().parent / "CHECKLIST.txt",
+                ]
+                project_id = report.get("project_id")
+                if isinstance(project_id, int):
+                    diagnostic = database.get_diagnostic(project_id)
+                    if diagnostic is not None:
+                        protected_paths.append(Path(diagnostic["source"]["path"]))
+                for artifact in report["package_inspection"]["artifacts"]:
+                    raw_path = artifact.get("path")
+                    if not isinstance(raw_path, str) or not raw_path:
+                        continue
+                    artifact_path = Path(raw_path)
+                    if not artifact_path.is_absolute():
+                        artifact_path = (
+                            args.manifest.resolve().parent / artifact_path
+                        )
+                    protected_paths.append(artifact_path)
+                _write_report(
+                    args.output,
+                    output,
+                    protected_paths=protected_paths,
+                )
+                print(f"Offline reference audit written to {args.output.resolve()}")
+            else:
+                print(output)
         finally:
             database.close()
         return 0

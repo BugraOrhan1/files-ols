@@ -1,10 +1,12 @@
 import hashlib
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
 from ols_platform.database import IndexDatabase
+from ols_platform.cli import main
 from ols_platform.importer import import_sources
 from ols_platform.reader import (
     ParsedAxis,
@@ -13,6 +15,7 @@ from ols_platform.reader import (
     ProjectSnapshot,
 )
 from ols_platform.reference_package import (
+    audit_reference_package,
     compare_map_metadata,
     compare_project_metadata,
     import_reference_package,
@@ -263,6 +266,275 @@ class ReferencePackageTests(unittest.TestCase):
         self.assertEqual(manifest["project_identity"]["status"], "unknown")
         self.assertEqual(report["status"], "NOT_TESTED")
         self.assertIn("No WinOLS export has been generated", Path(paths["checklist"]).read_text())
+
+    def test_offline_audit_reuses_gates_without_persisting_a_run(self):
+        self._write(
+            {
+                **self._base_manifest(),
+                "exported_versions": [],
+                "artifacts": [],
+                "coverage_complete": False,
+                "manual_review": {"status": "NOT_TESTED"},
+                "project_relation": {"status": "unknown", "evidence": ""},
+            }
+        )
+        before = self.database.connection.execute(
+            "SELECT COUNT(*) FROM reference_package_runs"
+        ).fetchone()[0]
+
+        report = audit_reference_package(self.database, self.manifest_path)
+
+        after = self.database.connection.execute(
+            "SELECT COUNT(*) FROM reference_package_runs"
+        ).fetchone()[0]
+        self.assertEqual(report["status"], "NOT_TESTED")
+        self.assertFalse(report["database_writes"])
+        self.assertEqual(report["version_comparison"]["status"], "NOT_TESTED")
+        self.assertEqual(report["metadata_comparison"]["status"], "NOT_TESTED")
+        self.assertEqual(report["map_comparison"]["status"], "NOT_TESTED")
+        self.assertEqual(before, after)
+        output_path = self.root / "offline-audit.json"
+        exit_code = main(
+            [
+                "--database",
+                str(self.database.path),
+                "reference-package-audit",
+                str(self.manifest_path),
+                "--output",
+                str(output_path),
+            ]
+        )
+        self.assertEqual(exit_code, 0)
+        cli_report = json.loads(output_path.read_text(encoding="utf-8"))
+        self.assertEqual(cli_report["status"], "NOT_TESTED")
+        self.assertFalse(cli_report["database_writes"])
+        self.assertEqual(
+            self.database.connection.execute(
+                "SELECT COUNT(*) FROM reference_package_runs"
+            ).fetchone()[0],
+            before,
+        )
+        original_source = self.source.read_bytes()
+        with self.assertRaisesRegex(ValueError, "Refusing to overwrite"):
+            main(
+                [
+                    "--database",
+                    str(self.database.path),
+                    "reference-package-audit",
+                    str(self.manifest_path),
+                    "--output",
+                    str(self.source),
+                ]
+            )
+        self.assertEqual(self.source.read_bytes(), original_source)
+
+    def test_offline_audit_never_passes_incomplete_coverage(self):
+        manifest = self._base_manifest()
+        self._add_binary_artifact(
+            manifest,
+            key="version-a",
+            name="Version A",
+            slot=0,
+            content=b"abcd",
+        )
+        self._add_binary_artifact(
+            manifest,
+            key="version-b",
+            name="Version B",
+            slot=1,
+            content=b"wxyz",
+        )
+        manifest["coverage_complete"] = False
+        self._write(manifest)
+
+        report = audit_reference_package(self.database, self.manifest_path)
+
+        self.assertNotEqual(report["status"], "PASS")
+        self.assertEqual(
+            report["package_inspection"]["coverage_complete_declared"],
+            False,
+        )
+
+    def test_read_only_database_rejects_writes(self):
+        database_path = self.root / "readonly.sqlite3"
+        writable = IndexDatabase(database_path)
+        writable.connection.execute(
+            "CREATE TABLE readonly_probe (value TEXT NOT NULL)"
+        )
+        writable.connection.execute(
+            "INSERT INTO readonly_probe (value) VALUES ('preserved')"
+        )
+        writable.connection.commit()
+        writable.close()
+
+        readonly = IndexDatabase(database_path, read_only=True)
+        try:
+            with self.assertRaisesRegex(sqlite3.OperationalError, "readonly"):
+                readonly.connection.execute(
+                    "INSERT INTO readonly_probe (value) VALUES ('blocked')"
+                )
+            value = readonly.connection.execute(
+                "SELECT value FROM readonly_probe"
+            ).fetchone()["value"]
+        finally:
+            readonly.close()
+        self.assertEqual(value, "preserved")
+
+    def test_canonical_manifest_integer_fields_reject_booleans_and_floats(self):
+        manifest_cases = [
+            (
+                "schema_version",
+                lambda manifest: manifest.update(schema_version=True),
+                "Unsupported or missing package schema_version.",
+            ),
+            (
+                "project_id",
+                lambda manifest: manifest.update(project_id=True),
+                "project_id must be a positive integer.",
+            ),
+            (
+                "source.size_bytes",
+                lambda manifest: manifest["source"].update(size_bytes=True),
+                "source.size_bytes must be a non-negative integer.",
+            ),
+            (
+                "source.format_version",
+                lambda manifest: manifest["source"].update(format_version=True),
+                "source.format_version must be a non-negative integer.",
+            ),
+            (
+                "version.source_slot_index",
+                lambda manifest: manifest["exported_versions"][1].update(
+                    source_slot_index=True
+                ),
+                "Version version-b has an invalid source_slot_index.",
+            ),
+            (
+                "version.source_slot_index_negative",
+                lambda manifest: manifest["exported_versions"][1].update(
+                    source_slot_index=-1
+                ),
+                "Version version-b has an invalid source_slot_index.",
+            ),
+            (
+                "schema_version_float",
+                lambda manifest: manifest.update(schema_version=1.0),
+                "Unsupported or missing package schema_version.",
+            ),
+            (
+                "source.size_bytes_float",
+                lambda manifest: manifest["source"].update(
+                    size_bytes=float(manifest["source"]["size_bytes"])
+                ),
+                "source.size_bytes must be a non-negative integer.",
+            ),
+        ]
+        for field, mutate, expected_error in manifest_cases:
+            with self.subTest(field=field):
+                manifest = self._base_manifest()
+                mutate(manifest)
+                self._write(manifest)
+                report = inspect_package(self.database, self.manifest_path)
+                self.assertIn(expected_error, report["errors"])
+
+        for field, value, expected_error in (
+            (
+                "artifact.size_bytes",
+                True,
+                "Artifact 0: Declared size_bytes is invalid.",
+            ),
+            (
+                "artifact.size_bytes",
+                -1,
+                "Artifact 0: Declared size_bytes is invalid.",
+            ),
+            (
+                "artifact.source_slot_index",
+                True,
+                "Artifact 0: Artifact source_slot_index is invalid.",
+            ),
+            (
+                "artifact.source_slot_index",
+                -1,
+                "Artifact 0: Artifact source_slot_index is invalid.",
+            ),
+        ):
+            with self.subTest(field=field):
+                manifest = self._base_manifest()
+                self._add_binary_artifact(
+                    manifest,
+                    key="version-b",
+                    name="Version B",
+                    slot=1,
+                    content=b"x",
+                )
+                artifact = manifest["artifacts"][0]
+                artifact[field.split(".", 1)[1]] = value
+                self._write(manifest)
+                report = inspect_package(self.database, self.manifest_path)
+                self.assertIn(expected_error, report["errors"])
+
+    def test_required_canonical_source_metadata_and_indexed_format_are_validated(self):
+        required_fields = {
+            "path": "source.path must be a non-empty string.",
+            "filename": "source.filename must be a non-empty string.",
+            "size_bytes": "source.size_bytes must be a non-negative integer.",
+            "format_version": (
+                "source.format_version must be a non-negative integer."
+            ),
+        }
+        for field, expected_error in required_fields.items():
+            with self.subTest(missing=field):
+                manifest = self._base_manifest()
+                del manifest["source"][field]
+                self._write(manifest)
+                report = inspect_package(self.database, self.manifest_path)
+                self.assertIn(expected_error, report["errors"])
+
+        for field, value, expected_error in (
+            ("size_bytes", -1, "source.size_bytes must be a non-negative integer."),
+            ("size_bytes", "16", "source.size_bytes must be a non-negative integer."),
+            (
+                "format_version",
+                -1,
+                "source.format_version must be a non-negative integer.",
+            ),
+            (
+                "format_version",
+                "503",
+                "source.format_version must be a non-negative integer.",
+            ),
+        ):
+            with self.subTest(field=field, value=value):
+                manifest = self._base_manifest()
+                manifest["source"][field] = value
+                self._write(manifest)
+                report = inspect_package(self.database, self.manifest_path)
+                self.assertIn(expected_error, report["errors"])
+
+        manifest = self._base_manifest()
+        manifest["source"]["format_version"] += 1
+        self._write(manifest)
+        report = inspect_package(self.database, self.manifest_path)
+        self.assertIn(
+            "Manifest source format_version differs from the indexed OLS.",
+            report["errors"],
+        )
+
+    def test_manifest_json_shape_and_forward_compatible_fields(self):
+        self.manifest_path.write_text("[]", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "root must be a JSON object"):
+            inspect_package(self.database, self.manifest_path)
+
+        self.manifest_path.write_text("{", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "Invalid package manifest JSON"):
+            inspect_package(self.database, self.manifest_path)
+
+        manifest = self._base_manifest()
+        manifest["future_optional_field"] = {"revision": 2}
+        self._write(manifest)
+        report = inspect_package(self.database, self.manifest_path)
+        self.assertNotIn("future_optional_field", report["errors"])
 
     def test_complete_package_has_per_version_exact_matches_and_idempotent_import(self):
         manifest = self._base_manifest()

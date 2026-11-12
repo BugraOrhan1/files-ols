@@ -1,0 +1,3061 @@
+{
+  "schema_version": 1,
+  "audit": "Phase 11E independent parser and binary evidence audit",
+  "generated_from": {
+    "parser_a_run": "read-only PyOlsReader diagnostics over the eight tracked samples",
+    "parser_b_run": "read-only ols_dump logs captured for the pinned C parser revision",
+    "source_paths_omitted": true
+  },
+  "independent_winols_validation": "NOT_TESTED",
+  "comparison_policy": "Neither parser is ground truth; parser agreement, payload hashes, addresses, metadata, or parser-reported version counts do not establish WinOLS correctness, project identity, version relationships, or ECU compatibility.",
+  "parsers": {
+    "parser_a": {
+      "name": "py-ols",
+      "repository": "https://github.com/TheFlashBold/py-ols",
+      "revision": "4c283a80161e130b03eb8743c752a689ecda6b78",
+      "license": "GPL-3.0",
+      "adapter_fingerprint": "adapter-3+py-ols-sha256:02dacf610120f5eb4971aa0cd606efd29821b13a9e32db0165e6d5be49832771",
+      "input_mode": "OLSReader API; parser reads whole file into memory"
+    },
+    "parser_b": {
+      "name": "jinglinsen/ols-parser",
+      "repository": "https://github.com/jinglinsen/ols-parser",
+      "revision": "c77616e8e4dbe8b4fd6a41828c6c3d63b22cf2c6",
+      "license": "0BSD",
+      "input_mode": "read-only subprocess; full-file slurp in parser",
+      "stored_segment_hash_width_bits": 32,
+      "extracted_payload_sha256_available": false
+    }
+  },
+  "samples": [
+    {
+      "filename": "100004.ols",
+      "source_size_bytes": 23081851,
+      "source_sha256": "053aa96ea3021a6e3d71b11fe8023bab31650205a41196e8ecc39968b006167c",
+      "format_version": 597,
+      "parser_a": {
+        "status": "PARSED_WITH_WARNINGS",
+        "metadata": {
+          "make": {
+            "value": "VW",
+            "status": "present_in_parser_object"
+          },
+          "model": {
+            "value": "Golf",
+            "status": "present_in_parser_object"
+          },
+          "engine": {
+            "value": "2.0 TSI",
+            "status": "present_in_parser_object"
+          },
+          "year": {
+            "value": "2017",
+            "status": "present_in_parser_object"
+          },
+          "fuel_type": {
+            "value": "Turbo-Benzin",
+            "status": "present_in_parser_object"
+          },
+          "displacement": {
+            "value": "2.0",
+            "status": "present_in_parser_object"
+          },
+          "power": {
+            "value": "245.0PS / 180.2kW",
+            "status": "present_in_parser_object"
+          },
+          "gearbox": {
+            "value": "DSG7",
+            "status": "present_in_parser_object"
+          },
+          "memory_type": {
+            "value": "Eprom",
+            "status": "present_in_parser_object"
+          },
+          "ecu_manufacturer": {
+            "value": "Siemens/Continental",
+            "status": "present_in_parser_object"
+          },
+          "ecu_type": {
+            "value": "SIMOS18.10",
+            "status": "present_in_parser_object"
+          },
+          "sw_number": {
+            "value": "5G0906259N",
+            "status": "present_in_parser_object"
+          },
+          "hw_number": {
+            "value": "5G0906259N",
+            "status": "present_in_parser_object"
+          },
+          "hw_code": {
+            "value": "SCG0051000000",
+            "status": "present_in_parser_object"
+          },
+          "user": {
+            "value": "Filedatabase.eu",
+            "status": "present_in_parser_object"
+          }
+        },
+        "named_version_count": 1,
+        "returned_version_count": 1,
+        "enumerated_slot_count": 4,
+        "versions": [
+          {
+            "name": "Original",
+            "slot_index": 3,
+            "declared_slot_count": 4,
+            "blob_offset": 17314679,
+            "blob_bytes": 5767168,
+            "description_present": true,
+            "epk": "SCG5100",
+            "parent_id": null,
+            "is_root": false
+          }
+        ],
+        "slots": [
+          {
+            "index": 0,
+            "source_offset": 13175,
+            "blob_bytes": 5767168,
+            "payload_bytes": 5767164,
+            "payload_sha256": "5eccd76dbd33e83b675d78359d1b5c92cfe34bb99349e247b6921a1f2c80916f",
+            "marker_hex": "33887298",
+            "name": "",
+            "name_status": "unresolved",
+            "read_status": "present_nonempty_unverified"
+          },
+          {
+            "index": 1,
+            "source_offset": 5780343,
+            "blob_bytes": 5767168,
+            "payload_bytes": 5767164,
+            "payload_sha256": "b0ce2d90b767b4572d78f77523b2b198d62116a5c84a4106b4dd484373b0dcd5",
+            "marker_hex": "ba77dc9e",
+            "name": "",
+            "name_status": "unresolved",
+            "read_status": "present_nonempty_unverified"
+          },
+          {
+            "index": 2,
+            "source_offset": 11547511,
+            "blob_bytes": 5767168,
+            "payload_bytes": 5767164,
+            "payload_sha256": "ea60b8c8e08afb5889c9d9a9ee973c0190ce66c2d8b519e9023b7a92dbb4c150",
+            "marker_hex": "ba77dc9e",
+            "name": "",
+            "name_status": "unresolved",
+            "read_status": "present_nonempty_unverified"
+          },
+          {
+            "index": 3,
+            "source_offset": 17314679,
+            "blob_bytes": 5767168,
+            "payload_bytes": 5767164,
+            "payload_sha256": "994ee0936b51b75754349b5784cead004d6c8c9081bae9c82ea35f3e0327a677",
+            "marker_hex": "ba77dc9e",
+            "name": "Original",
+            "name_status": "named_record",
+            "read_status": "present_nonempty_unverified"
+          }
+        ],
+        "map_count": 0,
+        "map_counts_by_type": {},
+        "axis_count": 0,
+        "maps": [],
+        "issues": [
+          {
+            "code": "unlabeled_binary_slots",
+            "severity": "warning"
+          }
+        ],
+        "independent_validation": "NOT_TESTED"
+      },
+      "parser_b": {
+        "exit_code": 0,
+        "format_version": 597,
+        "returned_version_count": 1,
+        "returned_map_count": 0,
+        "warning_count": 0,
+        "version_records": [
+          {
+            "index": 0,
+            "reported_rom_bytes": 23068672,
+            "base_address": "0x0000337b",
+            "segment_count": 4
+          }
+        ],
+        "segments": [
+          {
+            "version_index": 0,
+            "segment_index": 0,
+            "flash_address": "0x0000337b",
+            "flash_size_bytes": 5767168,
+            "source_offset": 13179,
+            "payload_source_offset": 13179,
+            "reported_payload_bytes": 5767168,
+            "stored_hash_32bit": "0x00000000",
+            "framing_bytes_reported": 0,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 0,
+            "segment_index": 1,
+            "flash_address": "0x0058337b",
+            "flash_size_bytes": 5767168,
+            "source_offset": 5780347,
+            "payload_source_offset": 5780347,
+            "reported_payload_bytes": 5767168,
+            "stored_hash_32bit": "0x00000000",
+            "framing_bytes_reported": 0,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 0,
+            "segment_index": 2,
+            "flash_address": "0x00b0337b",
+            "flash_size_bytes": 5767168,
+            "source_offset": 11547515,
+            "payload_source_offset": 11547515,
+            "reported_payload_bytes": 5767168,
+            "stored_hash_32bit": "0x00000000",
+            "framing_bytes_reported": 0,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 0,
+            "segment_index": 3,
+            "flash_address": "0x0108337b",
+            "flash_size_bytes": 5767168,
+            "source_offset": 17314683,
+            "payload_source_offset": 17314683,
+            "reported_payload_bytes": 5767168,
+            "stored_hash_32bit": "0x00000000",
+            "framing_bytes_reported": 0,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          }
+        ],
+        "payload_sha256_exposed": false,
+        "source_hash_unchanged_during_run": true,
+        "independent_validation": "NOT_TESTED"
+      },
+      "observed_differences": [],
+      "version_counts_comparable": false,
+      "interpretation": "Parser observations only; agreement or disagreement is not a WinOLS reference."
+    },
+    {
+      "filename": "100007.ols",
+      "source_size_bytes": 8538495,
+      "source_sha256": "726179f17d56922d3667e18f87af739e49f59732df963332195c0249dad6a178",
+      "format_version": 597,
+      "parser_a": {
+        "status": "PARSED_WITH_WARNINGS",
+        "metadata": {
+          "make": {
+            "value": "Peugeot",
+            "status": "present_in_parser_object"
+          },
+          "model": {
+            "value": "307",
+            "status": "present_in_parser_object"
+          },
+          "engine": {
+            "value": "2.0 HDi 16V",
+            "status": "present_in_parser_object"
+          },
+          "year": {
+            "value": "2011",
+            "status": "present_in_parser_object"
+          },
+          "fuel_type": {
+            "value": "Turbo-Diesel",
+            "status": "present_in_parser_object"
+          },
+          "displacement": {
+            "value": "2.0",
+            "status": "present_in_parser_object"
+          },
+          "power": {
+            "value": "150.0PS / 110.3kW",
+            "status": "present_in_parser_object"
+          },
+          "gearbox": {
+            "value": "",
+            "status": "empty_in_parser_object"
+          },
+          "memory_type": {
+            "value": "Eprom",
+            "status": "present_in_parser_object"
+          },
+          "ecu_manufacturer": {
+            "value": "Siemens/Continental",
+            "status": "present_in_parser_object"
+          },
+          "ecu_type": {
+            "value": "",
+            "status": "empty_in_parser_object"
+          },
+          "sw_number": {
+            "value": "",
+            "status": "empty_in_parser_object"
+          },
+          "hw_number": {
+            "value": "",
+            "status": "empty_in_parser_object"
+          },
+          "hw_code": {
+            "value": "PO30052000000",
+            "status": "present_in_parser_object"
+          },
+          "user": {
+            "value": "Filedatabase.de",
+            "status": "present_in_parser_object"
+          }
+        },
+        "named_version_count": 1,
+        "returned_version_count": 1,
+        "enumerated_slot_count": 4,
+        "versions": [
+          {
+            "name": "Original",
+            "slot_index": 3,
+            "declared_slot_count": 4,
+            "blob_offset": 6441339,
+            "blob_bytes": 2097152,
+            "description_present": true,
+            "epk": "",
+            "parent_id": null,
+            "is_root": false
+          }
+        ],
+        "slots": [
+          {
+            "index": 0,
+            "source_offset": 149883,
+            "blob_bytes": 2097152,
+            "payload_bytes": 2097148,
+            "payload_sha256": "9b9db7970b0d5c989c54c4316aead228b9669180720c4df1260c8e3247beee46",
+            "marker_hex": "33887298",
+            "name": "",
+            "name_status": "unresolved",
+            "read_status": "present_nonempty_unverified"
+          },
+          {
+            "index": 1,
+            "source_offset": 2247035,
+            "blob_bytes": 2097152,
+            "payload_bytes": 2097148,
+            "payload_sha256": "b67e6b5f20fcd2022d2c326e13235bfa4ef2a9869e3f1121dbd84397995b0172",
+            "marker_hex": "ffffffff",
+            "name": "",
+            "name_status": "unresolved",
+            "read_status": "present_nonempty_unverified"
+          },
+          {
+            "index": 2,
+            "source_offset": 4344187,
+            "blob_bytes": 2097152,
+            "payload_bytes": 2097148,
+            "payload_sha256": "25eb17b2f4325a1b20e13321bf9403fb33d00807785c91025669b3723b58df90",
+            "marker_hex": "ffffffff",
+            "name": "",
+            "name_status": "unresolved",
+            "read_status": "present_nonempty_unverified"
+          },
+          {
+            "index": 3,
+            "source_offset": 6441339,
+            "blob_bytes": 2097152,
+            "payload_bytes": 2097148,
+            "payload_sha256": "a2d0878564ab687df0c0f46dc4af0bf24d383f17eb3197a3a3925087715f3d16",
+            "marker_hex": "ffffffff",
+            "name": "Original",
+            "name_status": "named_record",
+            "read_status": "present_nonempty_unverified"
+          }
+        ],
+        "map_count": 0,
+        "map_counts_by_type": {},
+        "axis_count": 0,
+        "maps": [],
+        "issues": [
+          {
+            "code": "missing_metadata",
+            "severity": "warning"
+          },
+          {
+            "code": "unlabeled_binary_slots",
+            "severity": "warning"
+          }
+        ],
+        "independent_validation": "NOT_TESTED"
+      },
+      "parser_b": {
+        "exit_code": 0,
+        "format_version": 597,
+        "returned_version_count": 1,
+        "returned_map_count": 0,
+        "warning_count": 0,
+        "version_records": [
+          {
+            "index": 0,
+            "reported_rom_bytes": 8388608,
+            "base_address": "0x0002497f",
+            "segment_count": 4
+          }
+        ],
+        "segments": [
+          {
+            "version_index": 0,
+            "segment_index": 0,
+            "flash_address": "0x0002497f",
+            "flash_size_bytes": 2097152,
+            "source_offset": 149887,
+            "payload_source_offset": 149887,
+            "reported_payload_bytes": 2097152,
+            "stored_hash_32bit": "0x00000000",
+            "framing_bytes_reported": 0,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 0,
+            "segment_index": 1,
+            "flash_address": "0x0022497f",
+            "flash_size_bytes": 2097152,
+            "source_offset": 2247039,
+            "payload_source_offset": 2247039,
+            "reported_payload_bytes": 2097152,
+            "stored_hash_32bit": "0x00000000",
+            "framing_bytes_reported": 0,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 0,
+            "segment_index": 2,
+            "flash_address": "0x0042497f",
+            "flash_size_bytes": 2097152,
+            "source_offset": 4344191,
+            "payload_source_offset": 4344191,
+            "reported_payload_bytes": 2097152,
+            "stored_hash_32bit": "0x00000000",
+            "framing_bytes_reported": 0,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 0,
+            "segment_index": 3,
+            "flash_address": "0x0062497f",
+            "flash_size_bytes": 2097152,
+            "source_offset": 6441343,
+            "payload_source_offset": 6441343,
+            "reported_payload_bytes": 2097152,
+            "stored_hash_32bit": "0x00000000",
+            "framing_bytes_reported": 0,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          }
+        ],
+        "payload_sha256_exposed": false,
+        "source_hash_unchanged_during_run": true,
+        "independent_validation": "NOT_TESTED"
+      },
+      "observed_differences": [],
+      "version_counts_comparable": false,
+      "interpretation": "Parser observations only; agreement or disagreement is not a WinOLS reference."
+    },
+    {
+      "filename": "100008.ols",
+      "source_size_bytes": 12869126,
+      "source_sha256": "7234cdacd4509455724b9a2ec318c5ce7edc17cdb3210ef2f3691e290f32b4cf",
+      "format_version": 597,
+      "parser_a": {
+        "status": "PARSED_WITH_WARNINGS",
+        "metadata": {
+          "make": {
+            "value": "",
+            "status": "empty_in_parser_object"
+          },
+          "model": {
+            "value": "",
+            "status": "empty_in_parser_object"
+          },
+          "engine": {
+            "value": "",
+            "status": "empty_in_parser_object"
+          },
+          "year": {
+            "value": "",
+            "status": "empty_in_parser_object"
+          },
+          "fuel_type": {
+            "value": "",
+            "status": "empty_in_parser_object"
+          },
+          "displacement": {
+            "value": "",
+            "status": "empty_in_parser_object"
+          },
+          "power": {
+            "value": "",
+            "status": "empty_in_parser_object"
+          },
+          "gearbox": {
+            "value": "",
+            "status": "empty_in_parser_object"
+          },
+          "memory_type": {
+            "value": "Eprom",
+            "status": "present_in_parser_object"
+          },
+          "ecu_manufacturer": {
+            "value": "Siemens/Continental",
+            "status": "present_in_parser_object"
+          },
+          "ecu_type": {
+            "value": "SID209",
+            "status": "present_in_parser_object"
+          },
+          "sw_number": {
+            "value": "",
+            "status": "empty_in_parser_object"
+          },
+          "hw_number": {
+            "value": "",
+            "status": "empty_in_parser_object"
+          },
+          "hw_code": {
+            "value": "",
+            "status": "empty_in_parser_object"
+          },
+          "user": {
+            "value": "Filedatabase.eu",
+            "status": "present_in_parser_object"
+          }
+        },
+        "named_version_count": 1,
+        "returned_version_count": 1,
+        "enumerated_slot_count": 3,
+        "versions": [
+          {
+            "name": "Original",
+            "slot_index": 2,
+            "declared_slot_count": 3,
+            "blob_offset": 8674818,
+            "blob_bytes": 4194304,
+            "description_present": true,
+            "epk": "",
+            "parent_id": null,
+            "is_root": false
+          }
+        ],
+        "slots": [
+          {
+            "index": 0,
+            "source_offset": 286210,
+            "blob_bytes": 4194304,
+            "payload_bytes": 4194300,
+            "payload_sha256": "faac5ab710eb74c9fd0baceb376d1ebb94d87959f3a9958f6294ecf1d25928ed",
+            "marker_hex": "33887298",
+            "name": "",
+            "name_status": "unresolved",
+            "read_status": "present_nonempty_unverified"
+          },
+          {
+            "index": 1,
+            "source_offset": 4480514,
+            "blob_bytes": 4194304,
+            "payload_bytes": 4194300,
+            "payload_sha256": "2203dec5bb325a08492aa107feea011e75bb1c363d412d3fca36cc78d9b4a307",
+            "marker_hex": "00000000",
+            "name": "",
+            "name_status": "unresolved",
+            "read_status": "present_nonempty_unverified"
+          },
+          {
+            "index": 2,
+            "source_offset": 8674818,
+            "blob_bytes": 4194304,
+            "payload_bytes": 4194300,
+            "payload_sha256": "5b48cfb53ce027fd513c970b88d4a920694b435391b07ea1dd3c470984961171",
+            "marker_hex": "00000000",
+            "name": "Original",
+            "name_status": "named_record",
+            "read_status": "present_nonempty_unverified"
+          }
+        ],
+        "map_count": 0,
+        "map_counts_by_type": {},
+        "axis_count": 0,
+        "maps": [],
+        "issues": [
+          {
+            "code": "missing_metadata",
+            "severity": "warning"
+          },
+          {
+            "code": "unlabeled_binary_slots",
+            "severity": "warning"
+          }
+        ],
+        "independent_validation": "NOT_TESTED"
+      },
+      "parser_b": {
+        "exit_code": 0,
+        "format_version": 597,
+        "returned_version_count": 1,
+        "returned_map_count": 0,
+        "warning_count": 0,
+        "version_records": [
+          {
+            "index": 0,
+            "reported_rom_bytes": 12582912,
+            "base_address": "0x00045e06",
+            "segment_count": 3
+          }
+        ],
+        "segments": [
+          {
+            "version_index": 0,
+            "segment_index": 0,
+            "flash_address": "0x00045e06",
+            "flash_size_bytes": 4194304,
+            "source_offset": 286214,
+            "payload_source_offset": 286214,
+            "reported_payload_bytes": 4194304,
+            "stored_hash_32bit": "0x00000000",
+            "framing_bytes_reported": 0,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 0,
+            "segment_index": 1,
+            "flash_address": "0x00445e06",
+            "flash_size_bytes": 4194304,
+            "source_offset": 4480518,
+            "payload_source_offset": 4480518,
+            "reported_payload_bytes": 4194304,
+            "stored_hash_32bit": "0x00000000",
+            "framing_bytes_reported": 0,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 0,
+            "segment_index": 2,
+            "flash_address": "0x00845e06",
+            "flash_size_bytes": 4194304,
+            "source_offset": 8674822,
+            "payload_source_offset": 8674822,
+            "reported_payload_bytes": 4194304,
+            "stored_hash_32bit": "0x00000000",
+            "framing_bytes_reported": 0,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          }
+        ],
+        "payload_sha256_exposed": false,
+        "source_hash_unchanged_during_run": true,
+        "independent_validation": "NOT_TESTED"
+      },
+      "observed_differences": [],
+      "version_counts_comparable": false,
+      "interpretation": "Parser observations only; agreement or disagreement is not a WinOLS reference."
+    },
+    {
+      "filename": "100009.ols",
+      "source_size_bytes": 6067756,
+      "source_sha256": "ef55e64d62358f1da11c36631ea0ba572383faa803188b556821ab5bcd3956ee",
+      "format_version": 597,
+      "parser_a": {
+        "status": "PARSED_WITH_WARNINGS",
+        "metadata": {
+          "make": {
+            "value": "BMW",
+            "status": "present_in_parser_object"
+          },
+          "model": {
+            "value": "7er",
+            "status": "present_in_parser_object"
+          },
+          "engine": {
+            "value": "50D",
+            "status": "present_in_parser_object"
+          },
+          "year": {
+            "value": "",
+            "status": "empty_in_parser_object"
+          },
+          "fuel_type": {
+            "value": "Turbo-Diesel",
+            "status": "present_in_parser_object"
+          },
+          "displacement": {
+            "value": "2.993",
+            "status": "present_in_parser_object"
+          },
+          "power": {
+            "value": "399.7PS / 294.0kW",
+            "status": "present_in_parser_object"
+          },
+          "gearbox": {
+            "value": "",
+            "status": "empty_in_parser_object"
+          },
+          "memory_type": {
+            "value": "Eprom",
+            "status": "present_in_parser_object"
+          },
+          "ecu_manufacturer": {
+            "value": "Bosch",
+            "status": "present_in_parser_object"
+          },
+          "ecu_type": {
+            "value": "MDG1_MD1CP002",
+            "status": "present_in_parser_object"
+          },
+          "sw_number": {
+            "value": "B57D30S0-G1xB57S0_RDE#S15A-17-07-504-FS (O_8KTB1-000047D1-028)",
+            "status": "present_in_parser_object"
+          },
+          "hw_number": {
+            "value": "8KTB1-000047D1-028",
+            "status": "present_in_parser_object"
+          },
+          "hw_code": {
+            "value": "B57D30S0-G1",
+            "status": "present_in_parser_object"
+          },
+          "user": {
+            "value": "Filedatabase.eu",
+            "status": "present_in_parser_object"
+          }
+        },
+        "named_version_count": 1,
+        "returned_version_count": 1,
+        "enumerated_slot_count": 2,
+        "versions": [
+          {
+            "name": "Original",
+            "slot_index": 1,
+            "declared_slot_count": 2,
+            "blob_offset": 3446312,
+            "blob_bytes": 2621440,
+            "description_present": true,
+            "epk": "",
+            "parent_id": null,
+            "is_root": false
+          }
+        ],
+        "slots": [
+          {
+            "index": 0,
+            "source_offset": 824872,
+            "blob_bytes": 2621440,
+            "payload_bytes": 2621436,
+            "payload_sha256": "cda5e3e45d4f1e9e4b00ac671c5209d476c1da9b604213a17c42f3c27e708b52",
+            "marker_hex": "33887298",
+            "name": "",
+            "name_status": "unresolved",
+            "read_status": "present_nonempty_unverified"
+          },
+          {
+            "index": 1,
+            "source_offset": 3446312,
+            "blob_bytes": 2621440,
+            "payload_bytes": 2621436,
+            "payload_sha256": "ccbbbba613b671e683eed6a73de6b28d40d31ac09501e393b2586ea1107d4503",
+            "marker_hex": "ffffffff",
+            "name": "Original",
+            "name_status": "named_record",
+            "read_status": "present_nonempty_unverified"
+          }
+        ],
+        "map_count": 4,
+        "map_counts_by_type": {
+          "MAP": 4
+        },
+        "axis_count": 8,
+        "maps": [
+          {
+            "name": "",
+            "description": "Kennfeld \"Bosch II 16\"",
+            "type": "MAP",
+            "data_type": "UWORD",
+            "columns": 22,
+            "rows": 21,
+            "data_offset": 2248154,
+            "unit": "",
+            "factor": 1.0,
+            "conversion_offset": 0.0,
+            "structural_check": {
+              "status": "NOT_TESTED",
+              "cell_count": 462,
+              "reason": "Positive dimensions do not validate the encoding, data extent, or version relationship."
+            },
+            "axes": [
+              {
+                "role": "x",
+                "points": 22,
+                "address": 2248068,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              },
+              {
+                "role": "y",
+                "points": 21,
+                "address": 2248110,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              }
+            ]
+          },
+          {
+            "name": "",
+            "description": "Kennfeld \"Bosch II 16\"",
+            "type": "MAP",
+            "data_type": "UWORD",
+            "columns": 17,
+            "rows": 18,
+            "data_offset": 2247078,
+            "unit": "",
+            "factor": 1.0,
+            "conversion_offset": 0.0,
+            "structural_check": {
+              "status": "NOT_TESTED",
+              "cell_count": 306,
+              "reason": "Positive dimensions do not validate the encoding, data extent, or version relationship."
+            },
+            "axes": [
+              {
+                "role": "x",
+                "points": 17,
+                "address": 2247008,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              },
+              {
+                "role": "y",
+                "points": 18,
+                "address": 2247044,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              }
+            ]
+          },
+          {
+            "name": "",
+            "description": "Kennfeld \"Bosch II 16\"",
+            "type": "MAP",
+            "data_type": "UWORD",
+            "columns": 16,
+            "rows": 16,
+            "data_offset": 1746024,
+            "unit": "",
+            "factor": 1.0,
+            "conversion_offset": 0.0,
+            "structural_check": {
+              "status": "NOT_TESTED",
+              "cell_count": 256,
+              "reason": "Positive dimensions do not validate the encoding, data extent, or version relationship."
+            },
+            "axes": [
+              {
+                "role": "x",
+                "points": 16,
+                "address": 1745960,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              },
+              {
+                "role": "y",
+                "points": 16,
+                "address": 1745992,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              }
+            ]
+          },
+          {
+            "name": "",
+            "description": "Kennfeld \"Bosch II 16\"",
+            "type": "MAP",
+            "data_type": "UWORD",
+            "columns": 16,
+            "rows": 16,
+            "data_offset": 1745444,
+            "unit": "",
+            "factor": 1.0,
+            "conversion_offset": 0.0,
+            "structural_check": {
+              "status": "NOT_TESTED",
+              "cell_count": 256,
+              "reason": "Positive dimensions do not validate the encoding, data extent, or version relationship."
+            },
+            "axes": [
+              {
+                "role": "x",
+                "points": 16,
+                "address": 1745380,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              },
+              {
+                "role": "y",
+                "points": 16,
+                "address": 1745412,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              }
+            ]
+          }
+        ],
+        "issues": [
+          {
+            "code": "missing_metadata",
+            "severity": "warning"
+          },
+          {
+            "code": "unnamed_maps",
+            "severity": "warning"
+          },
+          {
+            "code": "incomplete_axis_metadata",
+            "severity": "warning"
+          },
+          {
+            "code": "incomplete_axis_metadata",
+            "severity": "warning"
+          },
+          {
+            "code": "incomplete_axis_metadata",
+            "severity": "warning"
+          },
+          {
+            "code": "incomplete_axis_metadata",
+            "severity": "warning"
+          },
+          {
+            "code": "unlabeled_binary_slots",
+            "severity": "warning"
+          }
+        ],
+        "independent_validation": "NOT_TESTED"
+      },
+      "parser_b": {
+        "exit_code": 0,
+        "format_version": 597,
+        "returned_version_count": 1,
+        "returned_map_count": 0,
+        "warning_count": 0,
+        "version_records": [
+          {
+            "index": 0,
+            "reported_rom_bytes": 5242880,
+            "base_address": "0x000c962c",
+            "segment_count": 2
+          }
+        ],
+        "segments": [
+          {
+            "version_index": 0,
+            "segment_index": 0,
+            "flash_address": "0x000c962c",
+            "flash_size_bytes": 2621440,
+            "source_offset": 824876,
+            "payload_source_offset": 824876,
+            "reported_payload_bytes": 2621440,
+            "stored_hash_32bit": "0x00000000",
+            "framing_bytes_reported": 0,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 0,
+            "segment_index": 1,
+            "flash_address": "0x0034962c",
+            "flash_size_bytes": 2621440,
+            "source_offset": 3446316,
+            "payload_source_offset": 3446316,
+            "reported_payload_bytes": 2621440,
+            "stored_hash_32bit": "0x00000000",
+            "framing_bytes_reported": 0,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          }
+        ],
+        "payload_sha256_exposed": false,
+        "source_hash_unchanged_during_run": true,
+        "independent_validation": "NOT_TESTED"
+      },
+      "observed_differences": [
+        {
+          "field": "returned_map_definition_count",
+          "parser_a": 4,
+          "parser_b": 0,
+          "status": "DIFFERENT_OBSERVATIONS"
+        }
+      ],
+      "version_counts_comparable": false,
+      "interpretation": "Parser observations only; agreement or disagreement is not a WinOLS reference."
+    },
+    {
+      "filename": "100010.ols",
+      "source_size_bytes": 12886631,
+      "source_sha256": "4f20f13b6fc0c7a1606073b00a392ab8051db1c5689eff0fcc704bc594c8bd16",
+      "format_version": 597,
+      "parser_a": {
+        "status": "PARSED_WITH_WARNINGS",
+        "metadata": {
+          "make": {
+            "value": "MB",
+            "status": "present_in_parser_object"
+          },
+          "model": {
+            "value": "C220",
+            "status": "present_in_parser_object"
+          },
+          "engine": {
+            "value": "2.2 CDI R4",
+            "status": "present_in_parser_object"
+          },
+          "year": {
+            "value": "2011",
+            "status": "present_in_parser_object"
+          },
+          "fuel_type": {
+            "value": "Turbo-Diesel",
+            "status": "present_in_parser_object"
+          },
+          "displacement": {
+            "value": "2.2",
+            "status": "present_in_parser_object"
+          },
+          "power": {
+            "value": "170.0PS / 125.0kW",
+            "status": "present_in_parser_object"
+          },
+          "gearbox": {
+            "value": "Automatik",
+            "status": "present_in_parser_object"
+          },
+          "memory_type": {
+            "value": "Eprom",
+            "status": "present_in_parser_object"
+          },
+          "ecu_manufacturer": {
+            "value": "Delphi",
+            "status": "present_in_parser_object"
+          },
+          "ecu_type": {
+            "value": "CRD3",
+            "status": "present_in_parser_object"
+          },
+          "sw_number": {
+            "value": "CRD3-651-WMA4HD11-204WM-125kW-4CSL2S-EU5OP_AJ122_LH-EF-DS04_ME185001",
+            "status": "present_in_parser_object"
+          },
+          "hw_number": {
+            "value": "6519040001",
+            "status": "present_in_parser_object"
+          },
+          "hw_code": {
+            "value": "6519024803",
+            "status": "present_in_parser_object"
+          },
+          "user": {
+            "value": "Filedatabase.eu",
+            "status": "present_in_parser_object"
+          }
+        },
+        "named_version_count": 1,
+        "returned_version_count": 1,
+        "enumerated_slot_count": 3,
+        "versions": [
+          {
+            "name": "Original",
+            "slot_index": 2,
+            "declared_slot_count": 3,
+            "blob_offset": 8692323,
+            "blob_bytes": 4194304,
+            "description_present": false,
+            "epk": "",
+            "parent_id": null,
+            "is_root": false
+          }
+        ],
+        "slots": [
+          {
+            "index": 0,
+            "source_offset": 303715,
+            "blob_bytes": 4194304,
+            "payload_bytes": 4194300,
+            "payload_sha256": "325b85f2b2eb53c1ce1a104da23790f0d38c6fdc4082719e1ef59311990fb383",
+            "marker_hex": "33887298",
+            "name": "",
+            "name_status": "unresolved",
+            "read_status": "present_nonempty_unverified"
+          },
+          {
+            "index": 1,
+            "source_offset": 4498019,
+            "blob_bytes": 4194304,
+            "payload_bytes": 4194300,
+            "payload_sha256": "2f1b95be64151ccf81c9438ed7032c5c68f6003edc83e428b40269dfc624cb3d",
+            "marker_hex": "a98aebee",
+            "name": "",
+            "name_status": "unresolved",
+            "read_status": "present_nonempty_unverified"
+          },
+          {
+            "index": 2,
+            "source_offset": 8692323,
+            "blob_bytes": 4194304,
+            "payload_bytes": 4194300,
+            "payload_sha256": "010ddd88d1de5e7712e77e2d9037d293402b071d5a8284c49bd03522d4059121",
+            "marker_hex": "00000000",
+            "name": "Original",
+            "name_status": "named_record",
+            "read_status": "present_nonempty_unverified"
+          }
+        ],
+        "map_count": 0,
+        "map_counts_by_type": {},
+        "axis_count": 0,
+        "maps": [],
+        "issues": [
+          {
+            "code": "unlabeled_binary_slots",
+            "severity": "warning"
+          }
+        ],
+        "independent_validation": "NOT_TESTED"
+      },
+      "parser_b": {
+        "exit_code": 0,
+        "format_version": 597,
+        "returned_version_count": 1,
+        "returned_map_count": 0,
+        "warning_count": 0,
+        "version_records": [
+          {
+            "index": 0,
+            "reported_rom_bytes": 12582912,
+            "base_address": "0x0004a267",
+            "segment_count": 3
+          }
+        ],
+        "segments": [
+          {
+            "version_index": 0,
+            "segment_index": 0,
+            "flash_address": "0x0004a267",
+            "flash_size_bytes": 4194304,
+            "source_offset": 303719,
+            "payload_source_offset": 303719,
+            "reported_payload_bytes": 4194304,
+            "stored_hash_32bit": "0x00000000",
+            "framing_bytes_reported": 0,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 0,
+            "segment_index": 1,
+            "flash_address": "0x0044a267",
+            "flash_size_bytes": 4194304,
+            "source_offset": 4498023,
+            "payload_source_offset": 4498023,
+            "reported_payload_bytes": 4194304,
+            "stored_hash_32bit": "0x00000000",
+            "framing_bytes_reported": 0,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 0,
+            "segment_index": 2,
+            "flash_address": "0x0084a267",
+            "flash_size_bytes": 4194304,
+            "source_offset": 8692327,
+            "payload_source_offset": 8692327,
+            "reported_payload_bytes": 4194304,
+            "stored_hash_32bit": "0x00000000",
+            "framing_bytes_reported": 0,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          }
+        ],
+        "payload_sha256_exposed": false,
+        "source_hash_unchanged_during_run": true,
+        "independent_validation": "NOT_TESTED"
+      },
+      "observed_differences": [],
+      "version_counts_comparable": false,
+      "interpretation": "Parser observations only; agreement or disagreement is not a WinOLS reference."
+    },
+    {
+      "filename": "10001004.ols",
+      "source_size_bytes": 13198494,
+      "source_sha256": "2e22340c61b1c9b44710501775669e8d75d0592d6bb936245ca80fd899db0326",
+      "format_version": 503,
+      "parser_a": {
+        "status": "PARSED_WITH_WARNINGS",
+        "metadata": {
+          "make": {
+            "value": "Audi",
+            "status": "present_in_parser_object"
+          },
+          "model": {
+            "value": "RS6",
+            "status": "present_in_parser_object"
+          },
+          "engine": {
+            "value": "4.0 TFSI V8",
+            "status": "present_in_parser_object"
+          },
+          "year": {
+            "value": "2017",
+            "status": "present_in_parser_object"
+          },
+          "fuel_type": {
+            "value": "Turbo-Benzin",
+            "status": "present_in_parser_object"
+          },
+          "displacement": {
+            "value": "4.0",
+            "status": "present_in_parser_object"
+          },
+          "power": {
+            "value": "560.0PS / 411.9kW",
+            "status": "present_in_parser_object"
+          },
+          "gearbox": {
+            "value": "Automatik",
+            "status": "present_in_parser_object"
+          },
+          "memory_type": {
+            "value": "Eprom",
+            "status": "present_in_parser_object"
+          },
+          "ecu_manufacturer": {
+            "value": "Bosch",
+            "status": "present_in_parser_object"
+          },
+          "ecu_type": {
+            "value": "MED17.1.1",
+            "status": "present_in_parser_object"
+          },
+          "sw_number": {
+            "value": "4G0906560F",
+            "status": "present_in_parser_object"
+          },
+          "hw_number": {
+            "value": "4H0906014",
+            "status": "present_in_parser_object"
+          },
+          "hw_code": {
+            "value": "013988",
+            "status": "present_in_parser_object"
+          },
+          "user": {
+            "value": "DYNO Setting",
+            "status": "present_in_parser_object"
+          }
+        },
+        "named_version_count": 1,
+        "returned_version_count": 1,
+        "enumerated_slot_count": 3,
+        "versions": [
+          {
+            "name": "Original",
+            "slot_index": 2,
+            "declared_slot_count": 3,
+            "blob_offset": 9004186,
+            "blob_bytes": 4194304,
+            "description_present": true,
+            "epk": "",
+            "parent_id": null,
+            "is_root": false
+          }
+        ],
+        "slots": [
+          {
+            "index": 0,
+            "source_offset": 615578,
+            "blob_bytes": 4194304,
+            "payload_bytes": 4194300,
+            "payload_sha256": "b26784eb0cb8f363ec678c84f61d7173c8fc06afaf4b25252c2b14d6e59379e6",
+            "marker_hex": "33887298",
+            "name": "",
+            "name_status": "unresolved",
+            "read_status": "present_nonempty_unverified"
+          },
+          {
+            "index": 1,
+            "source_offset": 4809882,
+            "blob_bytes": 4194304,
+            "payload_bytes": 4194300,
+            "payload_sha256": "ea3293aa565040d9cbd3eda64a12a22e94945679dcdf1c0a4842316d3c817c00",
+            "marker_hex": "00000000",
+            "name": "",
+            "name_status": "unresolved",
+            "read_status": "present_nonempty_unverified"
+          },
+          {
+            "index": 2,
+            "source_offset": 9004186,
+            "blob_bytes": 4194304,
+            "payload_bytes": 4194300,
+            "payload_sha256": "968e8ff89ab327bcb17640cef7bbc7bf50ca4e4b87f0d9d8ed7cb0986ce03a43",
+            "marker_hex": "00000000",
+            "name": "Original",
+            "name_status": "named_record",
+            "read_status": "present_nonempty_unverified"
+          }
+        ],
+        "map_count": 0,
+        "map_counts_by_type": {},
+        "axis_count": 0,
+        "maps": [],
+        "issues": [
+          {
+            "code": "unlabeled_binary_slots",
+            "severity": "warning"
+          }
+        ],
+        "independent_validation": "NOT_TESTED"
+      },
+      "parser_b": {
+        "exit_code": 0,
+        "format_version": 503,
+        "returned_version_count": 1,
+        "returned_map_count": 0,
+        "warning_count": 0,
+        "version_records": [
+          {
+            "index": 0,
+            "reported_rom_bytes": 507824,
+            "base_address": "0x0038004c",
+            "segment_count": 3
+          }
+        ],
+        "segments": [
+          {
+            "version_index": 0,
+            "segment_index": 0,
+            "flash_address": "0x00380000",
+            "flash_size_bytes": 507900,
+            "source_offset": 4285598,
+            "payload_source_offset": 4285674,
+            "reported_payload_bytes": 507824,
+            "stored_hash_32bit": "0x9da77122",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 0,
+            "segment_index": 1,
+            "flash_address": "0x00380000",
+            "flash_size_bytes": 507900,
+            "source_offset": 8479902,
+            "payload_source_offset": 8479978,
+            "reported_payload_bytes": 507824,
+            "stored_hash_32bit": "0x9da77122",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 0,
+            "segment_index": 2,
+            "flash_address": "0x00380000",
+            "flash_size_bytes": 507900,
+            "source_offset": 12674206,
+            "payload_source_offset": 12674282,
+            "reported_payload_bytes": 507824,
+            "stored_hash_32bit": "0x9da77122",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          }
+        ],
+        "payload_sha256_exposed": false,
+        "source_hash_unchanged_during_run": true,
+        "independent_validation": "NOT_TESTED"
+      },
+      "observed_differences": [],
+      "version_counts_comparable": false,
+      "interpretation": "Parser observations only; agreement or disagreement is not a WinOLS reference."
+    },
+    {
+      "filename": "10001005.ols",
+      "source_size_bytes": 26187364,
+      "source_sha256": "4a117e3549cf457c1a8977f5e1da497517e7f3c21e80bf138ca72dd108cce2d3",
+      "format_version": 503,
+      "parser_a": {
+        "status": "PARSED_WITH_WARNINGS",
+        "metadata": {
+          "make": {
+            "value": "MB",
+            "status": "present_in_parser_object"
+          },
+          "model": {
+            "value": "GT-S AMG",
+            "status": "present_in_parser_object"
+          },
+          "engine": {
+            "value": "4.0 AMG V8 Biturbo",
+            "status": "present_in_parser_object"
+          },
+          "year": {
+            "value": "2016",
+            "status": "present_in_parser_object"
+          },
+          "fuel_type": {
+            "value": "Turbo-Benzin",
+            "status": "present_in_parser_object"
+          },
+          "displacement": {
+            "value": "4.0",
+            "status": "present_in_parser_object"
+          },
+          "power": {
+            "value": "510.0PS / 375.1kW",
+            "status": "present_in_parser_object"
+          },
+          "gearbox": {
+            "value": "DKG",
+            "status": "present_in_parser_object"
+          },
+          "memory_type": {
+            "value": "Eprom",
+            "status": "present_in_parser_object"
+          },
+          "ecu_manufacturer": {
+            "value": "Bosch",
+            "status": "present_in_parser_object"
+          },
+          "ecu_type": {
+            "value": "MED17.7.5",
+            "status": "present_in_parser_object"
+          },
+          "sw_number": {
+            "value": "8Y35210H0830000 1201",
+            "status": "present_in_parser_object"
+          },
+          "hw_number": {
+            "value": "",
+            "status": "empty_in_parser_object"
+          },
+          "hw_code": {
+            "value": "033192",
+            "status": "present_in_parser_object"
+          },
+          "user": {
+            "value": "DYNO Setting",
+            "status": "present_in_parser_object"
+          }
+        },
+        "named_version_count": 1,
+        "returned_version_count": 1,
+        "enumerated_slot_count": 3,
+        "versions": [
+          {
+            "name": "Original",
+            "slot_index": 2,
+            "declared_slot_count": 3,
+            "blob_offset": 17798752,
+            "blob_bytes": 8388608,
+            "description_present": true,
+            "epk": "",
+            "parent_id": null,
+            "is_root": false
+          }
+        ],
+        "slots": [
+          {
+            "index": 0,
+            "source_offset": 1021536,
+            "blob_bytes": 8388608,
+            "payload_bytes": 8388604,
+            "payload_sha256": "8382ea2a83a2393f20fa52232cf1f5f461cf2be5bed27ef16eb5c77697d25053",
+            "marker_hex": "33887298",
+            "name": "",
+            "name_status": "unresolved",
+            "read_status": "present_nonempty_unverified"
+          },
+          {
+            "index": 1,
+            "source_offset": 9410144,
+            "blob_bytes": 8388608,
+            "payload_bytes": 8388604,
+            "payload_sha256": "e8f16963a3172f004b5ab0285475cd5e069c2d97203d231d9e331b61075d1f55",
+            "marker_hex": "ffffffff",
+            "name": "",
+            "name_status": "unresolved",
+            "read_status": "present_nonempty_unverified"
+          },
+          {
+            "index": 2,
+            "source_offset": 17798752,
+            "blob_bytes": 8388608,
+            "payload_bytes": 8388604,
+            "payload_sha256": "ab418bcdc382a650e188dfaa1867167dc357e982d062fef3e3900cc108f7501d",
+            "marker_hex": "ffffffff",
+            "name": "Original",
+            "name_status": "named_record",
+            "read_status": "present_nonempty_unverified"
+          }
+        ],
+        "map_count": 0,
+        "map_counts_by_type": {},
+        "axis_count": 0,
+        "maps": [],
+        "issues": [
+          {
+            "code": "missing_metadata",
+            "severity": "warning"
+          },
+          {
+            "code": "unlabeled_binary_slots",
+            "severity": "warning"
+          }
+        ],
+        "independent_validation": "NOT_TESTED"
+      },
+      "parser_b": {
+        "exit_code": 0,
+        "format_version": 503,
+        "returned_version_count": 3,
+        "returned_map_count": 0,
+        "warning_count": 0,
+        "version_records": [
+          {
+            "index": 0,
+            "reported_rom_bytes": 70778800,
+            "base_address": "0x0000004c",
+            "segment_count": 8
+          },
+          {
+            "index": 1,
+            "reported_rom_bytes": 70778800,
+            "base_address": "0x0000004c",
+            "segment_count": 8
+          },
+          {
+            "index": 2,
+            "reported_rom_bytes": 70778800,
+            "base_address": "0x0000004c",
+            "segment_count": 8
+          }
+        ],
+        "segments": [
+          {
+            "version_index": 0,
+            "segment_index": 0,
+            "flash_address": "0x00000000",
+            "flash_size_bytes": 64768,
+            "source_offset": 1021540,
+            "payload_source_offset": 1021616,
+            "reported_payload_bytes": 64692,
+            "stored_hash_32bit": "0xb2e44599",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 0,
+            "segment_index": 1,
+            "flash_address": "0x00010000",
+            "flash_size_bytes": 8188,
+            "source_offset": 1087076,
+            "payload_source_offset": 1087152,
+            "reported_payload_bytes": 8112,
+            "stored_hash_32bit": "0x0ee45f67",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 0,
+            "segment_index": 2,
+            "flash_address": "0x00014000",
+            "flash_size_bytes": 16124,
+            "source_offset": 1103460,
+            "payload_source_offset": 1103536,
+            "reported_payload_bytes": 16048,
+            "stored_hash_32bit": "0x89ca2601",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 0,
+            "segment_index": 3,
+            "flash_address": "0x00018000",
+            "flash_size_bytes": 32508,
+            "source_offset": 1119844,
+            "payload_source_offset": 1119920,
+            "reported_payload_bytes": 32432,
+            "stored_hash_32bit": "0xf23857bf",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 0,
+            "segment_index": 4,
+            "flash_address": "0x00020000",
+            "flash_size_bytes": 1966076,
+            "source_offset": 1152612,
+            "payload_source_offset": 1152688,
+            "reported_payload_bytes": 1966000,
+            "stored_hash_32bit": "0xc910527b",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 0,
+            "segment_index": 5,
+            "flash_address": "0x00800000",
+            "flash_size_bytes": 2097148,
+            "source_offset": 3118692,
+            "payload_source_offset": 3118768,
+            "reported_payload_bytes": 2097072,
+            "stored_hash_32bit": "0x979f0986",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 0,
+            "segment_index": 6,
+            "flash_address": "0x04002000",
+            "flash_size_bytes": 1040380,
+            "source_offset": 5224036,
+            "payload_source_offset": 5224112,
+            "reported_payload_bytes": 1040304,
+            "stored_hash_32bit": "0x58993a06",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 0,
+            "segment_index": 7,
+            "flash_address": "0x04100000",
+            "flash_size_bytes": 2621436,
+            "source_offset": 6264420,
+            "payload_source_offset": 6264496,
+            "reported_payload_bytes": 2621360,
+            "stored_hash_32bit": "0xd65ce24f",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 1,
+            "segment_index": 0,
+            "flash_address": "0x00000000",
+            "flash_size_bytes": 64768,
+            "source_offset": 9410148,
+            "payload_source_offset": 9410224,
+            "reported_payload_bytes": 64692,
+            "stored_hash_32bit": "0xb2e44599",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 1,
+            "segment_index": 1,
+            "flash_address": "0x00010000",
+            "flash_size_bytes": 8188,
+            "source_offset": 9475684,
+            "payload_source_offset": 9475760,
+            "reported_payload_bytes": 8112,
+            "stored_hash_32bit": "0x0ee45f67",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 1,
+            "segment_index": 2,
+            "flash_address": "0x00014000",
+            "flash_size_bytes": 16124,
+            "source_offset": 9492068,
+            "payload_source_offset": 9492144,
+            "reported_payload_bytes": 16048,
+            "stored_hash_32bit": "0x89ca2601",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 1,
+            "segment_index": 3,
+            "flash_address": "0x00018000",
+            "flash_size_bytes": 32508,
+            "source_offset": 9508452,
+            "payload_source_offset": 9508528,
+            "reported_payload_bytes": 32432,
+            "stored_hash_32bit": "0xf23857bf",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 1,
+            "segment_index": 4,
+            "flash_address": "0x00020000",
+            "flash_size_bytes": 1966076,
+            "source_offset": 9541220,
+            "payload_source_offset": 9541296,
+            "reported_payload_bytes": 1966000,
+            "stored_hash_32bit": "0xc910527b",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 1,
+            "segment_index": 5,
+            "flash_address": "0x00800000",
+            "flash_size_bytes": 2097148,
+            "source_offset": 11507300,
+            "payload_source_offset": 11507376,
+            "reported_payload_bytes": 2097072,
+            "stored_hash_32bit": "0x979f0986",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 1,
+            "segment_index": 6,
+            "flash_address": "0x04002000",
+            "flash_size_bytes": 1040380,
+            "source_offset": 13612644,
+            "payload_source_offset": 13612720,
+            "reported_payload_bytes": 1040304,
+            "stored_hash_32bit": "0x58993a06",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 1,
+            "segment_index": 7,
+            "flash_address": "0x04100000",
+            "flash_size_bytes": 2621436,
+            "source_offset": 14653028,
+            "payload_source_offset": 14653104,
+            "reported_payload_bytes": 2621360,
+            "stored_hash_32bit": "0xd65ce24f",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 2,
+            "segment_index": 0,
+            "flash_address": "0x00000000",
+            "flash_size_bytes": 64768,
+            "source_offset": 17798756,
+            "payload_source_offset": 17798832,
+            "reported_payload_bytes": 64692,
+            "stored_hash_32bit": "0xb2e44599",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 2,
+            "segment_index": 1,
+            "flash_address": "0x00010000",
+            "flash_size_bytes": 8188,
+            "source_offset": 17864292,
+            "payload_source_offset": 17864368,
+            "reported_payload_bytes": 8112,
+            "stored_hash_32bit": "0x0ee45f67",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 2,
+            "segment_index": 2,
+            "flash_address": "0x00014000",
+            "flash_size_bytes": 16124,
+            "source_offset": 17880676,
+            "payload_source_offset": 17880752,
+            "reported_payload_bytes": 16048,
+            "stored_hash_32bit": "0x89ca2601",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 2,
+            "segment_index": 3,
+            "flash_address": "0x00018000",
+            "flash_size_bytes": 32508,
+            "source_offset": 17897060,
+            "payload_source_offset": 17897136,
+            "reported_payload_bytes": 32432,
+            "stored_hash_32bit": "0xf23857bf",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 2,
+            "segment_index": 4,
+            "flash_address": "0x00020000",
+            "flash_size_bytes": 1966076,
+            "source_offset": 17929828,
+            "payload_source_offset": 17929904,
+            "reported_payload_bytes": 1966000,
+            "stored_hash_32bit": "0xc910527b",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 2,
+            "segment_index": 5,
+            "flash_address": "0x00800000",
+            "flash_size_bytes": 2097148,
+            "source_offset": 19895908,
+            "payload_source_offset": 19895984,
+            "reported_payload_bytes": 2097072,
+            "stored_hash_32bit": "0x979f0986",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 2,
+            "segment_index": 6,
+            "flash_address": "0x04002000",
+            "flash_size_bytes": 1040380,
+            "source_offset": 22001252,
+            "payload_source_offset": 22001328,
+            "reported_payload_bytes": 1040304,
+            "stored_hash_32bit": "0x58993a06",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 2,
+            "segment_index": 7,
+            "flash_address": "0x04100000",
+            "flash_size_bytes": 2621436,
+            "source_offset": 23041636,
+            "payload_source_offset": 23041712,
+            "reported_payload_bytes": 2621360,
+            "stored_hash_32bit": "0xd65ce24f",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          }
+        ],
+        "payload_sha256_exposed": false,
+        "source_hash_unchanged_during_run": true,
+        "independent_validation": "NOT_TESTED"
+      },
+      "observed_differences": [],
+      "version_counts_comparable": false,
+      "interpretation": "Parser observations only; agreement or disagreement is not a WinOLS reference."
+    },
+    {
+      "filename": "100010054.ols",
+      "source_size_bytes": 17457135,
+      "source_sha256": "eda083e60ad20c8b4f286b289bb6760f7e5a9666b496e7e1ce2ef16b978bc635",
+      "format_version": 503,
+      "parser_a": {
+        "status": "PARSED_WITH_WARNINGS",
+        "metadata": {
+          "make": {
+            "value": "Audi",
+            "status": "present_in_parser_object"
+          },
+          "model": {
+            "value": "A8",
+            "status": "present_in_parser_object"
+          },
+          "engine": {
+            "value": "4.2 TDI CR V8",
+            "status": "present_in_parser_object"
+          },
+          "year": {
+            "value": "2012",
+            "status": "present_in_parser_object"
+          },
+          "fuel_type": {
+            "value": "Turbo-Diesel",
+            "status": "present_in_parser_object"
+          },
+          "displacement": {
+            "value": "4.2",
+            "status": "present_in_parser_object"
+          },
+          "power": {
+            "value": "350.0PS / 257.4kW",
+            "status": "present_in_parser_object"
+          },
+          "gearbox": {
+            "value": "S-Tronic 8",
+            "status": "present_in_parser_object"
+          },
+          "memory_type": {
+            "value": "Eprom",
+            "status": "present_in_parser_object"
+          },
+          "ecu_manufacturer": {
+            "value": "Bosch",
+            "status": "present_in_parser_object"
+          },
+          "ecu_type": {
+            "value": "EDC17CP44",
+            "status": "present_in_parser_object"
+          },
+          "sw_number": {
+            "value": "4H0907409B",
+            "status": "present_in_parser_object"
+          },
+          "hw_number": {
+            "value": "4H0907409B",
+            "status": "present_in_parser_object"
+          },
+          "hw_code": {
+            "value": "522813",
+            "status": "present_in_parser_object"
+          },
+          "user": {
+            "value": "Fastech Setting",
+            "status": "present_in_parser_object"
+          }
+        },
+        "named_version_count": 1,
+        "returned_version_count": 1,
+        "enumerated_slot_count": 4,
+        "versions": [
+          {
+            "name": "Original",
+            "slot_index": 3,
+            "declared_slot_count": 4,
+            "blob_offset": 13262827,
+            "blob_bytes": 4194304,
+            "description_present": false,
+            "epk": "",
+            "parent_id": null,
+            "is_root": false
+          }
+        ],
+        "slots": [
+          {
+            "index": 0,
+            "source_offset": 679915,
+            "blob_bytes": 4194304,
+            "payload_bytes": 4194300,
+            "payload_sha256": "9768c0a6bfe861cc6f8da2ee21fbea8f980cd88224916c33c65e792b8c041a3c",
+            "marker_hex": "33887298",
+            "name": "",
+            "name_status": "unresolved",
+            "read_status": "present_nonempty_unverified"
+          },
+          {
+            "index": 1,
+            "source_offset": 4874219,
+            "blob_bytes": 4194304,
+            "payload_bytes": 4194300,
+            "payload_sha256": "00d955be9f857438da4b75e68ed18fab292aad3f24e73c8306187c5a911d7c96",
+            "marker_hex": "efbeadde",
+            "name": "",
+            "name_status": "unresolved",
+            "read_status": "present_nonempty_unverified"
+          },
+          {
+            "index": 2,
+            "source_offset": 9068523,
+            "blob_bytes": 4194304,
+            "payload_bytes": 4194300,
+            "payload_sha256": "27e06748e605c8785785ac0a1e84ae3c41fdd4984fb7c3b64610801fb21f3588",
+            "marker_hex": "efbeadde",
+            "name": "",
+            "name_status": "unresolved",
+            "read_status": "present_nonempty_unverified"
+          },
+          {
+            "index": 3,
+            "source_offset": 13262827,
+            "blob_bytes": 4194304,
+            "payload_bytes": 4194300,
+            "payload_sha256": "012bba69695ed2352f4f28ce2962421189e1fb9408af67397730ff4859031505",
+            "marker_hex": "efbeadde",
+            "name": "Original",
+            "name_status": "named_record",
+            "read_status": "present_nonempty_unverified"
+          }
+        ],
+        "map_count": 12,
+        "map_counts_by_type": {
+          "CURVE": 1,
+          "MAP": 11
+        },
+        "axis_count": 23,
+        "maps": [
+          {
+            "name": "",
+            "description": "Kennfeld \"Bosch II 16\"",
+            "type": "MAP",
+            "data_type": "UWORD",
+            "columns": 22,
+            "rows": 16,
+            "data_offset": 3840944,
+            "unit": "",
+            "factor": 1.0,
+            "conversion_offset": 0.0,
+            "structural_check": {
+              "status": "NOT_TESTED",
+              "cell_count": 352,
+              "reason": "Positive dimensions do not validate the encoding, data extent, or version relationship."
+            },
+            "axes": [
+              {
+                "role": "x",
+                "points": 22,
+                "address": 3840868,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              },
+              {
+                "role": "y",
+                "points": 16,
+                "address": 3840900,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              }
+            ]
+          },
+          {
+            "name": "",
+            "description": "Kennfeld \"Bosch II 16\"",
+            "type": "MAP",
+            "data_type": "UWORD",
+            "columns": 9,
+            "rows": 16,
+            "data_offset": 3867186,
+            "unit": "",
+            "factor": 1.0,
+            "conversion_offset": 0.0,
+            "structural_check": {
+              "status": "NOT_TESTED",
+              "cell_count": 144,
+              "reason": "Positive dimensions do not validate the encoding, data extent, or version relationship."
+            },
+            "axes": [
+              {
+                "role": "x",
+                "points": 9,
+                "address": 3867136,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              },
+              {
+                "role": "y",
+                "points": 16,
+                "address": 3867168,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              }
+            ]
+          },
+          {
+            "name": "",
+            "description": "Kennfeld \"Bosch II 16\"",
+            "type": "MAP",
+            "data_type": "UWORD",
+            "columns": 10,
+            "rows": 16,
+            "data_offset": 3865592,
+            "unit": "",
+            "factor": 1.0,
+            "conversion_offset": 0.0,
+            "structural_check": {
+              "status": "NOT_TESTED",
+              "cell_count": 160,
+              "reason": "Positive dimensions do not validate the encoding, data extent, or version relationship."
+            },
+            "axes": [
+              {
+                "role": "x",
+                "points": 10,
+                "address": 3865540,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              },
+              {
+                "role": "y",
+                "points": 16,
+                "address": 3865572,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              }
+            ]
+          },
+          {
+            "name": "",
+            "description": "Kennfeld \"Bosch II 16\"",
+            "type": "MAP",
+            "data_type": "UWORD",
+            "columns": 10,
+            "rows": 16,
+            "data_offset": 3863712,
+            "unit": "",
+            "factor": 1.0,
+            "conversion_offset": 0.0,
+            "structural_check": {
+              "status": "NOT_TESTED",
+              "cell_count": 160,
+              "reason": "Positive dimensions do not validate the encoding, data extent, or version relationship."
+            },
+            "axes": [
+              {
+                "role": "x",
+                "points": 10,
+                "address": 3863660,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              },
+              {
+                "role": "y",
+                "points": 16,
+                "address": 3863692,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              }
+            ]
+          },
+          {
+            "name": "",
+            "description": "Kennfeld \"Bosch II 16\"",
+            "type": "MAP",
+            "data_type": "UWORD",
+            "columns": 10,
+            "rows": 16,
+            "data_offset": 3863336,
+            "unit": "",
+            "factor": 1.0,
+            "conversion_offset": 0.0,
+            "structural_check": {
+              "status": "NOT_TESTED",
+              "cell_count": 160,
+              "reason": "Positive dimensions do not validate the encoding, data extent, or version relationship."
+            },
+            "axes": [
+              {
+                "role": "x",
+                "points": 10,
+                "address": 3863284,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              },
+              {
+                "role": "y",
+                "points": 16,
+                "address": 3863316,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              }
+            ]
+          },
+          {
+            "name": "",
+            "description": "Kennfeld \"Bosch II 16\"",
+            "type": "MAP",
+            "data_type": "UWORD",
+            "columns": 10,
+            "rows": 16,
+            "data_offset": 3862960,
+            "unit": "",
+            "factor": 1.0,
+            "conversion_offset": 0.0,
+            "structural_check": {
+              "status": "NOT_TESTED",
+              "cell_count": 160,
+              "reason": "Positive dimensions do not validate the encoding, data extent, or version relationship."
+            },
+            "axes": [
+              {
+                "role": "x",
+                "points": 10,
+                "address": 3862908,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              },
+              {
+                "role": "y",
+                "points": 16,
+                "address": 3862940,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              }
+            ]
+          },
+          {
+            "name": "",
+            "description": "Kennfeld \"Bosch II 16\"",
+            "type": "MAP",
+            "data_type": "UWORD",
+            "columns": 10,
+            "rows": 15,
+            "data_offset": 3862206,
+            "unit": "",
+            "factor": 1.0,
+            "conversion_offset": 0.0,
+            "structural_check": {
+              "status": "NOT_TESTED",
+              "cell_count": 150,
+              "reason": "Positive dimensions do not validate the encoding, data extent, or version relationship."
+            },
+            "axes": [
+              {
+                "role": "x",
+                "points": 10,
+                "address": 3862156,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              },
+              {
+                "role": "y",
+                "points": 15,
+                "address": 3862186,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              }
+            ]
+          },
+          {
+            "name": "",
+            "description": "Kennfeld \"Bosch II 16\"",
+            "type": "MAP",
+            "data_type": "UWORD",
+            "columns": 10,
+            "rows": 16,
+            "data_offset": 3862584,
+            "unit": "",
+            "factor": 1.0,
+            "conversion_offset": 0.0,
+            "structural_check": {
+              "status": "NOT_TESTED",
+              "cell_count": 160,
+              "reason": "Positive dimensions do not validate the encoding, data extent, or version relationship."
+            },
+            "axes": [
+              {
+                "role": "x",
+                "points": 10,
+                "address": 3862532,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              },
+              {
+                "role": "y",
+                "points": 16,
+                "address": 3862564,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              }
+            ]
+          },
+          {
+            "name": "",
+            "description": "Kennfeld \"Bosch II 16\"",
+            "type": "MAP",
+            "data_type": "UWORD",
+            "columns": 10,
+            "rows": 15,
+            "data_offset": 3861454,
+            "unit": "",
+            "factor": 1.0,
+            "conversion_offset": 0.0,
+            "structural_check": {
+              "status": "NOT_TESTED",
+              "cell_count": 150,
+              "reason": "Positive dimensions do not validate the encoding, data extent, or version relationship."
+            },
+            "axes": [
+              {
+                "role": "x",
+                "points": 10,
+                "address": 3861404,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              },
+              {
+                "role": "y",
+                "points": 15,
+                "address": 3861434,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              }
+            ]
+          },
+          {
+            "name": "",
+            "description": "Kennfeld \"Bosch II 16\"",
+            "type": "MAP",
+            "data_type": "UWORD",
+            "columns": 10,
+            "rows": 15,
+            "data_offset": 3861830,
+            "unit": "",
+            "factor": 1.0,
+            "conversion_offset": 0.0,
+            "structural_check": {
+              "status": "NOT_TESTED",
+              "cell_count": 150,
+              "reason": "Positive dimensions do not validate the encoding, data extent, or version relationship."
+            },
+            "axes": [
+              {
+                "role": "x",
+                "points": 10,
+                "address": 3861780,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              },
+              {
+                "role": "y",
+                "points": 15,
+                "address": 3861810,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              }
+            ]
+          },
+          {
+            "name": "",
+            "description": "Kennfeld \"Bosch II 16\"",
+            "type": "MAP",
+            "data_type": "UWORD",
+            "columns": 18,
+            "rows": 16,
+            "data_offset": 3898452,
+            "unit": "",
+            "factor": 1.0,
+            "conversion_offset": 0.0,
+            "structural_check": {
+              "status": "NOT_TESTED",
+              "cell_count": 288,
+              "reason": "Positive dimensions do not validate the encoding, data extent, or version relationship."
+            },
+            "axes": [
+              {
+                "role": "x",
+                "points": 18,
+                "address": 3898384,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              },
+              {
+                "role": "y",
+                "points": 16,
+                "address": 3898416,
+                "data_type": "UWORD",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              }
+            ]
+          },
+          {
+            "name": "",
+            "description": "Kennfeld",
+            "type": "CURVE",
+            "data_type": "UWORD",
+            "columns": 3,
+            "rows": 1,
+            "data_offset": 3611234,
+            "unit": "",
+            "factor": 1.0,
+            "conversion_offset": 0.0,
+            "structural_check": {
+              "status": "NOT_TESTED",
+              "cell_count": 3,
+              "reason": "Positive dimensions do not validate the encoding, data extent, or version relationship."
+            },
+            "axes": [
+              {
+                "role": "x",
+                "points": 3,
+                "address": 3611222,
+                "data_type": "FLOAT32",
+                "unit": "",
+                "factor": 1.0,
+                "offset": 0.0,
+                "identifier": "",
+                "description": ""
+              }
+            ]
+          }
+        ],
+        "issues": [
+          {
+            "code": "unnamed_maps",
+            "severity": "warning"
+          },
+          {
+            "code": "incomplete_axis_metadata",
+            "severity": "warning"
+          },
+          {
+            "code": "incomplete_axis_metadata",
+            "severity": "warning"
+          },
+          {
+            "code": "incomplete_axis_metadata",
+            "severity": "warning"
+          },
+          {
+            "code": "incomplete_axis_metadata",
+            "severity": "warning"
+          },
+          {
+            "code": "incomplete_axis_metadata",
+            "severity": "warning"
+          },
+          {
+            "code": "incomplete_axis_metadata",
+            "severity": "warning"
+          },
+          {
+            "code": "incomplete_axis_metadata",
+            "severity": "warning"
+          },
+          {
+            "code": "incomplete_axis_metadata",
+            "severity": "warning"
+          },
+          {
+            "code": "incomplete_axis_metadata",
+            "severity": "warning"
+          },
+          {
+            "code": "incomplete_axis_metadata",
+            "severity": "warning"
+          },
+          {
+            "code": "incomplete_axis_metadata",
+            "severity": "warning"
+          },
+          {
+            "code": "incomplete_axis_metadata",
+            "severity": "warning"
+          },
+          {
+            "code": "unlabeled_binary_slots",
+            "severity": "warning"
+          }
+        ],
+        "independent_validation": "NOT_TESTED"
+      },
+      "parser_b": {
+        "exit_code": 0,
+        "format_version": 503,
+        "returned_version_count": 4,
+        "returned_map_count": 0,
+        "warning_count": 0,
+        "version_records": [
+          {
+            "index": 0,
+            "reported_rom_bytes": 4194224,
+            "base_address": "0x0000004c",
+            "segment_count": 8
+          },
+          {
+            "index": 1,
+            "reported_rom_bytes": 4194224,
+            "base_address": "0x0000004c",
+            "segment_count": 8
+          },
+          {
+            "index": 2,
+            "reported_rom_bytes": 4194224,
+            "base_address": "0x0000004c",
+            "segment_count": 8
+          },
+          {
+            "index": 3,
+            "reported_rom_bytes": 4194224,
+            "base_address": "0x0000004c",
+            "segment_count": 8
+          }
+        ],
+        "segments": [
+          {
+            "version_index": 0,
+            "segment_index": 0,
+            "flash_address": "0x00000000",
+            "flash_size_bytes": 16380,
+            "source_offset": 679919,
+            "payload_source_offset": 679995,
+            "reported_payload_bytes": 16304,
+            "stored_hash_32bit": "0xaf5eadd1",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 0,
+            "segment_index": 1,
+            "flash_address": "0x00004000",
+            "flash_size_bytes": 48892,
+            "source_offset": 696303,
+            "payload_source_offset": 696379,
+            "reported_payload_bytes": 48816,
+            "stored_hash_32bit": "0x38b9c295",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 0,
+            "segment_index": 2,
+            "flash_address": "0x00010000",
+            "flash_size_bytes": 16380,
+            "source_offset": 745455,
+            "payload_source_offset": 745531,
+            "reported_payload_bytes": 16304,
+            "stored_hash_32bit": "0x1cfbb412",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 0,
+            "segment_index": 3,
+            "flash_address": "0x00014000",
+            "flash_size_bytes": 16124,
+            "source_offset": 761839,
+            "payload_source_offset": 761915,
+            "reported_payload_bytes": 16048,
+            "stored_hash_32bit": "0x42d32118",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 0,
+            "segment_index": 4,
+            "flash_address": "0x00018000",
+            "flash_size_bytes": 32508,
+            "source_offset": 778223,
+            "payload_source_offset": 778299,
+            "reported_payload_bytes": 32432,
+            "stored_hash_32bit": "0x8b1841c7",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 0,
+            "segment_index": 5,
+            "flash_address": "0x00020000",
+            "flash_size_bytes": 1966076,
+            "source_offset": 810991,
+            "payload_source_offset": 811067,
+            "reported_payload_bytes": 1966000,
+            "stored_hash_32bit": "0xb60a3a66",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 0,
+            "segment_index": 6,
+            "flash_address": "0x00200000",
+            "flash_size_bytes": 1310460,
+            "source_offset": 2777071,
+            "payload_source_offset": 2777147,
+            "reported_payload_bytes": 1310384,
+            "stored_hash_32bit": "0x85276551",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 0,
+            "segment_index": 7,
+            "flash_address": "0x00340000",
+            "flash_size_bytes": 786428,
+            "source_offset": 4087791,
+            "payload_source_offset": 4087867,
+            "reported_payload_bytes": 786352,
+            "stored_hash_32bit": "0xb6e67f4c",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 1,
+            "segment_index": 0,
+            "flash_address": "0x00000000",
+            "flash_size_bytes": 16380,
+            "source_offset": 4874223,
+            "payload_source_offset": 4874299,
+            "reported_payload_bytes": 16304,
+            "stored_hash_32bit": "0xaf5eadd1",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 1,
+            "segment_index": 1,
+            "flash_address": "0x00004000",
+            "flash_size_bytes": 48892,
+            "source_offset": 4890607,
+            "payload_source_offset": 4890683,
+            "reported_payload_bytes": 48816,
+            "stored_hash_32bit": "0x38b9c295",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 1,
+            "segment_index": 2,
+            "flash_address": "0x00010000",
+            "flash_size_bytes": 16380,
+            "source_offset": 4939759,
+            "payload_source_offset": 4939835,
+            "reported_payload_bytes": 16304,
+            "stored_hash_32bit": "0x1cfbb412",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 1,
+            "segment_index": 3,
+            "flash_address": "0x00014000",
+            "flash_size_bytes": 16124,
+            "source_offset": 4956143,
+            "payload_source_offset": 4956219,
+            "reported_payload_bytes": 16048,
+            "stored_hash_32bit": "0x42d32118",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 1,
+            "segment_index": 4,
+            "flash_address": "0x00018000",
+            "flash_size_bytes": 32508,
+            "source_offset": 4972527,
+            "payload_source_offset": 4972603,
+            "reported_payload_bytes": 32432,
+            "stored_hash_32bit": "0x8b1841c7",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 1,
+            "segment_index": 5,
+            "flash_address": "0x00020000",
+            "flash_size_bytes": 1966076,
+            "source_offset": 5005295,
+            "payload_source_offset": 5005371,
+            "reported_payload_bytes": 1966000,
+            "stored_hash_32bit": "0xb60a3a66",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 1,
+            "segment_index": 6,
+            "flash_address": "0x00200000",
+            "flash_size_bytes": 1310460,
+            "source_offset": 6971375,
+            "payload_source_offset": 6971451,
+            "reported_payload_bytes": 1310384,
+            "stored_hash_32bit": "0x85276551",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 1,
+            "segment_index": 7,
+            "flash_address": "0x00340000",
+            "flash_size_bytes": 786428,
+            "source_offset": 8282095,
+            "payload_source_offset": 8282171,
+            "reported_payload_bytes": 786352,
+            "stored_hash_32bit": "0xb6e67f4c",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 2,
+            "segment_index": 0,
+            "flash_address": "0x00000000",
+            "flash_size_bytes": 16380,
+            "source_offset": 9068527,
+            "payload_source_offset": 9068603,
+            "reported_payload_bytes": 16304,
+            "stored_hash_32bit": "0xaf5eadd1",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 2,
+            "segment_index": 1,
+            "flash_address": "0x00004000",
+            "flash_size_bytes": 48892,
+            "source_offset": 9084911,
+            "payload_source_offset": 9084987,
+            "reported_payload_bytes": 48816,
+            "stored_hash_32bit": "0x38b9c295",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 2,
+            "segment_index": 2,
+            "flash_address": "0x00010000",
+            "flash_size_bytes": 16380,
+            "source_offset": 9134063,
+            "payload_source_offset": 9134139,
+            "reported_payload_bytes": 16304,
+            "stored_hash_32bit": "0x1cfbb412",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 2,
+            "segment_index": 3,
+            "flash_address": "0x00014000",
+            "flash_size_bytes": 16124,
+            "source_offset": 9150447,
+            "payload_source_offset": 9150523,
+            "reported_payload_bytes": 16048,
+            "stored_hash_32bit": "0x42d32118",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 2,
+            "segment_index": 4,
+            "flash_address": "0x00018000",
+            "flash_size_bytes": 32508,
+            "source_offset": 9166831,
+            "payload_source_offset": 9166907,
+            "reported_payload_bytes": 32432,
+            "stored_hash_32bit": "0x8b1841c7",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 2,
+            "segment_index": 5,
+            "flash_address": "0x00020000",
+            "flash_size_bytes": 1966076,
+            "source_offset": 9199599,
+            "payload_source_offset": 9199675,
+            "reported_payload_bytes": 1966000,
+            "stored_hash_32bit": "0xb60a3a66",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 2,
+            "segment_index": 6,
+            "flash_address": "0x00200000",
+            "flash_size_bytes": 1310460,
+            "source_offset": 11165679,
+            "payload_source_offset": 11165755,
+            "reported_payload_bytes": 1310384,
+            "stored_hash_32bit": "0x85276551",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 2,
+            "segment_index": 7,
+            "flash_address": "0x00340000",
+            "flash_size_bytes": 786428,
+            "source_offset": 12476399,
+            "payload_source_offset": 12476475,
+            "reported_payload_bytes": 786352,
+            "stored_hash_32bit": "0xb6e67f4c",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 3,
+            "segment_index": 0,
+            "flash_address": "0x00000000",
+            "flash_size_bytes": 16380,
+            "source_offset": 13262831,
+            "payload_source_offset": 13262907,
+            "reported_payload_bytes": 16304,
+            "stored_hash_32bit": "0xaf5eadd1",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 3,
+            "segment_index": 1,
+            "flash_address": "0x00004000",
+            "flash_size_bytes": 48892,
+            "source_offset": 13279215,
+            "payload_source_offset": 13279291,
+            "reported_payload_bytes": 48816,
+            "stored_hash_32bit": "0x38b9c295",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 3,
+            "segment_index": 2,
+            "flash_address": "0x00010000",
+            "flash_size_bytes": 16380,
+            "source_offset": 13328367,
+            "payload_source_offset": 13328443,
+            "reported_payload_bytes": 16304,
+            "stored_hash_32bit": "0x1cfbb412",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 3,
+            "segment_index": 3,
+            "flash_address": "0x00014000",
+            "flash_size_bytes": 16124,
+            "source_offset": 13344751,
+            "payload_source_offset": 13344827,
+            "reported_payload_bytes": 16048,
+            "stored_hash_32bit": "0x42d32118",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 3,
+            "segment_index": 4,
+            "flash_address": "0x00018000",
+            "flash_size_bytes": 32508,
+            "source_offset": 13361135,
+            "payload_source_offset": 13361211,
+            "reported_payload_bytes": 32432,
+            "stored_hash_32bit": "0x8b1841c7",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 3,
+            "segment_index": 5,
+            "flash_address": "0x00020000",
+            "flash_size_bytes": 1966076,
+            "source_offset": 13393903,
+            "payload_source_offset": 13393979,
+            "reported_payload_bytes": 1966000,
+            "stored_hash_32bit": "0xb60a3a66",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 3,
+            "segment_index": 6,
+            "flash_address": "0x00200000",
+            "flash_size_bytes": 1310460,
+            "source_offset": 15359983,
+            "payload_source_offset": 15360059,
+            "reported_payload_bytes": 1310384,
+            "stored_hash_32bit": "0x85276551",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          },
+          {
+            "version_index": 3,
+            "segment_index": 7,
+            "flash_address": "0x00340000",
+            "flash_size_bytes": 786428,
+            "source_offset": 16670703,
+            "payload_source_offset": 16670779,
+            "reported_payload_bytes": 786352,
+            "stored_hash_32bit": "0xb6e67f4c",
+            "framing_bytes_reported": 76,
+            "segment_kind": "primary",
+            "recorded_segment_extent_in_source_bounds": true
+          }
+        ],
+        "payload_sha256_exposed": false,
+        "source_hash_unchanged_during_run": true,
+        "independent_validation": "NOT_TESTED"
+      },
+      "observed_differences": [
+        {
+          "field": "returned_map_definition_count",
+          "parser_a": 12,
+          "parser_b": 0,
+          "status": "DIFFERENT_OBSERVATIONS"
+        }
+      ],
+      "version_counts_comparable": false,
+      "interpretation": "Parser observations only; agreement or disagreement is not a WinOLS reference."
+    }
+  ]
+}
