@@ -1,0 +1,159 @@
+{
+  "report_version": 1,
+  "purpose": "Pinned read-only parser differential experiment; observations are not verified WinOLS semantics.",
+  "parser": {
+    "repository": "https://github.com/jinglinsen/ols-parser",
+    "commit": "c77616e8e4dbe8b4fd6a41828c6c3d63b22cf2c6",
+    "license": "0BSD",
+    "build_command": "gcc -O2 -Wall -Wextra -std=c99 -D_POSIX_C_SOURCE=200809L ols_dump.c ols.c -o ols_dump.exe",
+    "build_exit_code": 0,
+    "compiler_warnings": 0,
+    "outputs_are_exports": false
+  },
+  "sample_invocations": {
+    "count": 8,
+    "all_exit_code": 0,
+    "all_warning_count": 0,
+    "runner_python_exit_code": 0,
+    "powershell_wrapper_exit_code": 0,
+    "results": [
+      {
+        "file": "100004.ols",
+        "source_bytes": 23081851,
+        "source_sha256": "053aa96ea3021a6e3d71b11fe8023bab31650205a41196e8ecc39968b006167c",
+        "format": 597,
+        "version_count": 1,
+        "segment_count": 4,
+        "map_count": 0,
+        "printed_axis_count": 0,
+        "versions": [
+          {"index": 0, "name": "Version 0", "assembled_rom_bytes": 23068672, "base_address": "0x0000337b", "segment_count": 4}
+        ]
+      },
+      {
+        "file": "100007.ols",
+        "source_bytes": 8538495,
+        "source_sha256": "726179f17d56922d3667e18f87af739e49f59732df963332195c0249dad6a178",
+        "format": 597,
+        "version_count": 1,
+        "segment_count": 4,
+        "map_count": 0,
+        "printed_axis_count": 0,
+        "versions": [
+          {"index": 0, "name": "Version 0", "assembled_rom_bytes": 8388608, "base_address": "0x0002497f", "segment_count": 4}
+        ]
+      },
+      {
+        "file": "100008.ols",
+        "source_bytes": 12869126,
+        "source_sha256": "7234cdacd4509455724b9a2ec318c5ce7edc17cdb3210ef2f3691e290f32b4cf",
+        "format": 597,
+        "version_count": 1,
+        "segment_count": 3,
+        "map_count": 0,
+        "printed_axis_count": 0,
+        "versions": [
+          {"index": 0, "name": "Version 0", "assembled_rom_bytes": 12582912, "base_address": "0x00045e06", "segment_count": 3}
+        ]
+      },
+      {
+        "file": "100009.ols",
+        "source_bytes": 6067756,
+        "source_sha256": "ef55e64d62358f1da11c36631ea0ba572383faa803188b556821ab5bcd3956ee",
+        "format": 597,
+        "version_count": 1,
+        "segment_count": 2,
+        "map_count": 0,
+        "printed_axis_count": 0,
+        "versions": [
+          {"index": 0, "name": "Version 0", "assembled_rom_bytes": 5242880, "base_address": "0x000c962c", "segment_count": 2}
+        ]
+      },
+      {
+        "file": "100010.ols",
+        "source_bytes": 12886631,
+        "source_sha256": "4f20f13b6fc0c7a1606073b00a392ab8051db1c5689eff0fcc704bc594c8bd16",
+        "format": 597,
+        "version_count": 1,
+        "segment_count": 3,
+        "map_count": 0,
+        "printed_axis_count": 0,
+        "versions": [
+          {"index": 0, "name": "Version 0", "assembled_rom_bytes": 12582912, "base_address": "0x0004a267", "segment_count": 3}
+        ]
+      },
+      {
+        "file": "10001004.ols",
+        "source_bytes": 13198494,
+        "source_sha256": "2e22340c61b1c9b44710501775669e8d75d0592d6bb936245ca80fd899db0326",
+        "format": 503,
+        "version_count": 1,
+        "segment_count": 3,
+        "map_count": 0,
+        "printed_axis_count": 0,
+        "versions": [
+          {"index": 0, "name": "Version 0", "assembled_rom_bytes": 507824, "base_address": "0x0038004c", "segment_count": 3}
+        ]
+      },
+      {
+        "file": "10001005.ols",
+        "source_bytes": 26187364,
+        "source_sha256": "4a117e3549cf457c1a8977f5e1da497517e7f3c21e80bf138ca72dd108cce2d3",
+        "format": 503,
+        "version_count": 3,
+        "segment_count": 24,
+        "map_count": 0,
+        "printed_axis_count": 0,
+        "versions": [
+          {"index": 0, "name": "Version 0", "assembled_rom_bytes": 70778800, "base_address": "0x0000004c", "segment_count": 8},
+          {"index": 1, "name": "Version 1", "assembled_rom_bytes": 70778800, "base_address": "0x0000004c", "segment_count": 8},
+          {"index": 2, "name": "Version 2", "assembled_rom_bytes": 70778800, "base_address": "0x0000004c", "segment_count": 8}
+        ]
+      },
+      {
+        "file": "100010054.ols",
+        "source_bytes": 17457135,
+        "source_sha256": "eda083e60ad20c8b4f286b289bb6760f7e5a9666b496e7e1ce2ef16b978bc635",
+        "format": 503,
+        "version_count": 4,
+        "segment_count": 32,
+        "map_count": 0,
+        "printed_axis_count": 0,
+        "versions": [
+          {"index": 0, "name": "Version 0", "assembled_rom_bytes": 4194224, "base_address": "0x0000004c", "segment_count": 8},
+          {"index": 1, "name": "Version 1", "assembled_rom_bytes": 4194224, "base_address": "0x0000004c", "segment_count": 8},
+          {"index": 2, "name": "Version 2", "assembled_rom_bytes": 4194224, "base_address": "0x0000004c", "segment_count": 8},
+          {"index": 3, "name": "Version 3", "assembled_rom_bytes": 4194224, "base_address": "0x0000004c", "segment_count": 8}
+        ]
+      }
+    ]
+  },
+  "malformed_header_smoke": {
+    "count": 5,
+    "all_assertions_passed": true,
+    "python_runner_exit_code": 0,
+    "powershell_wrapper_exit_code": 0,
+    "cases": [
+      {"case": "23-byte truncated header", "observed": "exit 1; file too small for OLS header"},
+      {"case": "bad magic", "observed": "exit 1; bad magic"},
+      {"case": "bad signature", "observed": "exit 1; signature mismatch"},
+      {"case": "unknown format 9999", "observed": "exit 0; metadata warning; no unsupported-format error"},
+      {"case": "declared size 25, actual size 24", "observed": "exit 0; size-mismatch warning"}
+    ]
+  },
+  "differential_observation": {
+    "prior_same_revision_sample_counts_match": true,
+    "independent_parser": false,
+    "py_ols_map_count_for_100009": 4,
+    "c_parser_map_count_for_100009": 0,
+    "py_ols_map_count_for_100010054": 12,
+    "c_parser_map_count_for_100010054": 0,
+    "winner_selected": false
+  },
+  "interpretation": {
+    "independent_winols_validation": "NOT_TESTED",
+    "ecu_compatibility": "NOT_TESTED",
+    "bulk_6tb_suitable": false,
+    "reason": "The parser reads the full OLS into memory, assembles one in-memory ROM per version, has no process memory limit, and has unresolved map omissions."
+  }
+}

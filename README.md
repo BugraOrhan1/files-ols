@@ -947,3 +947,11 @@ the alternatives was established as an authoritative WinOLS parser. See
 [PHASE17_STATUS.md](./PHASE17_STATUS.md) and
 [reports/external_repo_review.md](./reports/external_repo_review.md) for the
 license, issue-tracker, provenance and validation findings.
+
+Phase 18 documents the offline evidence-audit path in
+[PHASE18_STATUS.md](./PHASE18_STATUS.md). The pinned C-parser experiment and
+its per-sample observations are documented in
+[PHASE19_STATUS.md](./PHASE19_STATUS.md) and
+[reports/phase19_c_parser_smoke.json](./reports/phase19_c_parser_smoke.json);
+parser output remains unverified until compared with independent WinOLS
+exports.
