@@ -969,3 +969,7 @@ evidence are recorded in [PHASE22_STATUS.md](./PHASE22_STATUS.md). Recovery
 must still only be run after an operator confirms no worker process is active.
 
 The targeted dashboard UX review is in [PHASE24_STATUS.md](./PHASE24_STATUS.md).
+
+Dependency and licensing limits, including the missing repository license
+decision and external GPL-3.0 parser, are recorded in
+[PHASE25_STATUS.md](./PHASE25_STATUS.md).
