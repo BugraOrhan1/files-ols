@@ -798,10 +798,42 @@ python -m unittest discover -s tests -v
 The eight-project integration test is skipped unless `PY_OLS_PATH` points to a
 separate py-ols checkout and all eight sample files are available in the
 workspace. Unit tests still run without the external parser.
-Latest full run: `python -m unittest discover -s tests -v` ran 64 tests
-successfully (62 passed, 2 real-parser integration tests skipped) because the
-separate parser checkout and all eight sample files are not configured in this
-environment.
+Phase 11C's latest full run used the configured separate parser checkout and
+all eight samples: 87 tests passed, with 0 failures and 0 skips.
+
+### Read-only OLS parser diagnostics
+
+With the eight samples and a separate `py-ols` checkout available, create a
+detailed JSON report and optional reference-package templates outside the
+repository:
+
+```powershell
+$env:PY_OLS_PATH = "C:\path\to\py-ols"
+python -m ols_platform.ols_sample_diagnostics `
+  --samples-dir "C:\path\to\ols-samples" `
+  --py-ols-path $env:PY_OLS_PATH `
+  --output "$env:TEMP\ols-sample-diagnostics.json" `
+  --reference-template-dir "$env:TEMP\ols-reference-templates"
+```
+
+The report records per-file SHA-256, parser and OLS format versions, metadata
+field presence/emptiness as exposed by the parser object, named versions,
+enumerated binary slots, map types, map and axis details, and every parser
+warning/error. Empty parser fields do not prove that the corresponding source
+field is absent from the OLS project. The tool only reads the OLS samples and
+refuses to write its report over one of them.
+
+An optional `--reference-dir` accepts `<sample-stem>.json` manifests. A
+comparison is accepted only when the manifest ties to the exact sample
+filename and SHA-256, hashes an available independent export artifact, records
+the export method and WinOLS version, confirms the project relationship,
+declares independent validation and complete coverage, and records reviewer
+attestation. `observations` maps diagnostic dotted paths to values taken from
+that artifact; list indices are supported, for example `maps.0.name`. Missing
+or partial references remain `NOT_TESTED`, `PARTIAL`,
+or `INCONCLUSIVE`; parser output is never an independent reference. Even a
+field-level `PASS` is limited to the recorded observations and does not prove
+ECU compatibility or validate unrelated fields.
 
 ## Phase 5 limits
 

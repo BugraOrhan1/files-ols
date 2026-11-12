@@ -228,10 +228,20 @@ class PyOlsReader:
                 )
             )
 
-        metadata = {
-            field: str(getattr(project, field, "") or "")
-            for field in self._METADATA_FIELDS
-        }
+        metadata_field_status: dict[str, str] = {}
+        metadata: dict[str, str] = {}
+        for field in self._METADATA_FIELDS:
+            if not hasattr(project, field):
+                metadata[field] = ""
+                metadata_field_status[field] = "missing_from_parser_object"
+                continue
+            raw_value = getattr(project, field)
+            metadata[field] = str(raw_value or "")
+            metadata_field_status[field] = (
+                "empty_in_parser_object"
+                if raw_value is None or not str(raw_value).strip()
+                else "present_in_parser_object"
+            )
         missing_metadata = [key for key, value in metadata.items() if not value]
         if missing_metadata:
             issues.append(
@@ -470,6 +480,7 @@ class PyOlsReader:
             data_structure={
                 "container": "KP" if getattr(project, "is_kp_file", False) else "OLS",
                 "format_version": int(project.version or 0),
+                "metadata_field_status": metadata_field_status,
                 "map_list": map_header,
                 "binary_layout": version_layout,
             },

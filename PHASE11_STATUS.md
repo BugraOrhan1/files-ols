@@ -228,3 +228,90 @@ change.
 
 The final documentation follow-up revision is reported after its remote
 verification.
+
+## Phase 11C: repeatable parser diagnostics and reference gating
+
+Added `python -m ols_platform.ols_sample_diagnostics` as a read-only way to
+produce per-sample JSON diagnostics outside the repository. It records the
+source SHA-256 and size, parser identity/version, OLS format, parse status,
+metadata field states, all returned versions and slots, map-type counts,
+complete map/axis fields, skipped elements, parser errors, and every warning.
+Optional reference templates start at `NOT_TESTED`; the command refuses to
+write its report over any of the eight source samples. The test suite continues
+to import the samples only into a temporary SQLite database.
+
+Metadata field status describes what the parser object exposes: the adapter
+distinguishes an absent parser attribute from an empty returned value. All
+eight samples exposed the 15 expected metadata attributes; 18 values were
+empty and none were absent from the parser object. This does not prove that
+the OLS source itself lacks those values. Unnamed map definitions and
+structurally incomplete axes are represented explicitly; no names, labels,
+addresses, version relationships, or conversion values are inferred.
+
+| Sample | Source size | SHA-256 | OLS format | Parser status | Named versions / slots | Maps / axes | Incomplete axes | Warnings | Reference |
+|---|---:|---|---:|---|---:|---:|---:|---:|---|
+| `100004.ols` | 23,081,851 | `053aa96ea3021a6e3d71b11fe8023bab31650205a41196e8ecc39968b006167c` | 597 | Parsed with warnings | 1 (`Original`) / 4 | 0 / 0 | 0 | 1 | `NOT_TESTED` |
+| `100007.ols` | 8,538,495 | `726179f17d56922d3667e18f87af739e49f59732df963332195c0249dad6a178` | 597 | Parsed with warnings | 1 (`Original`) / 4 | 0 / 0 | 0 | 2 | `NOT_TESTED` |
+| `100008.ols` | 12,869,126 | `7234cdacd4509455724b9a2ec318c5ce7edc17cdb3210ef2f3691e290f32b4cf` | 597 | Parsed with warnings | 1 (`Original`) / 3 | 0 / 0 | 0 | 2 | `NOT_TESTED` |
+| `100009.ols` | 6,067,756 | `ef55e64d62358f1da11c36631ea0ba572383faa803188b556821ab5bcd3956ee` | 597 | Parsed with warnings | 1 (`Original`) / 2 | 4 / 8 | 8 | 7 | `NOT_TESTED` |
+| `100010.ols` | 12,886,631 | `4f20f13b6fc0c7a1606073b00a392ab8051db1c5689eff0fcc704bc594c8bd16` | 597 | Parsed with warnings | 1 (`Original`) / 3 | 0 / 0 | 0 | 1 | `NOT_TESTED` |
+| `10001004.ols` | 13,198,494 | `2e22340c61b1c9b44710501775669e8d75d0592d6bb936245ca80fd899db0326` | 503 | Parsed with warnings | 1 (`Original`) / 3 | 0 / 0 | 0 | 1 | `NOT_TESTED` |
+| `10001005.ols` | 26,187,364 | `4a117e3549cf457c1a8977f5e1da497517e7f3c21e80bf138ca72dd108cce2d3` | 503 | Parsed with warnings | 1 (`Original`) / 3 | 0 / 0 | 0 | 2 | `NOT_TESTED` |
+| `100010054.ols` | 17,457,135 | `eda083e60ad20c8b4f286b289bb6760f7e5a9666b496e7e1ce2ef16b978bc635` | 503 | Parsed with warnings | 1 (`Original`) / 4 | 12 / 23 | 23 | 14 | `NOT_TESTED` |
+
+Across the eight samples, 18 of 26 enumerated slots have no named version
+record; those slots remain unresolved, not presumed to be missing, empty, or
+reserved. All 16 returned map definitions are unnamed. The 31 returned axes
+have a missing unit or identifier; the parser emitted 16 corresponding
+per-map warnings. No parser errors occurred in these eight parses. This
+reproduces parser output; it does not establish that the parser found every
+project version or map.
+
+### Independent reference inventory
+
+Three existing local manifests have artifacts for `100004.ols`, `100007.ols`,
+and `100009.ols` (four, four, and two binary files respectively). They record
+hashes and confirmed project identity, but the WinOLS version is unknown, the
+exact export method/settings are unknown, and every artifact's individual
+version/slot relation and representation are unknown. They do not contain
+independent map metadata or map-value exports. In an isolated temporary
+database, the eight samples were imported and these ten artifacts were
+rechecked: all ten checks were `INCONCLUSIVE`; zero versions were independently
+confirmed. No live SQLite database was opened or changed. The `100010054.ols`
+reference package is only a template with no artifacts.
+
+The new comparison manifest requires an exact source filename/hash, a hashed
+export artifact, recorded export method and WinOLS version, confirmed project
+relation, complete field coverage, validation status and reviewer attestation.
+It reports per-field `PASS`, `FAIL`, or `NOT_COMPARABLE`; incomplete coverage
+cannot produce an overall `PASS`. These provenance claims still require human
+review of the actual export; a hash alone does not establish its origin. Since
+no existing package meets these gates, the eight-sample independent
+metadata/map/version validation remains **`NOT_TESTED`**. No WinOLS automation
+or new exports were run.
+
+### Phase 11C verification and limits
+
+- The real eight-sample parser integration tests passed: 2 run, 0 failed,
+  0 skipped. The damaged-file test also passed by explicitly reporting parser
+  failure.
+- The full suite ran 87 tests: 87 passed, 0 failed, 0 skipped. The Python
+  unittest child process exit was `0`; the complete redirected log reports
+  `Ran 87 tests` and `OK`. The PowerShell tool wrapper returned `1` for the
+  same invocation, so its status is recorded separately rather than treated
+  as the Python test result. An earlier `Tee-Object` attempt also produced a
+  PowerShell native-stderr error and was not used as test evidence.
+- `python -m compileall -q ols_platform deployment tests`: exit `0`.
+- `node --check ols_platform\dashboard.js`: exit `0`.
+- `git diff --check`: exit `0`.
+- All eight source SHA-256 values were checked before and after the final test
+  run; every post-test hash matches the value in the sample table.
+- PID `45712` was observed running the existing continuous hash-worker
+  command before this work. It was not stopped, restarted, paused, or
+  reconfigured; the live index and queue were not queried or changed.
+- Parser checkout files were not modified. No customer OLS/BIN/ORI files,
+  databases, backups, caches, or environment folders were added to Git.
+
+Phase 11 remains **in progress**. This phase delivers reproducible observation
+and reference-test scaffolding; structural parser completeness, version/slot
+relationships, and independent WinOLS validation remain unresolved.
