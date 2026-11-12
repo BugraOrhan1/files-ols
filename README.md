@@ -955,3 +955,7 @@ its per-sample observations are documented in
 [reports/phase19_c_parser_smoke.json](./reports/phase19_c_parser_smoke.json);
 parser output remains unverified until compared with independent WinOLS
 exports.
+
+The configured push, pull-request and manual CI checks are described in
+[PHASE20_STATUS.md](./PHASE20_STATUS.md). Hosted acceptance is not claimed
+until a GitHub Actions run for the branch is available and reviewed.
