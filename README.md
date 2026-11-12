@@ -877,6 +877,10 @@ Phase 11F's structural regression results and the Phase 11G independent code-rev
 
 Phase 12 reran the parser-structure regressions and the real-parser integration tests against the eight read-only OLS samples using a temporary database. All 26 focused and integration tests passed, and all 14 tracked OLS/BIN fixture sizes and SHA-256 values remained unchanged. This validates only the adapter's tested behavior; independent WinOLS validation remains `NOT_TESTED`. See [PHASE12_STATUS.md](./PHASE12_STATUS.md).
 
+### Phase 13 indexing and search
+
+Phase 13 fixed search pagination applying before evidence ranking: default ranking is now evaluated across the filtered SQL result set before `LIMIT/OFFSET`, with a regression for multiple `any`-mode identifier matches. The focused temporary-database suite passed 35 tests. A 250-project synthetic search measured a 0.000906-second median locally; this is not a full-corpus benchmark. See [PHASE13_STATUS.md](./PHASE13_STATUS.md).
+
 ## Phase 5 limits
 
 The inventory command is a dry-run and is not the 6-TB indexer. It has not been

@@ -62,6 +62,7 @@ class EvidenceRanker:
         exact_identifiers = [
             field for field, value in metadata.items()
             if field in _IDENTIFIER_FIELDS
+            and value.strip()
             and result_metadata.get(field) == value
         ]
         if exact_identifiers:
@@ -316,17 +317,61 @@ def search_projects(
     )
     try:
         uses_default_ranker = ranker is None or type(ranker) is EvidenceRanker
-        order_clause = (
-            """
-            ORDER BY (
-                CASE WHEN d.reference_status='validated' THEN 5 ELSE 0 END
-                + CASE WHEN map_count>0 AND axis_count>0 THEN 2 ELSE 0 END
-                + CASE WHEN d.processing_status='fully_processed' THEN 1 ELSE 0 END
-            ) DESC,p.id DESC
-            """
-            if uses_default_ranker
-            else "ORDER BY p.id DESC"
-        )
+        ranking_parameters: list[object] = []
+        if uses_default_ranker:
+            ranking_terms = [
+                "CASE WHEN d.reference_status='validated' THEN 5 ELSE 0 END",
+                """
+                CASE WHEN EXISTS (
+                    SELECT 1 FROM map_definitions rank_map
+                    WHERE rank_map.project_id=p.id
+                ) AND EXISTS (
+                    SELECT 1 FROM map_axes rank_axis
+                    JOIN map_definitions rank_axis_map ON rank_axis_map.id=rank_axis.map_id
+                    WHERE rank_axis_map.project_id=p.id
+                ) THEN 2 ELSE 0 END
+                """,
+                "CASE WHEN d.processing_status='fully_processed' THEN 1 ELSE 0 END",
+            ]
+            for field, value in filters.items():
+                if field in _IDENTIFIER_FIELDS and value.strip():
+                    ranking_terms.append(
+                        """
+                        CASE WHEN EXISTS (
+                            SELECT 1 FROM project_metadata rank_metadata
+                            WHERE rank_metadata.project_id=p.id
+                              AND rank_metadata.field=?
+                              AND TRIM(rank_metadata.value)=?
+                        ) THEN 10 ELSE 0 END
+                        """
+                    )
+                    ranking_parameters.extend((field, value.strip()))
+            if file_hash:
+                ranking_terms.append(
+                    """
+                    CASE WHEN LOWER(COALESCE((
+                        SELECT rank_location.sha256
+                        FROM file_locations rank_location
+                        WHERE rank_location.path=s.path
+                          AND rank_location.file_kind='ols'
+                          AND rank_location.is_present=1
+                          AND rank_location.sha256 IS NOT NULL
+                        ORDER BY rank_location.id DESC LIMIT 1
+                    ),''))=? THEN 100 ELSE 0 END
+                    """
+                )
+                ranking_parameters.append(file_hash.strip().lower())
+            if binary_hash:
+                ranking_terms.append("12")
+            if map_name or columns is not None or rows is not None:
+                ranking_terms.append("4")
+            if version_name:
+                ranking_terms.append("4")
+            rank_score_expression = " + ".join(ranking_terms)
+            order_clause = "ORDER BY evidence_rank_score DESC,p.id ASC"
+        else:
+            rank_score_expression = "0"
+            order_clause = "ORDER BY p.id ASC"
         rows_found = search_connection.execute(
             f"""
         SELECT p.id,p.format_version,p.parser_name,p.parser_version,p.is_complete,
@@ -348,7 +393,8 @@ def search_projects(
                (SELECT COUNT(*) FROM project_version_slots vs WHERE vs.project_id=p.id) slot_count,
                (SELECT COUNT(*) FROM map_definitions m WHERE m.project_id=p.id) map_count,
                (SELECT COUNT(*) FROM map_axes a JOIN map_definitions m ON m.id=a.map_id
-                WHERE m.project_id=p.id) axis_count
+                WHERE m.project_id=p.id) axis_count,
+               ({rank_score_expression}) AS evidence_rank_score
         FROM projects p
         JOIN source_files s ON s.id=p.source_id
         LEFT JOIN project_diagnostics d ON d.project_id=p.id
@@ -356,7 +402,7 @@ def search_projects(
         {order_clause}
         LIMIT ? OFFSET ?
         """,
-            parameters,
+            [*ranking_parameters, *parameters],
         ).fetchall()
     except sqlite3.OperationalError as exc:
         if "interrupted" in str(exc).lower():

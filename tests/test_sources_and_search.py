@@ -1379,6 +1379,83 @@ class SourceAndSearchTests(unittest.TestCase):
                     writer.close()
                 database.close()
 
+    def test_any_metadata_search_ranks_before_pagination(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            strong_match = root / "strong-match.ols"
+            weak_match = root / "weak-match.ols"
+            strong_match.write_bytes(b"strong project")
+            weak_match.write_bytes(b"weak project")
+            database = IndexDatabase(root / "index.sqlite3")
+            try:
+                outcomes = list(import_sources(
+                    sources=[strong_match, weak_match],
+                    reader=FixtureReader(),
+                    database=database,
+                    max_file_bytes=1024,
+                    progress=False,
+                ))
+                self.assertEqual(len(outcomes), 2)
+                project_ids = {
+                    Path(row["path"]).name: int(row["id"])
+                    for row in database.connection.execute(
+                        """
+                        SELECT p.id,s.path
+                        FROM projects p JOIN source_files s ON s.id=p.source_id
+                        """
+                    )
+                }
+                with database.connection:
+                    database.connection.execute(
+                        """
+                        UPDATE project_metadata SET value='SW-OTHER'
+                        WHERE project_id=? AND field='sw_number'
+                        """,
+                        (project_ids[weak_match.name],),
+                    )
+
+                filters = {
+                    "metadata": {
+                        "ecu_type": "ECU-A",
+                        "sw_number": "SW-123",
+                    },
+                    "metadata_match_mode": "any",
+                }
+                first_page = search_projects(database, **filters, limit=1)
+                second_page = search_projects(
+                    database, **filters, limit=1, offset=1
+                )
+
+                self.assertEqual(first_page["result_count"], 1)
+                self.assertTrue(first_page["has_more"])
+                self.assertEqual(
+                    first_page["results"][0]["project_id"],
+                    project_ids[strong_match.name],
+                )
+                self.assertEqual(
+                    second_page["results"][0]["project_id"],
+                    project_ids[weak_match.name],
+                )
+                self.assertGreater(
+                    first_page["results"][0]["rank_score"],
+                    second_page["results"][0]["rank_score"],
+                )
+                self.assertEqual(
+                    first_page["ranking_scope"],
+                    "whole_filtered_result_set",
+                )
+                empty_filter = search_projects(
+                    database,
+                    metadata={"sw_number": " "},
+                    limit=2,
+                )
+                self.assertEqual(empty_filter["result_count"], 2)
+                self.assertTrue(
+                    all(result["rank_score"] == 0 for result in empty_filter["results"])
+                )
+            finally:
+                database.close()
+
     def test_project_search_surfaces_sqlite_read_failures(self):
         with tempfile.TemporaryDirectory() as directory:
             database = IndexDatabase(Path(directory) / "index.sqlite3")
