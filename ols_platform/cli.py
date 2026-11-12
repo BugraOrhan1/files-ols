@@ -34,6 +34,7 @@ from .binary_reference_analysis import (
 from .reference_package import (
     build_package_report,
     compare_map_metadata,
+    compare_project_metadata,
     import_reference_package,
     inspect_package,
     match_package_versions,
@@ -301,7 +302,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     version_match = commands.add_parser(
         "reference-version-match",
-        help="Compare each packet version independently with every OLS binary slot.",
+        help="Compare reviewed WinOLS version exports with each OLS binary slot.",
     )
     version_match.add_argument("manifest", type=Path)
     version_match.add_argument("--chunk-bytes", type=int, default=1024 * 1024)
@@ -311,11 +312,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     map_compare = commands.add_parser(
         "reference-map-compare",
-        help="Compare an external map list with parser metadata without assuming address semantics.",
+        help="Compare manually reviewed WinOLS map fields without assuming address semantics.",
     )
     map_compare.add_argument("manifest", type=Path)
     map_compare.add_argument("--output", type=Path)
     map_compare.set_defaults(action="reference-map-compare")
+
+    metadata_compare = commands.add_parser(
+        "reference-metadata-compare",
+        help="Compare reviewed WinOLS project metadata with parser metadata.",
+    )
+    metadata_compare.add_argument("manifest", type=Path)
+    metadata_compare.add_argument("--output", type=Path)
+    metadata_compare.set_defaults(action="reference-metadata-compare")
 
     package_report = commands.add_parser(
         "reference-package-report",
@@ -1154,6 +1163,25 @@ def main(argv: list[str] | None = None) -> int:
                 args.output.parent.mkdir(parents=True, exist_ok=True)
                 args.output.write_text(output + "\n", encoding="utf-8")
                 print(f"Map comparison written to {args.output.resolve()}")
+            else:
+                print(output)
+        elif args.action == "reference-metadata-compare":
+            report = compare_project_metadata(database, args.manifest)
+            diagnostic = database.get_diagnostic(report["project_id"])
+            report["run_id"] = database.store_reference_package_run(
+                project_id=report["project_id"],
+                source_sha256=diagnostic["source"]["sha256"],
+                manifest_path=str(args.manifest.resolve()),
+                manifest_sha256=report["manifest_sha256"],
+                run_type="project_metadata",
+                status=report["status"],
+                report=report,
+            )
+            output = json.dumps(report, indent=2, ensure_ascii=False)
+            if args.output:
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(output + "\n", encoding="utf-8")
+                print(f"Metadata comparison written to {args.output.resolve()}")
             else:
                 print(output)
         elif args.action == "reference-package-report":

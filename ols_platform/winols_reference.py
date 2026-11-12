@@ -239,6 +239,17 @@ def import_manifest(database: Any, manifest_path: Path) -> dict[str, Any]:
         if not isinstance(user_metadata, dict):
             raise ValueError(f"Artifact {ordinal} metadata must be an object.")
         metadata: dict[str, Any] = dict(user_metadata)
+        version_key = artifact.get("version_key")
+        versions = manifest.get("exported_versions", [])
+        version_record = next(
+            (
+                item
+                for item in versions
+                if isinstance(item, dict)
+                and item.get("version_key") == version_key
+            ),
+            {},
+        ) if isinstance(versions, list) else {}
         metadata.update(
             {
                 "element_id": artifact.get("element_id"),
@@ -249,6 +260,11 @@ def import_manifest(database: Any, manifest_path: Path) -> dict[str, Any]:
                 "memory_region": artifact.get("memory_region"),
                 "coverage_complete_declared": manifest.get("coverage_complete", False),
                 "manifest_project_relation_status": relation_status,
+                "manifest_project_relation_evidence": relation.get("evidence", ""),
+                "project_identity": manifest.get("project_identity", {}),
+                "project_manual_review": manifest.get("manual_review", {}),
+                "artifact_source": artifact.get("artifact_source", "unknown"),
+                "manual_review": artifact.get("manual_review", {}),
                 "export_settings": export_settings,
                 "export_method": artifact.get(
                     "export_method", manifest.get("export_method", "unknown")
@@ -260,6 +276,12 @@ def import_manifest(database: Any, manifest_path: Path) -> dict[str, Any]:
                 "relation_evidence": artifact.get(
                     "relation_evidence",
                     relation.get("evidence", ""),
+                ),
+                "version_relation_status": version_record.get(
+                    "relation_status", "unknown"
+                ),
+                "version_relation_evidence": version_record.get(
+                    "relation_evidence", ""
                 ),
             }
         )

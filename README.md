@@ -174,16 +174,25 @@ python -m ols_platform.cli reference-package-inspect data\reference-packets\8\ma
 
 Place each actual WinOLS raw version export separately in
 `data\reference-packets\8\exports\versions\`, the WinOLS map-list CSV/JSON in
-`exports\maps\`, and any additional map details/value exports in
-`exports\additional\`. In the manifest, list only versions actually exported.
-Record each file's size and SHA-256, the WinOLS version, exact export settings,
-and evidence for any version/slot relationship. A filename by itself is not
-evidence. Leave unknown fields unknown; do not strip or normalize any bytes.
+`exports\maps\`, project metadata JSON and any additional map details/value
+exports in `exports\additional\`. Project metadata JSON uses
+`{"metadata": {"field": "value"}}`. In the manifest, list only versions
+actually exported. Record the WinOLS project identity and relation to the
+exact source OLS hash. For each artifact,
+set `artifact_source` to `winols_export` or `winols_manual_observation`, and
+record its size, SHA-256, and any project/version/slot relationship. Parser
+output is never accepted as an independent artifact source. The manifest-level
+WinOLS version, export method, and settings apply to an artifact only when it
+has no explicit override. A filename or hash by itself
+does not prove export origin or meaning. Record the reviewer, date, method,
+evidence, and exact fields checked in each `manual_review` object; leave
+unknowns and missing evidence explicit. Do not strip or normalize any bytes.
 
 ```powershell
 python -m ols_platform.cli reference-package-inspect data\reference-packets\8\manifest.json
 python -m ols_platform.cli reference-package-import data\reference-packets\8\manifest.json
 python -m ols_platform.cli reference-version-match data\reference-packets\8\manifest.json --output data\reference-reports\project-8-version-match.json
+python -m ols_platform.cli reference-metadata-compare data\reference-packets\8\manifest.json --output data\reference-reports\project-8-metadata-compare.json
 python -m ols_platform.cli reference-map-compare data\reference-packets\8\manifest.json --output data\reference-reports\project-8-map-compare.json
 python -m ols_platform.cli reference-package-report 8 --output data\reference-reports\project-8-package.json
 ```
@@ -192,20 +201,36 @@ Version comparisons stream the export against each source slot, post-marker
 payload, and contiguous boundary range. They report full-length equality,
 exact partial prefixes, size differences, and changed byte ranges separately.
 A prefix or boundary-spanning match is never treated as a full slot match.
-Automatic `PASS` requires explicit project/version/slot evidence, a declared
-binary representation, full exact bytes, and a slot not also claimed by a
-different exported version. All package inspection, matching, and map
-comparison runs are append-only. The active SQLite schema is 10; the loopback-only
-Importdiagnose page includes the packet inspection, parser data, latest package
-runs, and missing references.
+An exact binary match is only a byte comparison. A version match is `PASS`
+only when the exact OLS source relation, WinOLS project identity, version name,
+version-to-slot relation, export-to-version relation, representation, artifact
+origin, reviewer evidence, complete version coverage, and full bytes are all
+confirmed. Package inspection's `status` reports packet integrity and
+completeness; `version_evidence_status` separately reports whether the manual
+provenance is adequate for version matching; it is not itself a successful
+byte match or a validated ECU-compatibility result.
 
-Map names can nominate candidate correspondences, but only an explicit
-`parser_ordinal` establishes a stable join. Addresses are compared only when
-the packet declares matching parser and WinOLS address representations.
-Unknown address semantics and unsupported axis structures remain
-`INCONCLUSIVE`; map metadata does not validate numeric map values in a binary.
+Metadata and map comparisons emit per-field `PASS`, `FAIL`, or
+`NOT_COMPARABLE`. They compare only independently reviewed fields. Project
+metadata JSON must use `{"metadata": {"field": "value"}}`. Map rows must carry a
+`parser_ordinal` that a reviewer explicitly confirmed; a name alone is not a
+join key. Addresses require matching declared representations. Incomplete
+metadata, axes, map inventory, project/version relations, or export provenance
+cannot produce an overall `PASS`. Map metadata does not validate numeric map
+values in a binary. All package inspection, matching, and comparison runs are
+append-only. The loopback-only Importdiagnose page includes packet inspection,
+parser data, latest package runs, and missing references.
 Until a real packet is supplied, project 8 remains `NOT_TESTED`; synthetic
 unit fixtures are not WinOLS validation evidence.
+
+The root `project_id` in a packet is the local index ID, not a WinOLS ID.
+Record the WinOLS project identity separately in `project_identity`; keep the
+OLS-to-project and project-to-version relationships in their respective
+evidence fields. `reference-package-template` also creates a `CHECKLIST.txt`
+for the producing WinOLS version, export settings, reviewer, evidence, and
+remaining gaps. Unknown values stay unknown. A manifest and matching file
+hashes establish packet integrity, not export origin, project identity, or
+export meaning.
 
 The database defaults to `data\ols-index.sqlite3`; override it with the global
 `--database` option before the subcommand, e.g.
@@ -798,22 +823,23 @@ python -m unittest discover -s tests -v
 The eight-project integration test is skipped unless `PY_OLS_PATH` points to a
 separate py-ols checkout and all eight sample files are available in the
 workspace. Unit tests still run without the external parser.
-Phase 11C's latest full run used the configured separate parser checkout and
-all eight samples: 87 tests passed, with 0 failures and 0 skips.
+The Phase 11D full run used the configured separate parser checkout and all
+eight samples: 91 tests passed, with 0 failures and 0 skips. Both real-parser
+integration tests ran. The unittest child process exit was `0`; the PowerShell
+tool wrapper reported `1` for the same invocation, so these results and exit
+codes are recorded separately in `PHASE11_STATUS.md`.
 
 ### Read-only OLS parser diagnostics
 
 With the eight samples and a separate `py-ols` checkout available, create a
-detailed JSON report and optional reference-package templates outside the
-repository:
+detailed, read-only JSON parser report outside the repository:
 
 ```powershell
 $env:PY_OLS_PATH = "C:\path\to\py-ols"
 python -m ols_platform.ols_sample_diagnostics `
   --samples-dir "C:\path\to\ols-samples" `
   --py-ols-path $env:PY_OLS_PATH `
-  --output "$env:TEMP\ols-sample-diagnostics.json" `
-  --reference-template-dir "$env:TEMP\ols-reference-templates"
+  --output "$env:TEMP\ols-sample-diagnostics.json"
 ```
 
 The report records per-file SHA-256, parser and OLS format versions, metadata
@@ -821,19 +847,23 @@ field presence/emptiness as exposed by the parser object, named versions,
 enumerated binary slots, map types, map and axis details, and every parser
 warning/error. Empty parser fields do not prove that the corresponding source
 field is absent from the OLS project. The tool only reads the OLS samples and
-refuses to write its report over one of them.
+refuses to write its report over one of them. Reference exports use the
+canonical `reference-package-template` manifest and the package
+`reference-version-match`, `reference-metadata-compare`, and
+`reference-map-compare` commands. The diagnostic report itself is never an
+independent reference.
 
-An optional `--reference-dir` accepts `<sample-stem>.json` manifests. A
-comparison is accepted only when the manifest ties to the exact sample
-filename and SHA-256, hashes an available independent export artifact, records
-the export method and WinOLS version, confirms the project relationship,
-declares independent validation and complete coverage, and records reviewer
-attestation. `observations` maps diagnostic dotted paths to values taken from
-that artifact; list indices are supported, for example `maps.0.name`. Missing
-or partial references remain `NOT_TESTED`, `PARTIAL`,
-or `INCONCLUSIVE`; parser output is never an independent reference. Even a
-field-level `PASS` is limited to the recorded observations and does not prove
-ECU compatibility or validate unrelated fields.
+### Independent WinOLS reference validation
+
+The parser diagnostic report is observational only. Use the existing
+reference-package manifest to attach separate WinOLS exports, record their
+hashes, sizes, export method/settings, project/version/slot relationships, and
+manual review evidence, then run `reference-package-inspect` and the relevant
+version, metadata, or map comparison. Results stay `NOT_TESTED` when an
+independent artifact is absent and `INCONCLUSIVE` when its provenance or
+relationship is incomplete. No independent WinOLS exports were available for
+the eight samples during Phase 11D, so their structural validation remains
+`NOT_TESTED`.
 
 ## Phase 5 limits
 

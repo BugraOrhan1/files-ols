@@ -42,6 +42,125 @@ def _safe_sha256(value: object) -> bool:
     return True
 
 
+def _known_text(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    normalized = value.strip().casefold()
+    return bool(normalized) and "unknown" not in normalized and normalized not in {
+        "not known",
+        "n/a",
+    }
+
+
+def _manual_review_gaps(
+    review: object,
+    required_fields: set[str] | None = None,
+) -> list[str]:
+    if not isinstance(review, dict):
+        return ["manual_review record is missing."]
+    gaps = []
+    if review.get("status") != "confirmed":
+        gaps.append("manual_review.status is not confirmed.")
+    for field in ("reviewer", "reviewed_at", "method", "evidence"):
+        if not _known_text(review.get(field)):
+            gaps.append(f"manual_review.{field} is unknown.")
+    confirmed_fields = review.get("confirmed_fields")
+    if not isinstance(confirmed_fields, list) or not all(
+        isinstance(item, str) and item.strip() for item in confirmed_fields
+    ):
+        confirmed_fields = []
+    for field in sorted(required_fields or set()):
+        if field not in confirmed_fields:
+            gaps.append(f"manual_review does not confirm {field}.")
+    missing_evidence = review.get("missing_evidence", [])
+    if not isinstance(missing_evidence, list):
+        gaps.append("manual_review.missing_evidence must be an array.")
+    else:
+        for item in missing_evidence:
+            if not isinstance(item, str) or not item.strip():
+                gaps.append(
+                    "manual_review.missing_evidence entries must be non-empty strings."
+                )
+            else:
+                gaps.append(f"Missing evidence: {item}")
+    return gaps
+
+
+def _project_review_gaps(manifest: dict[str, Any]) -> list[str]:
+    identity = manifest.get("project_identity")
+    gaps = []
+    if not isinstance(identity, dict):
+        gaps.append("project_identity record is missing.")
+    else:
+        if identity.get("status") != "confirmed":
+            gaps.append("WinOLS project identity is not confirmed.")
+        if not _known_text(identity.get("project_name")):
+            gaps.append("WinOLS project name is unknown.")
+        if not _known_text(identity.get("evidence")):
+            gaps.append("WinOLS project identity evidence is missing.")
+
+    relation = manifest.get("project_relation")
+    if not isinstance(relation, dict) or relation.get("status") != "confirmed":
+        gaps.append("OLS-to-WinOLS project relation is not confirmed.")
+    elif not _known_text(relation.get("evidence")):
+        gaps.append("OLS-to-WinOLS project relation evidence is missing.")
+
+    gaps.extend(
+        _manual_review_gaps(
+            manifest.get("manual_review"),
+            {"project_identity", "project_relation"},
+        )
+    )
+    return gaps
+
+
+def _artifact_provenance_gaps(
+    artifact: dict[str, Any],
+    manifest: dict[str, Any],
+) -> list[str]:
+    gaps = []
+    if artifact.get("artifact_source") not in {
+        "winols_export",
+        "winols_manual_observation",
+    }:
+        gaps.append(
+            "Artifact source must be winols_export or winols_manual_observation."
+        )
+    method = artifact.get("export_method", manifest.get("export_method"))
+    winols = manifest.get("winols")
+    default_version = winols.get("version") if isinstance(winols, dict) else None
+    version = artifact.get("winols_version", default_version)
+    if not _known_text(method):
+        gaps.append("Artifact export method is unknown.")
+    if not _known_text(version):
+        gaps.append("Artifact-producing WinOLS version is unknown.")
+    inherited_settings = manifest.get("export_settings")
+    settings = dict(inherited_settings) if isinstance(inherited_settings, dict) else {}
+    artifact_settings = artifact.get("export_settings")
+    if isinstance(artifact_settings, dict):
+        settings.update(artifact_settings)
+    if not settings:
+        gaps.append("Artifact-specific or inherited export settings are missing.")
+    if artifact.get("kind") == "binary_version":
+        for field in (
+            "binary_format",
+            "checksum_or_syncblock_options",
+            "address_range",
+        ):
+            if not _known_text(settings.get(field)):
+                gaps.append(f"Binary export setting {field} is unknown.")
+    return gaps
+
+
+def _reviewed_fields(review: object) -> set[str]:
+    if not isinstance(review, dict):
+        return set()
+    fields = review.get("confirmed_fields")
+    if not isinstance(fields, list):
+        return set()
+    return {item for item in fields if isinstance(item, str)}
+
+
 def make_package_template(database: Any, project_id: int) -> dict[str, Any]:
     diagnostic = database.get_diagnostic(project_id)
     if diagnostic is None:
@@ -60,6 +179,12 @@ def make_package_template(database: Any, project_id: int) -> dict[str, Any]:
         },
         "winols": {"version": "unknown"},
         "export_method": "unknown",
+        "project_identity": {
+            "project_name": "unknown",
+            "project_id": "unknown",
+            "status": "unknown",
+            "evidence": "",
+        },
         "export_settings": {
             "binary_format": "unknown",
             "checksum_or_syncblock_options": "unknown",
@@ -72,6 +197,18 @@ def make_package_template(database: Any, project_id: int) -> dict[str, Any]:
             },
         },
         "project_relation": {"status": "unknown", "evidence": ""},
+        "manual_review": {
+            "status": "NOT_TESTED",
+            "reviewer": "unknown",
+            "reviewed_at": "unknown",
+            "method": "unknown",
+            "evidence": "",
+            "confirmed_fields": [],
+            "missing_evidence": [
+                "Confirm the WinOLS project identity and its relation to this exact OLS hash.",
+                "Review the complete version inventory and every exported artifact relation.",
+            ],
+        },
         "coverage_complete": False,
         "exported_versions": [],
         "parser_inventory": {
@@ -84,16 +221,23 @@ def make_package_template(database: Any, project_id: int) -> dict[str, Any]:
         "required_files": [
             "One raw binary export for each exported version, stored separately "
             "under exports/versions/.",
-            "WinOLS map-list CSV or JSON under exports/maps/.",
+            "WinOLS map-list CSV or JSON under exports/maps/; include a parser_ordinal "
+            "only when the map-to-parser relation was manually checked.",
+            "Project metadata as JSON under exports/additional/ using "
+            "{\"metadata\": {\"field\": \"value\"}}.",
             "Any available map details or value exports, stored separately.",
             "This completed manifest with the producing WinOLS version, exact "
             "export settings, sizes, SHA-256 hashes, and version provenance.",
+            "Artifact source/origin (`winols_export` or "
+            "`winols_manual_observation`), export method, WinOLS version, reviewer, "
+            "date, evidence, confirmed field paths, and any remaining missing evidence.",
         ],
         "notes": (
             "The original OLS file is referenced by path and hash and must not "
             "be copied over or modified. Add only versions actually exported. "
             "Filenames are not version-name or slot-mapping evidence. Keep "
-            "unknown fields unknown; do not strip boundary bytes."
+            "unknown fields unknown; do not strip boundary bytes. Hashes prove "
+            "byte identity only, not project identity, export origin, or meaning."
         ),
         "_suggested_package_directory": str(root),
     }
@@ -131,20 +275,39 @@ def write_package_template(
                 f"Source SHA-256: {manifest['source']['sha256']}",
                 "",
                 "[ ] Confirm the OLS source path and SHA-256 in WinOLS.",
+                "[ ] Record the WinOLS project name/ID only as shown in WinOLS; "
+                "leave unavailable identifiers unknown.",
+                "[ ] Record the reviewer, date, method, and evidence for the "
+                "project-to-source relation.",
                 "[ ] Record the exact WinOLS version and export settings.",
-                "[ ] List each version actually exported in exported_versions.",
+                "[ ] Enumerate every project version in WinOLS; mark "
+                "coverage_complete only after checking the whole inventory.",
+                "[ ] List each exported version in exported_versions with its "
+                "confirmed name, slot, relation status, and relation evidence.",
                 "[ ] Export each version to exports/versions/ as an unmodified raw binary.",
                 "[ ] Record each export's exact version name, byte size, SHA-256,",
                 "    relation evidence, and slot only if independently established.",
-                "[ ] Export the WinOLS map list as CSV or JSON to exports/maps/.",
+                "[ ] For each artifact, record artifact_source. The manifest's "
+                "export method, WinOLS version, and settings apply only when the",
+                "    artifact has no explicit override.",
+                "    Use winols_export or winols_manual_observation; parser output",
+                "    cannot be an independent reference.",
+                "[ ] Export the WinOLS map list as CSV or JSON to exports/maps/; "
+                "record any reviewed map-to-parser ordinal relation.",
+                "[ ] Review only fields actually checked in WinOLS and list their "
+                "canonical paths in the artifact manual_review.confirmed_fields.",
                 "[ ] Add available map detail/value exports under exports/additional/.",
+                "[ ] For project metadata JSON, use {\"metadata\": {field: value}} "
+                "and review each metadata.<field> path.",
                 "[ ] Record the address representation; leave it unknown if unclear.",
                 "[ ] Do not truncate, normalize, checksum-correct, or strip bytes.",
-                "[ ] Run package-inspect, then package-import, version-match,",
-                "    map-compare, and package-report.",
+                "[ ] Run package-inspect, version-match, metadata-compare,",
+                "    map-compare, and package-report. Import is optional and is",
+                "    not an independent-validation step.",
                 "",
                 "No WinOLS export has been generated by this template.",
                 "The empty package is NOT_TESTED and is not validation evidence.",
+                "A hash verifies bytes only; it does not prove their origin or meaning.",
                 "",
             ]
         ),
@@ -250,6 +413,18 @@ def inspect_package(database: Any, manifest_path: Path) -> dict[str, Any]:
         not isinstance(relation_evidence, str) or not relation_evidence.strip()
     ):
         errors.append("Confirmed project_relation requires non-empty evidence.")
+    project_identity = manifest.get("project_identity")
+    if not isinstance(project_identity, dict):
+        warnings.append("WinOLS project identity details are not recorded.")
+    elif project_identity.get("status") != "confirmed":
+        warnings.append("WinOLS project identity details are not confirmed.")
+    elif not _known_text(project_identity.get("project_name")) or not _known_text(
+        project_identity.get("evidence")
+    ):
+        warnings.append(
+            "Confirmed WinOLS project identity requires a known name and evidence."
+        )
+    project_review_gaps = _project_review_gaps(manifest)
 
     versions = manifest.get("exported_versions", [])
     if not isinstance(versions, list):
@@ -271,20 +446,37 @@ def inspect_package(database: Any, manifest_path: Path) -> dict[str, Any]:
             continue
         version_by_key[key] = version
         name = version.get("version_name")
+        version_relation = version.get("relation_status", "unknown")
+        if version_relation not in RELATION_STATUSES:
+            errors.append(f"Version {key} has an invalid relation_status.")
+            version_relation = "unknown"
+        relation_evidence_value = version.get("relation_evidence")
+        if version_relation == "confirmed" and not _known_text(
+            relation_evidence_value
+        ):
+            warnings.append(
+                f"Version {key} has a confirmed relation without evidence."
+            )
         version_reports.append(
             {
                 "version_key": key,
                 "version_name": name if isinstance(name, str) else "",
                 "source_slot_index": version.get("source_slot_index"),
+                "relation_status": version_relation,
+                "relation_evidence_status": (
+                    "available"
+                    if _known_text(relation_evidence_value)
+                    else "missing"
+                ),
                 "name_status": (
                     "available"
-                    if isinstance(name, str) and name.strip()
+                    if _known_text(name)
                     else "missing"
                 ),
                 "artifact_count": 0,
             }
         )
-        if not isinstance(name, str) or not name.strip():
+        if not _known_text(name):
             warnings.append(f"Version {key} has no exported version name.")
         slot = version.get("source_slot_index")
         if slot is not None and (not isinstance(slot, int) or slot < 0):
@@ -371,6 +563,12 @@ def inspect_package(database: Any, manifest_path: Path) -> dict[str, Any]:
         if artifact_relation not in RELATION_STATUSES:
             artifact_status = "FAIL"
             artifact_errors.append("Invalid artifact relation_status.")
+        artifact_slot = artifact.get("source_slot_index")
+        if artifact_slot is not None and (
+            not isinstance(artifact_slot, int) or artifact_slot < 0
+        ):
+            artifact_status = "FAIL"
+            artifact_errors.append("Artifact source_slot_index is invalid.")
         if kind == "binary_version":
             if not isinstance(version_key, str) or version_key not in version_by_key:
                 artifact_status = (
@@ -380,11 +578,30 @@ def inspect_package(database: Any, manifest_path: Path) -> dict[str, Any]:
                     "Binary version artifact is not linked to an exported_versions entry."
                 )
             else:
+                linked_version = version_by_key[version_key]
                 linked_binary_counts[version_key] = (
                     linked_binary_counts.get(version_key, 0) + 1
                 )
-                if not isinstance(version_name, str) or not version_name.strip():
-                    version_name = version_by_key[version_key].get("version_name", "")
+                if not _known_text(version_name):
+                    version_name = linked_version.get("version_name", "")
+                elif _known_text(linked_version.get("version_name")) and (
+                    version_name.strip().casefold()
+                    != linked_version["version_name"].strip().casefold()
+                ):
+                    artifact_status = "FAIL"
+                    artifact_errors.append(
+                        "Artifact version_name conflicts with exported_versions."
+                    )
+                linked_slot = linked_version.get("source_slot_index")
+                if (
+                    artifact_slot is not None
+                    and linked_slot is not None
+                    and artifact_slot != linked_slot
+                ):
+                    artifact_status = "FAIL"
+                    artifact_errors.append(
+                        "Artifact source_slot_index conflicts with exported_versions."
+                    )
                 version_report = next(
                     (item for item in version_reports if item["version_key"] == version_key),
                     None,
@@ -400,6 +617,22 @@ def inspect_package(database: Any, manifest_path: Path) -> dict[str, Any]:
                         if artifact_status != "FAIL"
                         else artifact_status
                     )
+        artifact_review_fields = (
+            {
+                "project_relation",
+                "version_relation",
+                "version_name",
+                "source_slot_index",
+                "representation",
+            }
+            if kind == "binary_version"
+            else set()
+        )
+        artifact_review_gaps = _manual_review_gaps(
+            artifact.get("manual_review"),
+            artifact_review_fields,
+        )
+        artifact_provenance_gaps = _artifact_provenance_gaps(artifact, manifest)
         if artifact_status == "FAIL":
             errors.extend(f"Artifact {ordinal}: {item}" for item in artifact_errors)
         artifact_reports.append(
@@ -418,6 +651,11 @@ def inspect_package(database: Any, manifest_path: Path) -> dict[str, Any]:
                 "actual_sha256": actual_hash,
                 "status": artifact_status,
                 "errors": artifact_errors,
+                "manual_review_status": (
+                    "PASS" if not artifact_review_gaps else "INCONCLUSIVE"
+                ),
+                "manual_review_gaps": artifact_review_gaps,
+                "provenance_gaps": artifact_provenance_gaps,
             }
         )
 
@@ -448,17 +686,11 @@ def inspect_package(database: Any, manifest_path: Path) -> dict[str, Any]:
     export_method = manifest.get("export_method", "unknown")
     export_settings = manifest.get("export_settings", {})
     settings_complete = (
-        isinstance(winols_version, str)
-        and bool(winols_version.strip())
-        and winols_version.strip().casefold() != "unknown"
-        and isinstance(export_method, str)
-        and bool(export_method.strip())
-        and export_method.strip().casefold() != "unknown"
+        _known_text(winols_version)
+        and _known_text(export_method)
         and isinstance(export_settings, dict)
         and all(
-            isinstance(export_settings.get(key), str)
-            and bool(export_settings[key].strip())
-            and export_settings[key].strip().casefold() != "unknown"
+            _known_text(export_settings.get(key))
             for key in (
                 "binary_format",
                 "checksum_or_syncblock_options",
@@ -470,6 +702,68 @@ def inspect_package(database: Any, manifest_path: Path) -> dict[str, Any]:
         warnings.append(
             "WinOLS version, export method, or required export settings are unknown."
         )
+    version_evidence_gaps = list(project_review_gaps)
+    if manifest.get("coverage_complete") is not True:
+        version_evidence_gaps.append(
+            "Complete project-version coverage has not been confirmed."
+        )
+    top_review_gaps = _manual_review_gaps(
+        manifest.get("manual_review"),
+        {"version_inventory"},
+    )
+    version_evidence_gaps.extend(top_review_gaps)
+    for version in version_reports:
+        key = version["version_key"]
+        if not _known_text(version["version_name"]):
+            version_evidence_gaps.append(f"Version {key} has no confirmed name.")
+        if version["source_slot_index"] is None:
+            version_evidence_gaps.append(
+                f"Version {key} has no confirmed source_slot_index."
+            )
+        if version["relation_status"] != "confirmed":
+            version_evidence_gaps.append(
+                f"Version {key} relation to the OLS project is not confirmed."
+            )
+        elif version["relation_evidence_status"] != "available":
+            version_evidence_gaps.append(
+                f"Version {key} relation evidence is missing."
+            )
+        linked_artifacts = [
+            item
+            for item in artifact_reports
+            if item["kind"] == "binary_version"
+            and item["version_key"] == key
+        ]
+        if len(linked_artifacts) != 1:
+            version_evidence_gaps.append(
+                f"Version {key} does not have exactly one binary export."
+            )
+        for item in linked_artifacts:
+            if item["provenance_gaps"]:
+                version_evidence_gaps.extend(item["provenance_gaps"])
+            if item["relation_status"] != "confirmed":
+                version_evidence_gaps.append(
+                    f"Binary export for version {key} is not linked by a confirmed relation."
+                )
+            if item["manual_review_status"] != "PASS":
+                version_evidence_gaps.extend(item["manual_review_gaps"])
+            if item["status"] != "PASS":
+                version_evidence_gaps.append(
+                    f"Binary export for version {key} is not hash/size verified."
+                )
+    version_evidence_gaps = list(dict.fromkeys(version_evidence_gaps))
+    if not version_reports:
+        version_evidence_status = "NOT_TESTED"
+    elif source_report["status"] == "FAIL" or any(
+        item["status"] == "FAIL"
+        for item in artifact_reports
+        if item["kind"] == "binary_version"
+    ):
+        version_evidence_status = "FAIL"
+    elif version_evidence_gaps:
+        version_evidence_status = "INCONCLUSIVE"
+    else:
+        version_evidence_status = "PASS"
     if errors:
         status = "FAIL"
     elif (
@@ -498,6 +792,8 @@ def inspect_package(database: Any, manifest_path: Path) -> dict[str, Any]:
         "manifest_sha256": manifest_hash,
         "project_id": project_id,
         "status": status,
+        "version_evidence_status": version_evidence_status,
+        "version_evidence_gaps": version_evidence_gaps,
         "source": source_report,
         "project_relation_status": relation_status,
         "winols_version": winols_version,
@@ -662,7 +958,7 @@ def match_package_versions(
     }
     raw_artifacts = manifest.get("artifacts", [])
     version_reports: list[dict[str, Any]] = []
-    for ordinal, artifact in enumerate(raw_artifacts):
+    for artifact in raw_artifacts:
         if not isinstance(artifact, dict) or artifact.get("kind") != "binary_version":
             continue
         key = artifact.get("version_key")
@@ -682,11 +978,14 @@ def match_package_versions(
             "reason": "",
             "export_settings": manifest.get("export_settings", {}),
             "explicit_source_slot_index": artifact.get(
-                "source_slot_index",
-                version.get("source_slot_index") if version else None,
-            ),
+                "source_slot_index"
+            )
+            if artifact.get("source_slot_index") is not None
+            else (version.get("source_slot_index") if version else None),
             "explicit_relation_status": artifact.get("relation_status", "unknown"),
             "representation": artifact.get("representation", "unknown"),
+            "version_evidence_status": inspected["version_evidence_status"],
+            "version_evidence_gaps": inspected["version_evidence_gaps"],
         }
         try:
             reference_path = _resolve_artifact(manifest_path, artifact.get("path"))
@@ -804,18 +1103,21 @@ def match_package_versions(
                 prefix_candidates.append(candidate["slot_index"])
         report["exact_partial_candidate_slots"] = prefix_candidates
         explicit_slot = report["explicit_source_slot_index"]
+        version_relation = (
+            version.get("relation_status", "unknown") if version else "unknown"
+        )
         relation_confirmed = (
             inspected["project_relation_status"] == "confirmed"
-            and isinstance(
-                manifest.get("project_relation", {}).get("evidence"), str
+            and _known_text(
+                manifest.get("project_relation", {}).get("evidence")
             )
-            and bool(manifest.get("project_relation", {}).get("evidence", "").strip())
+            and version_relation == "confirmed"
+            and _known_text(version.get("relation_evidence") if version else None)
             and report["explicit_relation_status"] == "confirmed"
-            and isinstance(artifact.get("relation_evidence"), str)
-            and bool(artifact.get("relation_evidence", "").strip())
+            and _known_text(artifact.get("relation_evidence"))
             and representation in REPRESENTATIONS - {"unknown"}
-            and isinstance(name, str)
-            and bool(name.strip())
+            and _known_text(name)
+            and inspected["version_evidence_status"] == "PASS"
             and inspected["status"] != "FAIL"
         )
         slot_indices = {item["slot_index"] for item in project["version_slots"]}
@@ -917,19 +1219,28 @@ def _load_map_rows(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _load_project_metadata(path: Path) -> dict[str, Any]:
+    if path.stat().st_size > MAX_METADATA_BYTES:
+        raise ValueError(f"Project metadata export exceeds {MAX_METADATA_BYTES} bytes.")
+    if path.suffix.lower() != ".json":
+        raise ValueError("Project metadata must use the documented JSON format.")
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict) or not isinstance(value.get("metadata"), dict):
+        raise ValueError(
+            'Project metadata JSON must contain a "metadata" object.'
+        )
+    metadata = value["metadata"]
+    if not all(isinstance(key, str) for key in metadata):
+        raise ValueError("Project metadata keys must be strings.")
+    return metadata
+
+
 def _field(record: dict[str, Any], *names: str) -> Any:
     lowered = {str(key).strip().lower(): value for key, value in record.items()}
     for name in names:
         if name.lower() in lowered:
             return lowered[name.lower()]
     return None
-
-
-def _canonical_text(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text if text else None
 
 
 def _numeric_value(value: Any) -> Decimal | None:
@@ -944,11 +1255,40 @@ def _numeric_value(value: Any) -> Decimal | None:
         return None
 
 
+def _compare_values(
+    parser_value: Any,
+    reference_value: Any,
+    *,
+    numeric: bool = False,
+    case_insensitive: bool = False,
+) -> str:
+    if reference_value is None:
+        return "NOT_COMPARABLE"
+    if parser_value is None:
+        return "NOT_COMPARABLE"
+    if numeric:
+        parser_number = _numeric_value(parser_value)
+        reference_number = _numeric_value(reference_value)
+        if parser_number is None or reference_number is None:
+            return "NOT_COMPARABLE"
+        return "PASS" if parser_number == reference_number else "FAIL"
+    parser_text = str(parser_value).strip()
+    reference_text = str(reference_value).strip()
+    if case_insensitive:
+        return (
+            "PASS"
+            if parser_text.casefold() == reference_text.casefold()
+            else "FAIL"
+        )
+    return "PASS" if parser_text == reference_text else "FAIL"
+
+
 def _compare_axes(
     parser_axes: list[dict[str, Any]],
     external_axes: Any,
     *,
     address_comparable: bool,
+    confirmed_fields: set[str],
 ) -> dict[str, Any]:
     if isinstance(external_axes, dict):
         axes = []
@@ -961,13 +1301,21 @@ def _compare_axes(
         axes = external_axes
     else:
         return {
-            "status": "INCONCLUSIVE",
+            "status": "NOT_COMPARABLE",
             "parser": parser_axes,
             "reference": external_axes,
             "reason": "External axes do not use a recognized object/list shape.",
         }
     if not parser_axes and not axes:
-        return {"status": "PASS", "parser": [], "reference": []}
+        return {
+            "status": (
+                "PASS"
+                if "maps[*].axes" in confirmed_fields
+                else "NOT_COMPARABLE"
+            ),
+            "parser": [],
+            "reference": [],
+        }
     external_by_role = {
         str(_field(item, "role", "axis", "axis_role") or "").casefold(): item
         for item in axes
@@ -975,13 +1323,20 @@ def _compare_axes(
     results = []
     for parser_axis in parser_axes:
         role = str(parser_axis.get("role", "")).casefold()
-        external_axis = external_by_role.get(role)
+        external_axis = (
+            external_by_role.get(role)
+            if role and "maps[*].axes[*].role" in confirmed_fields
+            else None
+        )
         if external_axis is None:
             results.append(
                 {
                     "role": role,
-                    "status": "NOT_TESTED",
-                    "reason": "No external axis with this role was supplied.",
+                    "status": "NOT_COMPARABLE",
+                    "reason": (
+                        "A manually confirmed role mapping to the external axis "
+                        "was not supplied."
+                    ),
                 }
             )
             continue
@@ -1007,56 +1362,49 @@ def _compare_axes(
         ):
             expected = parser_axis.get(parser_key)
             actual = _field(external_axis, *external_keys)
-            if actual is None:
-                status = "NOT_TESTED"
-            elif numeric:
-                expected_number = _numeric_value(expected)
-                actual_number = _numeric_value(actual)
-                status = (
-                    "PASS"
-                    if expected_number is not None
-                    and expected_number == actual_number
-                    else "FAIL"
+            path = f"maps[*].axes[*].{field_name}"
+            status = (
+                _compare_values(
+                    expected,
+                    actual,
+                    numeric=numeric,
+                    case_insensitive=not numeric,
                 )
-            else:
-                expected_text = _canonical_text(expected)
-                actual_text = _canonical_text(actual)
-                status = (
-                    "PASS"
-                    if expected_text is not None
-                    and actual_text is not None
-                    and expected_text.casefold() == actual_text.casefold()
-                    else "FAIL"
-                )
+                if path in confirmed_fields
+                else "NOT_COMPARABLE"
+            )
             fields[field_name] = {
                 "parser": expected,
                 "reference": actual,
                 "status": status,
             }
         address = _field(external_axis, "address", "start_address", "offset")
-        if address is None:
+        if "maps[*].axes[*].address" not in confirmed_fields:
+            fields["address"] = {
+                "parser": parser_axis.get("address"),
+                "reference": address,
+                "status": "NOT_COMPARABLE",
+                "reason": "Axis address was not independently reviewed.",
+            }
+        elif address is None:
             fields["address"] = {
                 "parser": parser_axis.get("address"),
                 "reference": None,
-                "status": "NOT_TESTED",
+                "status": "NOT_COMPARABLE",
             }
         elif not address_comparable:
             fields["address"] = {
                 "parser": parser_axis.get("address"),
                 "reference": address,
-                "status": "INCONCLUSIVE",
+                "status": "NOT_COMPARABLE",
                 "reason": "Axis address representations are not established.",
             }
         else:
             fields["address"] = {
                 "parser": parser_axis.get("address"),
                 "reference": address,
-                "status": (
-                    "PASS"
-                    if _numeric_value(parser_axis.get("address")) is not None
-                    and _numeric_value(parser_axis.get("address"))
-                    == _numeric_value(address)
-                    else "FAIL"
+                "status": _compare_values(
+                    parser_axis.get("address"), address, numeric=True
                 ),
             }
         axis_status = (
@@ -1064,7 +1412,7 @@ def _compare_axes(
             if any(item["status"] == "FAIL" for item in fields.values())
             else "PASS"
             if all(item["status"] == "PASS" for item in fields.values())
-            else "INCONCLUSIVE"
+            else "NOT_COMPARABLE"
         )
         results.append(
             {"role": role, "status": axis_status, "fields": fields}
@@ -1075,7 +1423,7 @@ def _compare_axes(
         else "PASS"
         if len(results) == len(axes)
         and all(item["status"] == "PASS" for item in results)
-        else "INCONCLUSIVE"
+        else "NOT_COMPARABLE"
     )
     return {
         "status": status,
@@ -1097,6 +1445,8 @@ def compare_map_metadata(
     if diagnostic is None:
         raise ValueError(f"No indexed project found with id {project_id}.")
     parser_maps = diagnostic["map_definitions"]
+    inspection = inspect_package(database, manifest_path)
+    project_review_gaps = _project_review_gaps(manifest)
     address_settings = manifest.get("export_settings", {}).get(
         "map_address_representation", {}
     )
@@ -1121,14 +1471,59 @@ def compare_map_metadata(
             "parser_map_count": len(parser_maps),
             "external_map_count": None,
             "matches": [],
+            "field_statuses": ["PASS", "FAIL", "NOT_COMPARABLE"],
             "unresolved": ["No external map_metadata artifact is declared."],
             "address_representation": address_settings,
         }
 
     external_rows: list[dict[str, Any]] = []
+    external_row_artifact_indices: dict[int, int] = {}
+    external_row_indices: dict[int, int] = {}
     artifact_hashes: list[dict[str, Any]] = []
+    artifact_evidence: dict[int, dict[str, Any]] = {}
     parse_errors = []
-    for artifact in artifacts:
+    for artifact_index, artifact in enumerate(artifacts):
+        manual_review = artifact.get("manual_review")
+        confirmed_fields = _reviewed_fields(manual_review)
+        review_required_fields = {
+            "project_relation",
+            "map_inventory",
+            "maps[*].parser_ordinal",
+        }
+        version_key = artifact.get("version_key")
+        if version_key is not None:
+            review_required_fields.add("version_relation")
+        review_gaps = _manual_review_gaps(
+            manual_review,
+            review_required_fields,
+        )
+        review_gaps.extend(_artifact_provenance_gaps(artifact, manifest))
+        if artifact.get("relation_status", "unknown") != "confirmed":
+            review_gaps.append("Map artifact relation is not confirmed.")
+        if not _known_text(artifact.get("relation_evidence")):
+            review_gaps.append("Map artifact relation evidence is missing.")
+        if artifact.get("coverage_complete") is not True:
+            review_gaps.append("Map inventory coverage is not confirmed complete.")
+        if version_key is not None:
+            versions = manifest.get("exported_versions", [])
+            version = next(
+                (
+                    item
+                    for item in versions
+                    if isinstance(item, dict)
+                    and item.get("version_key") == version_key
+                ),
+                None,
+            ) if isinstance(versions, list) else None
+            if version is None:
+                review_gaps.append("Map artifact refers to an unknown version_key.")
+            elif (
+                version.get("relation_status") != "confirmed"
+                or not _known_text(version.get("relation_evidence"))
+            ):
+                review_gaps.append(
+                    "Map artifact's project-version relation is not confirmed."
+                )
         try:
             path = _resolve_artifact(manifest_path, artifact.get("path"))
             actual_hash = sha256_file(path)
@@ -1138,26 +1533,70 @@ def compare_map_metadata(
                 path.stat().st_size != artifact["size_bytes"]
             ):
                 raise ValueError("Map metadata size differs from manifest.")
-            external_rows.extend(_load_map_rows(path))
+            rows = _load_map_rows(path)
+            row_start = len(external_rows)
+            external_rows.extend(rows)
+            for row_offset, row in enumerate(rows):
+                external_row_artifact_indices[id(row)] = artifact_index
+                external_row_indices[id(row)] = row_start + row_offset
+            manifest_artifact_index = next(
+                index
+                for index, item in enumerate(manifest.get("artifacts", []))
+                if item is artifact
+            )
+            matching_inspection = next(
+                (
+                    item
+                    for item in inspection["artifacts"]
+                    if item["artifact_index"] == manifest_artifact_index
+                ),
+                None,
+            )
             integrity_status = (
                 "PASS"
                 if _safe_sha256(artifact.get("sha256"))
                 and artifact.get("sha256").lower() == actual_hash.lower()
                 and isinstance(artifact.get("size_bytes"), int)
                 and artifact.get("size_bytes") == path.stat().st_size
+                and matching_inspection is not None
+                and matching_inspection["status"] == "PASS"
                 else "INCONCLUSIVE"
             )
+            if (
+                _safe_sha256(artifact.get("sha256"))
+                and artifact.get("sha256").lower() != actual_hash.lower()
+            ):
+                integrity_status = "FAIL"
+            if (
+                isinstance(artifact.get("size_bytes"), int)
+                and artifact.get("size_bytes") != path.stat().st_size
+            ):
+                integrity_status = "FAIL"
             artifact_hashes.append(
                 {
+                    "artifact_index": artifact_index,
                     "path": str(path),
                     "sha256": actual_hash,
                     "status": integrity_status,
+                    "manual_review_gaps": review_gaps,
                 }
             )
+            artifact_evidence[artifact_index] = {
+                "artifact": artifact,
+                "confirmed_fields": confirmed_fields,
+                "review_gaps": review_gaps,
+                "integrity_status": integrity_status,
+            }
         except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             parse_errors.append(str(exc))
             artifact_hashes.append(
-                {"path": artifact.get("path"), "status": "FAIL", "error": str(exc)}
+                {
+                    "artifact_index": artifact_index,
+                    "path": artifact.get("path"),
+                    "status": "FAIL",
+                    "error": str(exc),
+                    "manual_review_gaps": review_gaps,
+                }
             )
     if parse_errors:
         report = {
@@ -1171,6 +1610,7 @@ def compare_map_metadata(
             "matches": [],
             "artifact_checks": artifact_hashes,
             "errors": parse_errors,
+            "field_statuses": ["PASS", "FAIL", "NOT_COMPARABLE"],
             "address_representation": address_settings,
         }
         return report
@@ -1192,101 +1632,121 @@ def compare_map_metadata(
     for parser_map in parser_maps:
         ordinal = parser_map["ordinal"]
         record = external_by_ordinal.get(ordinal)
-        match_basis = "explicit_parser_ordinal" if record else None
-        if record is None and parser_map["name"]:
-            named = [
-                (index, item)
-                for index, item in enumerate(external_rows)
-                if _canonical_text(_field(item, "name", "map_name", "map name"))
-                == parser_map["name"]
-            ]
-            parser_same_name = sum(
-                item["name"] == parser_map["name"] for item in parser_maps
-            )
-            if len(named) == 1 and parser_same_name == 1:
-                index, record = named[0]
-                match_basis = "unique_name_candidate"
-                used_external.add(index)
+        if record is not None:
+            used_external.add(external_row_indices[id(record)])
+        artifact_index = (
+            external_row_artifact_indices.get(id(record))
+            if record is not None
+            else None
+        )
+        evidence = artifact_evidence.get(artifact_index, {})
+        confirmed_fields = evidence.get("confirmed_fields", set())
+        artifact_gaps = evidence.get("review_gaps", [])
+        comparable_base = (
+            record is not None
+            and not project_review_gaps
+            and not artifact_gaps
+            and inspection["source"]["status"] == "PASS"
+            and evidence.get("integrity_status") == "PASS"
+            and "maps[*].parser_ordinal" in confirmed_fields
+        )
+        match_basis = (
+            "confirmed_parser_ordinal"
+            if comparable_base
+            else "parser_ordinal_candidate"
+            if record is not None
+            else None
+        )
         field_comparisons: dict[str, dict[str, Any]] = {}
         if record is not None:
             fields = (
-                ("name", parser_map["name"], ("name", "map_name", "map name")),
+                (
+                    "name",
+                    parser_map["name"],
+                    ("name", "map_name", "map name"),
+                    "maps[*].name",
+                    False,
+                ),
                 (
                     "description",
                     parser_map["description"],
                     ("description", "comment", "map_description"),
+                    "maps[*].description",
+                    False,
                 ),
                 (
                     "columns",
                     parser_map["columns_count"],
                     ("columns", "column_count", "x_size"),
+                    "maps[*].columns",
+                    True,
                 ),
-                ("rows", parser_map["rows_count"], ("rows", "row_count", "y_size")),
+                (
+                    "rows",
+                    parser_map["rows_count"],
+                    ("rows", "row_count", "y_size"),
+                    "maps[*].rows",
+                    True,
+                ),
                 (
                     "data_type",
                     parser_map["data_type"],
                     ("data_type", "datatype", "type"),
+                    "maps[*].data_type",
+                    False,
                 ),
                 (
                     "conversion_factor",
                     parser_map["factor"],
                     ("factor", "conversion_factor"),
+                    "maps[*].conversion_factor",
+                    True,
                 ),
                 (
                     "conversion_offset",
                     parser_map["conversion_offset"],
                     ("conversion_offset", "offset_conversion"),
+                    "maps[*].conversion_offset",
+                    True,
                 ),
             )
-            for field_name, parser_value, keys in fields:
+            for field_name, parser_value, keys, review_field, numeric in fields:
                 reference_value = _field(record, *keys)
-                parser_text = _canonical_text(parser_value)
-                reference_text = _canonical_text(reference_value)
-                if field_name in {
-                    "columns",
-                    "rows",
-                    "conversion_factor",
-                    "conversion_offset",
-                }:
-                    parser_number = _numeric_value(parser_value)
-                    reference_number = _numeric_value(reference_value)
-                    same = (
-                        parser_number is not None
-                        and reference_number is not None
-                        and parser_number == reference_number
+                status = (
+                    _compare_values(
+                        parser_value,
+                        reference_value,
+                        numeric=numeric,
+                        case_insensitive=not numeric,
                     )
-                elif field_name == "data_type":
-                    same = (
-                        parser_text is not None
-                        and reference_text is not None
-                        and parser_text.casefold() == reference_text.casefold()
-                    )
-                else:
-                    same = parser_text == reference_text
+                    if comparable_base and review_field in confirmed_fields
+                    else "NOT_COMPARABLE"
+                )
                 field_comparisons[field_name] = {
                     "parser": parser_value,
                     "reference": reference_value,
-                    "status": (
-                        "NOT_TESTED"
-                        if reference_text is None
-                        else "PASS"
-                        if same
-                        else "FAIL"
-                    ),
+                    "status": status,
                 }
             ext_address = _field(record, "address", "start_address", "offset")
-            if ext_address is None:
+            if not comparable_base or "maps[*].address" not in confirmed_fields:
+                field_comparisons["address"] = {
+                    "parser": parser_map["data_offset"],
+                    "reference": ext_address,
+                    "status": "NOT_COMPARABLE",
+                    "reason": "Map address relation or field was not independently reviewed.",
+                }
+            elif ext_address is None:
                 field_comparisons["address"] = {
                     "parser": parser_map["data_offset"],
                     "reference": None,
-                    "status": "NOT_TESTED",
+                    "status": "NOT_COMPARABLE",
                     "reason": "External address was not supplied.",
                 }
             elif not address_comparable:
                 field_comparisons["address"] = {
                     "parser": parser_map["data_offset"],
                     "reference": ext_address,
-                    "status": "INCONCLUSIVE",
+                    "status": "NOT_COMPARABLE",
                     "reason": (
                         "Address representations are not both explicitly declared "
                         "and equal; no direct address comparison was made."
@@ -1296,13 +1756,8 @@ def compare_map_metadata(
                 field_comparisons["address"] = {
                     "parser": parser_map["data_offset"],
                     "reference": ext_address,
-                    "status": (
-                        "PASS"
-                        if _numeric_value(parser_map["data_offset"])
-                        is not None
-                        and _numeric_value(parser_map["data_offset"])
-                        == _numeric_value(ext_address)
-                        else "FAIL"
+                    "status": _compare_values(
+                        parser_map["data_offset"], ext_address, numeric=True
                     ),
                     "representation": address_settings.get("parser"),
                 }
@@ -1311,12 +1766,13 @@ def compare_map_metadata(
                 parser_map["axes"],
                 external_axes,
                 address_comparable=address_comparable,
+                confirmed_fields=confirmed_fields if comparable_base else set(),
             )
             field_comparisons["map_id"] = {
                 "parser": None,
                 "parser_ordinal": ordinal,
                 "reference": _field(record, "map_id", "id", "element_id"),
-                "status": "NOT_TESTED",
+                "status": "NOT_COMPARABLE",
                 "reason": (
                     "The parser does not expose a comparable WinOLS map ID; "
                     "parser_ordinal is the only explicit join key."
@@ -1327,50 +1783,64 @@ def compare_map_metadata(
                 field_name: {
                     "parser": parser_map.get(parser_key),
                     "reference": None,
-                    "status": "NOT_TESTED",
+                    "status": "NOT_COMPARABLE",
                 }
                 for field_name, parser_key in (
                     ("name", "name"),
                     ("description", "description"),
-                    ("dimensions", "rows_count"),
                     ("address", "data_offset"),
                     ("axes", "axes"),
                     ("data_type", "data_type"),
-                    ("conversion", "factor"),
+                    ("columns", "columns_count"),
+                    ("rows", "rows_count"),
+                    ("conversion_factor", "factor"),
+                    ("conversion_offset", "conversion_offset"),
                     ("map_id", "ordinal"),
                 )
             }
+        field_statuses = [
+            item.get("status")
+            for item in field_comparisons.values()
+        ]
         matches.append(
             {
                 "parser_ordinal": ordinal,
                 "parser_name": parser_map["name"],
                 "match_basis": match_basis,
                 "status": (
-                    "NOT_TESTED"
-                    if record is None
-                    else "INCONCLUSIVE"
-                    if match_basis != "explicit_parser_ordinal"
-                    else "FAIL"
-                    if any(item["status"] == "FAIL" for item in field_comparisons.values())
-                    else "INCONCLUSIVE"
+                    "FAIL"
+                    if "FAIL" in field_statuses
+                    else "PASS"
+                    if field_statuses and all(item == "PASS" for item in field_statuses)
+                    else "NOT_COMPARABLE"
+                ),
+                "evidence_gaps": list(
+                    dict.fromkeys(
+                        project_review_gaps
+                        + artifact_gaps
+                        + (
+                            []
+                            if "maps[*].parser_ordinal" in confirmed_fields
+                            else ["Map-to-parser ordinal relation is not confirmed."]
+                        )
+                    )
                 ),
                 "fields": field_comparisons,
             }
         )
-    stable_matches = all(
-        item["match_basis"] == "explicit_parser_ordinal"
-        for item in matches
-    ) and len(matches) == len(parser_maps)
-    any_fail = any(
-        item["match_basis"] == "explicit_parser_ordinal"
-        and any(field["status"] == "FAIL" for field in item["fields"].values())
-        for item in matches
+    any_fail = any(item["status"] == "FAIL" for item in matches)
+    complete_coverage = all(
+        artifact.get("coverage_complete") is True
+        and "map_inventory" in _reviewed_fields(artifact.get("manual_review"))
+        for artifact in artifacts
     )
     status = (
         "FAIL"
-        if any_fail
+        if inspection["source"]["status"] == "FAIL"
+        or any_fail
+        or any(item["status"] == "FAIL" for item in artifact_hashes)
         else "PASS"
-        if stable_matches
+        if complete_coverage
         and matches
         and all(item["status"] == "PASS" for item in artifact_hashes)
         and all(item["status"] == "PASS" for item in matches)
@@ -1384,6 +1854,7 @@ def compare_map_metadata(
         "package_manifest": str(manifest_path.resolve()),
         "manifest_sha256": manifest_hash,
         "status": status,
+        "field_statuses": ["PASS", "FAIL", "NOT_COMPARABLE"],
         "parser_map_count": len(parser_maps),
         "external_map_count": len(external_rows),
         "matches": matches,
@@ -1391,10 +1862,229 @@ def compare_map_metadata(
         "unmatched_external_records": len(external_rows) - len(used_external),
         "address_representation": address_settings,
         "unresolved": [
-            "Map names are candidate identifiers unless an explicit parser_ordinal is exported.",
+            "A parser_ordinal must be explicitly present and manually reviewed; map names alone are not join keys.",
             "Address fields are not compared unless both address representations are declared equal.",
             "Map metadata does not validate numeric map values in a binary version.",
-            "Axis structures without a shared verified schema remain inconclusive.",
+            "Only fields listed in an artifact's manual_review.confirmed_fields are compared.",
+            "Incomplete axes or map coverage cannot yield an overall PASS.",
+        ],
+    }
+
+
+def compare_project_metadata(
+    database: Any,
+    manifest_path: Path,
+) -> dict[str, Any]:
+    manifest, manifest_hash = _read_manifest(manifest_path)
+    project_id = manifest.get("project_id")
+    if not isinstance(project_id, int):
+        raise ValueError("Package project_id must be a positive integer.")
+    diagnostic = database.get_diagnostic(project_id)
+    if diagnostic is None:
+        raise ValueError(f"No indexed project found with id {project_id}.")
+    inspection = inspect_package(database, manifest_path)
+    parser_metadata = diagnostic["metadata"]
+    project_review_gaps = _project_review_gaps(manifest)
+    artifacts = [
+        (index, item)
+        for index, item in enumerate(manifest.get("artifacts", []))
+        if isinstance(item, dict) and item.get("kind") == "project_metadata"
+    ]
+    if not artifacts:
+        return {
+            "run_type": "project_metadata",
+            "project_id": project_id,
+            "package_manifest": str(manifest_path.resolve()),
+            "manifest_sha256": manifest_hash,
+            "status": "NOT_TESTED",
+            "field_statuses": ["PASS", "FAIL", "NOT_COMPARABLE"],
+            "comparisons": [],
+            "unresolved": ["No project_metadata artifact is declared."],
+        }
+
+    comparisons: list[dict[str, Any]] = []
+    artifact_checks: list[dict[str, Any]] = []
+    parse_errors: list[str] = []
+    incomplete_coverage = False
+    for artifact_index, artifact in artifacts:
+        review = artifact.get("manual_review")
+        confirmed_fields = _reviewed_fields(review)
+        review_required_fields = {"project_relation", "metadata_inventory"}
+        version_key = artifact.get("version_key")
+        if version_key is not None:
+            review_required_fields.add("version_relation")
+        review_gaps = _manual_review_gaps(review, review_required_fields)
+        review_gaps.extend(_artifact_provenance_gaps(artifact, manifest))
+        if artifact.get("relation_status", "unknown") != "confirmed":
+            review_gaps.append("Metadata artifact relation is not confirmed.")
+        if not _known_text(artifact.get("relation_evidence")):
+            review_gaps.append("Metadata artifact relation evidence is missing.")
+        if artifact.get("coverage_complete") is not True:
+            incomplete_coverage = True
+            review_gaps.append("Metadata artifact coverage is not confirmed complete.")
+        if version_key is not None:
+            versions = manifest.get("exported_versions", [])
+            version = next(
+                (
+                    item
+                    for item in versions
+                    if isinstance(item, dict)
+                    and item.get("version_key") == version_key
+                ),
+                None,
+            ) if isinstance(versions, list) else None
+            if version is None:
+                review_gaps.append("Metadata artifact refers to an unknown version_key.")
+            elif (
+                version.get("relation_status") != "confirmed"
+                or not _known_text(version.get("relation_evidence"))
+            ):
+                review_gaps.append(
+                    "Metadata artifact's project-version relation is not confirmed."
+                )
+        try:
+            path = _resolve_artifact(manifest_path, artifact.get("path"))
+            actual_hash = sha256_file(path)
+            actual_size = path.stat().st_size
+            declared_hash = artifact.get("sha256")
+            declared_size = artifact.get("size_bytes")
+            matching_inspection = next(
+                (
+                    item
+                    for item in inspection["artifacts"]
+                    if item["artifact_index"] == artifact_index
+                ),
+                None,
+            )
+            integrity_status = (
+                "PASS"
+                if _safe_sha256(declared_hash)
+                and declared_hash.lower() == actual_hash.lower()
+                and isinstance(declared_size, int)
+                and declared_size == actual_size
+                and matching_inspection is not None
+                and matching_inspection["status"] == "PASS"
+                else "INCONCLUSIVE"
+            )
+            if (
+                _safe_sha256(declared_hash)
+                and declared_hash.lower() != actual_hash.lower()
+            ) or (
+                isinstance(declared_size, int) and declared_size != actual_size
+            ):
+                integrity_status = "FAIL"
+            artifact_checks.append(
+                {
+                    "artifact_index": artifact_index,
+                    "path": str(path),
+                    "size_bytes": actual_size,
+                    "sha256": actual_hash,
+                    "status": integrity_status,
+                    "manual_review_gaps": review_gaps,
+                }
+            )
+            external_metadata = _load_project_metadata(path)
+        except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            parse_errors.append(str(exc))
+            artifact_checks.append(
+                {
+                    "artifact_index": artifact_index,
+                    "path": artifact.get("path"),
+                    "status": "FAIL",
+                    "error": str(exc),
+                    "manual_review_gaps": review_gaps,
+                }
+            )
+            continue
+
+        independently_reviewed = (
+            not project_review_gaps
+            and not review_gaps
+            and inspection["source"]["status"] == "PASS"
+            and integrity_status == "PASS"
+        )
+        for field, reference_value in sorted(external_metadata.items()):
+            field_path = f"metadata.{field}"
+            parser_record = parser_metadata.get(field)
+            parser_value = (
+                parser_record.get("value")
+                if isinstance(parser_record, dict)
+                else None
+            )
+            parser_status = (
+                parser_record.get("status")
+                if isinstance(parser_record, dict)
+                else "missing_from_parser_object"
+            )
+            if (
+                not independently_reviewed
+                or field_path not in confirmed_fields
+                or parser_status == "missing_from_parser_object"
+            ):
+                status = "NOT_COMPARABLE"
+            else:
+                status = _compare_values(
+                    parser_value,
+                    reference_value,
+                    case_insensitive=True,
+                )
+            comparisons.append(
+                {
+                    "field": field_path,
+                    "parser": parser_value,
+                    "parser_status": parser_status,
+                    "reference": reference_value,
+                    "status": status,
+                    "evidence_gaps": list(
+                        dict.fromkeys(
+                            project_review_gaps
+                            + review_gaps
+                            + (
+                                []
+                                if field_path in confirmed_fields
+                                else [f"{field_path} was not independently reviewed."]
+                            )
+                        )
+                    ),
+                }
+            )
+        if set(external_metadata) != set(parser_metadata):
+            incomplete_coverage = True
+
+    statuses = {item["status"] for item in comparisons}
+    status = (
+        "FAIL"
+        if inspection["source"]["status"] == "FAIL"
+        or parse_errors
+        or any(item["status"] == "FAIL" for item in artifact_checks)
+        or "FAIL" in statuses
+        else "PASS"
+        if comparisons
+        and not incomplete_coverage
+        and all(item["status"] == "PASS" for item in artifact_checks)
+        and statuses == {"PASS"}
+        else "INCONCLUSIVE"
+        if comparisons
+        else "NOT_TESTED"
+    )
+    return {
+        "run_type": "project_metadata",
+        "project_id": project_id,
+        "package_manifest": str(manifest_path.resolve()),
+        "manifest_sha256": manifest_hash,
+        "status": status,
+        "field_statuses": ["PASS", "FAIL", "NOT_COMPARABLE"],
+        "parser_metadata_fields": len(parser_metadata),
+        "reference_metadata_fields": len(comparisons),
+        "comparisons": comparisons,
+        "artifact_checks": artifact_checks,
+        "errors": parse_errors,
+        "coverage_complete": not incomplete_coverage,
+        "project_evidence_gaps": project_review_gaps,
+        "unresolved": [
+            "Only metadata fields explicitly reviewed in WinOLS are compared.",
+            "An absent parser attribute is not treated as an empty value.",
+            "A partial field set cannot produce an overall PASS.",
         ],
     }
 
@@ -1420,8 +2110,11 @@ def build_package_report(
         "latest_runs": database.list_reference_package_runs(project_id, limit=20),
         "missing_reference_data": [
             "A complete, hash-verified binary export for each actual project version.",
+            "WinOLS project identity, exact export settings, and reviewer evidence tied to the indexed OLS hash.",
             "WinOLS map-list CSV or JSON with recorded export settings.",
-            "Independent project/version relationship evidence.",
+            "Independently reviewed project metadata fields where available.",
+            "Explicit project/version/slot and map-to-parser relationships with evidence.",
+            "Axis definitions and conversion fields checked against the WinOLS project.",
         ],
     }
     if manifest_path.exists() and result["parser"] is not None:

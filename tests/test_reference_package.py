@@ -14,6 +14,7 @@ from ols_platform.reader import (
 )
 from ols_platform.reference_package import (
     compare_map_metadata,
+    compare_project_metadata,
     import_reference_package,
     inspect_package,
     match_package_versions,
@@ -107,6 +108,12 @@ class ReferencePackageTests(unittest.TestCase):
             },
             "winols": {"version": "5.80.00"},
             "export_method": "WinOLS Export File",
+            "project_identity": {
+                "project_name": "Synthetic test project",
+                "project_id": "test-project-id",
+                "status": "confirmed",
+                "evidence": "Synthetic unit-test relationship only.",
+            },
             "export_settings": {
                 "binary_format": "raw binary",
                 "checksum_or_syncblock_options": "disabled for test fixture",
@@ -122,17 +129,34 @@ class ReferencePackageTests(unittest.TestCase):
                 "status": "confirmed",
                 "evidence": "Synthetic unit-test relationship; not external validation.",
             },
+            "manual_review": {
+                "status": "confirmed",
+                "reviewer": "synthetic unit test",
+                "reviewed_at": "2026-01-01",
+                "method": "synthetic fixture",
+                "evidence": "Tests logic only; this is not WinOLS validation.",
+                "confirmed_fields": [
+                    "project_identity",
+                    "project_relation",
+                    "version_inventory",
+                ],
+                "missing_evidence": [],
+            },
             "coverage_complete": True,
             "exported_versions": [
                 {
                     "version_key": "version-a",
                     "version_name": "Version A",
                     "source_slot_index": 0,
+                    "relation_status": "confirmed",
+                    "relation_evidence": "Synthetic slot relationship only.",
                 },
                 {
                     "version_key": "version-b",
                     "version_name": "Version B",
                     "source_slot_index": 1,
+                    "relation_status": "confirmed",
+                    "relation_evidence": "Synthetic slot relationship only.",
                 },
             ],
             "artifacts": [],
@@ -166,6 +190,55 @@ class ReferencePackageTests(unittest.TestCase):
                 "relation_status": relation,
                 "relation_evidence": evidence,
                 "representation": representation,
+                "artifact_source": "winols_export",
+                "manual_review": {
+                    "status": "confirmed",
+                    "reviewer": "synthetic unit test",
+                    "reviewed_at": "2026-01-01",
+                    "method": "synthetic fixture",
+                    "evidence": "Tests logic only; this is not WinOLS validation.",
+                    "confirmed_fields": [
+                        "project_relation",
+                        "version_relation",
+                        "version_name",
+                        "source_slot_index",
+                        "representation",
+                    ],
+                    "missing_evidence": [],
+                },
+            }
+        )
+        return export_path
+
+    def _add_metadata_artifact(self, manifest, metadata):
+        export_path = self.packet_dir / "metadata.json"
+        export_path.write_text(
+            json.dumps({"metadata": metadata}),
+            encoding="utf-8",
+        )
+        manifest["artifacts"].append(
+            {
+                "kind": "project_metadata",
+                "path": export_path.name,
+                "size_bytes": export_path.stat().st_size,
+                "sha256": hashlib.sha256(export_path.read_bytes()).hexdigest(),
+                "relation_status": "confirmed",
+                "relation_evidence": "Synthetic metadata relation only.",
+                "artifact_source": "winols_export",
+                "coverage_complete": True,
+                "manual_review": {
+                    "status": "confirmed",
+                    "reviewer": "synthetic unit test",
+                    "reviewed_at": "2026-01-01",
+                    "method": "synthetic fixture",
+                    "evidence": "Tests logic only; this is not WinOLS validation.",
+                    "confirmed_fields": [
+                        "project_relation",
+                        "metadata_inventory",
+                        *[f"metadata.{field}" for field in metadata],
+                    ],
+                    "missing_evidence": [],
+                },
             }
         )
         return export_path
@@ -186,6 +259,8 @@ class ReferencePackageTests(unittest.TestCase):
         ).hexdigest())
         self.assertEqual(manifest["exported_versions"], [])
         self.assertEqual(manifest["artifacts"], [])
+        self.assertEqual(manifest["manual_review"]["status"], "NOT_TESTED")
+        self.assertEqual(manifest["project_identity"]["status"], "unknown")
         self.assertEqual(report["status"], "NOT_TESTED")
         self.assertIn("No WinOLS export has been generated", Path(paths["checklist"]).read_text())
 
@@ -223,6 +298,7 @@ class ReferencePackageTests(unittest.TestCase):
 
         inspection = inspect_package(self.database, self.manifest_path)
         self.assertEqual(inspection["status"], "PASS")
+        self.assertEqual(inspection["version_evidence_status"], "PASS")
         report = match_package_versions(self.database, self.manifest_path)
         self.assertEqual(report["status"], "PASS")
         self.assertEqual(
@@ -244,6 +320,23 @@ class ReferencePackageTests(unittest.TestCase):
         self.assertEqual(
             len(self.database.list_reference_artifacts(self.project_id)),
             3,
+        )
+        stored = self.database.list_reference_artifacts(self.project_id)
+        stored_binary = next(
+            item for item in stored if item["kind"] == "binary_version"
+        )
+        self.assertEqual(stored_binary["metadata"]["artifact_source"], "winols_export")
+        self.assertEqual(
+            stored_binary["metadata"]["manual_review"],
+            manifest["artifacts"][0]["manual_review"],
+        )
+        self.assertEqual(
+            stored_binary["metadata"]["project_identity"],
+            manifest["project_identity"],
+        )
+        self.assertEqual(
+            stored_binary["metadata"]["version_relation_evidence"],
+            manifest["exported_versions"][0]["relation_evidence"],
         )
 
     def test_missing_export_is_not_tested_and_packet_import_is_blocked(self):
@@ -284,6 +377,123 @@ class ReferencePackageTests(unittest.TestCase):
         report = inspect_package(self.database, self.manifest_path)
         self.assertEqual(report["status"], "INCONCLUSIVE")
         self.assertEqual(report["versions"][0]["name_status"], "missing")
+        match = match_package_versions(self.database, self.manifest_path)
+        self.assertEqual(match["versions"][0]["status"], "INCONCLUSIVE")
+
+    def test_exact_bytes_do_not_confirm_a_wrong_project_relationship(self):
+        manifest = self._base_manifest()
+        self._add_binary_artifact(
+            manifest,
+            key="version-a",
+            name="Version A",
+            slot=0,
+            content=b"abcd",
+        )
+        manifest["project_relation"]["status"] = "unknown"
+        self._write(manifest)
+
+        report = match_package_versions(self.database, self.manifest_path)
+
+        self.assertEqual(report["versions"][0]["exact_full_candidate_slots"], [0])
+        self.assertEqual(report["versions"][0]["status"], "INCONCLUSIVE")
+        self.assertIn("do not confirm", report["versions"][0]["reason"])
+
+    def test_incomplete_version_coverage_cannot_pass_an_exact_match(self):
+        manifest = self._base_manifest()
+        manifest["exported_versions"] = manifest["exported_versions"][:1]
+        self._add_binary_artifact(
+            manifest,
+            key="version-a",
+            name="Version A",
+            slot=0,
+            content=b"abcd",
+        )
+        manifest["coverage_complete"] = False
+        self._write(manifest)
+
+        report = match_package_versions(self.database, self.manifest_path)
+
+        self.assertEqual(report["versions"][0]["exact_full_candidate_slots"], [0])
+        self.assertEqual(report["versions"][0]["status"], "INCONCLUSIVE")
+
+    def test_binary_export_hash_mismatch_fails_integrity_check(self):
+        manifest = self._base_manifest()
+        self._add_binary_artifact(
+            manifest,
+            key="version-a",
+            name="Version A",
+            slot=0,
+            content=b"abcd",
+        )
+        manifest["exported_versions"] = manifest["exported_versions"][:1]
+        manifest["artifacts"][0]["sha256"] = "0" * 64
+        self._write(manifest)
+
+        report = match_package_versions(self.database, self.manifest_path)
+
+        self.assertEqual(report["versions"][0]["status"], "FAIL")
+        self.assertEqual(report["versions"][0]["artifact_integrity_status"], "FAIL")
+
+    def test_parser_output_is_not_accepted_as_independent_artifact_provenance(self):
+        manifest = self._base_manifest()
+        manifest["exported_versions"] = manifest["exported_versions"][:1]
+        self._add_binary_artifact(
+            manifest,
+            key="version-a",
+            name="Version A",
+            slot=0,
+            content=b"abcd",
+        )
+        manifest["artifacts"][0]["artifact_source"] = "py-ols parser output"
+        self._write(manifest)
+
+        report = match_package_versions(self.database, self.manifest_path)
+
+        self.assertEqual(report["versions"][0]["status"], "INCONCLUSIVE")
+        self.assertTrue(
+            any(
+                "Artifact source must be" in item
+                for item in report["versions"][0]["version_evidence_gaps"]
+            )
+        )
+
+    def test_metadata_comparison_requires_review_and_detects_hash_changes(self):
+        manifest = self._base_manifest()
+        artifact = self._add_metadata_artifact(
+            manifest,
+            {"make": "", "model": ""},
+        )
+        self._write(manifest)
+
+        report = compare_project_metadata(self.database, self.manifest_path)
+
+        self.assertEqual(report["status"], "PASS")
+        self.assertEqual(
+            [item["status"] for item in report["comparisons"]],
+            ["PASS", "PASS"],
+        )
+
+        artifact.write_text(
+            json.dumps({"metadata": {"make": "changed", "model": ""}}),
+            encoding="utf-8",
+        )
+        report = compare_project_metadata(self.database, self.manifest_path)
+        self.assertEqual(report["status"], "FAIL")
+        self.assertEqual(report["artifact_checks"][0]["status"], "FAIL")
+
+    def test_metadata_without_independent_project_relation_is_not_comparable(self):
+        manifest = self._base_manifest()
+        self._add_metadata_artifact(manifest, {"make": "", "model": ""})
+        manifest["project_relation"]["status"] = "unknown"
+        self._write(manifest)
+
+        report = compare_project_metadata(self.database, self.manifest_path)
+
+        self.assertEqual(report["status"], "INCONCLUSIVE")
+        self.assertEqual(
+            [item["status"] for item in report["comparisons"]],
+            ["NOT_COMPARABLE", "NOT_COMPARABLE"],
+        )
 
     def test_invalid_manifest_and_invalid_project_relationship_fail(self):
         manifest = self._base_manifest()
@@ -360,6 +570,7 @@ class ReferencePackageTests(unittest.TestCase):
             content=b"abcd",
             path="version-b.bin",
         )
+        manifest["exported_versions"][1]["source_slot_index"] = 0
         self._write(manifest)
         report = match_package_versions(self.database, self.manifest_path)
         self.assertEqual(report["status"], "INCONCLUSIVE")
@@ -498,6 +709,7 @@ class ReferencePackageTests(unittest.TestCase):
                 {
                     "maps": [
                         {
+                            "parser_ordinal": 0,
                             "name": "Fuel",
                             "description": "Fuel quantity",
                             "columns": "2",
@@ -524,12 +736,6 @@ class ReferencePackageTests(unittest.TestCase):
                 "size_bytes": map_source.stat().st_size,
             }
         )
-        manifest["source"].update(
-            {
-                "sha256": hashlib.sha256(self.source.read_bytes()).hexdigest(),
-                "size_bytes": self.source.stat().st_size,
-            }
-        )
         manifest["exported_versions"] = []
         manifest["artifacts"] = [
             {
@@ -537,6 +743,30 @@ class ReferencePackageTests(unittest.TestCase):
                 "path": "maps.json",
                 "size_bytes": len(content),
                 "sha256": hashlib.sha256(content).hexdigest(),
+                "relation_status": "confirmed",
+                "relation_evidence": "Synthetic map relationship only.",
+                "artifact_source": "winols_export",
+                "coverage_complete": True,
+                "manual_review": {
+                    "status": "confirmed",
+                    "reviewer": "synthetic unit test",
+                    "reviewed_at": "2026-01-01",
+                    "method": "synthetic fixture",
+                    "evidence": "Tests logic only; this is not WinOLS validation.",
+                    "confirmed_fields": [
+                        "project_relation",
+                        "map_inventory",
+                        "maps[*].parser_ordinal",
+                        "maps[*].name",
+                        "maps[*].description",
+                        "maps[*].columns",
+                        "maps[*].rows",
+                        "maps[*].data_type",
+                        "maps[*].axes[*].role",
+                        "maps[*].axes[*].points",
+                    ],
+                    "missing_evidence": [],
+                },
             }
         ]
         self._write(manifest)
@@ -545,8 +775,137 @@ class ReferencePackageTests(unittest.TestCase):
         fields = report["matches"][0]["fields"]
         self.assertEqual(fields["columns"]["status"], "PASS")
         self.assertEqual(fields["rows"]["status"], "PASS")
-        self.assertEqual(fields["address"]["status"], "INCONCLUSIVE")
-        self.assertEqual(fields["axes"]["status"], "INCONCLUSIVE")
+        self.assertEqual(fields["address"]["status"], "NOT_COMPARABLE")
+        self.assertEqual(fields["axes"]["status"], "NOT_COMPARABLE")
+        self.assertIn("NOT_COMPARABLE", report["field_statuses"])
+
+    def test_incomplete_parser_axes_do_not_validate_against_full_reference_axes(self):
+        map_source = self.root / "project-with-incomplete-axis.ols"
+        map_source.write_bytes(b"MARKabcd")
+        incomplete_map = ParsedMap(
+            "Fuel",
+            "Fuel quantity",
+            "MAP",
+            "U16",
+            2,
+            3,
+            0x1000,
+            "mg",
+            1.0,
+            0.0,
+            axes=(
+                ParsedAxis("x", 2, 0x200, "U8", "", 1.0, 0.0, "", ""),
+            ),
+        )
+        self.database.close()
+        self.database = IndexDatabase(self.root / "index.sqlite3")
+        outcome = next(
+            import_sources(
+                sources=[map_source],
+                reader=PacketReader(map_source, (incomplete_map,)),
+                database=self.database,
+                max_file_bytes=1024,
+                progress=False,
+            )
+        )
+        self.assertEqual(outcome.status, "imported")
+        project_id = self.database.connection.execute(
+            "SELECT id FROM projects ORDER BY id DESC LIMIT 1"
+        ).fetchone()["id"]
+        map_path = self.packet_dir / "incomplete-maps.json"
+        map_path.write_text(
+            json.dumps(
+                {
+                    "maps": [
+                        {
+                            "parser_ordinal": 0,
+                            "name": "Fuel",
+                            "description": "Fuel quantity",
+                            "columns": 2,
+                            "rows": 3,
+                            "data_type": "U16",
+                            "factor": 1.0,
+                            "conversion_offset": 0.0,
+                            "axes": [
+                                {
+                                    "role": "x",
+                                    "points": 2,
+                                    "data_type": "U8",
+                                    "unit": "rpm",
+                                    "factor": 1.0,
+                                    "conversion_offset": 0.0,
+                                    "identifier": "reviewed-axis",
+                                    "description": "Reviewed axis",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        content = map_path.read_bytes()
+        manifest = self._base_manifest()
+        manifest["project_id"] = project_id
+        manifest["source"].update(
+            {
+                "path": str(map_source),
+                "filename": map_source.name,
+                "sha256": hashlib.sha256(map_source.read_bytes()).hexdigest(),
+                "size_bytes": map_source.stat().st_size,
+            }
+        )
+        manifest["exported_versions"] = []
+        manifest["artifacts"] = [
+            {
+                "kind": "map_metadata",
+                "path": map_path.name,
+                "size_bytes": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "relation_status": "confirmed",
+                "relation_evidence": "Synthetic map relationship only.",
+                "artifact_source": "winols_export",
+                "coverage_complete": True,
+                "manual_review": {
+                    "status": "confirmed",
+                    "reviewer": "synthetic unit test",
+                    "reviewed_at": "2026-01-01",
+                    "method": "synthetic fixture",
+                    "evidence": "Tests logic only; this is not WinOLS validation.",
+                    "confirmed_fields": [
+                        "project_relation",
+                        "map_inventory",
+                        "maps[*].parser_ordinal",
+                        "maps[*].name",
+                        "maps[*].description",
+                        "maps[*].columns",
+                        "maps[*].rows",
+                        "maps[*].data_type",
+                        "maps[*].conversion_factor",
+                        "maps[*].conversion_offset",
+                        "maps[*].axes[*].role",
+                        "maps[*].axes[*].points",
+                        "maps[*].axes[*].data_type",
+                        "maps[*].axes[*].unit",
+                        "maps[*].axes[*].factor",
+                        "maps[*].axes[*].conversion_offset",
+                        "maps[*].axes[*].identifier",
+                        "maps[*].axes[*].description",
+                    ],
+                    "missing_evidence": [],
+                },
+            }
+        ]
+        self._write(manifest)
+
+        report = compare_map_metadata(self.database, self.manifest_path)
+
+        self.assertEqual(report["status"], "FAIL")
+        axes = report["matches"][0]["fields"]["axes"]
+        self.assertEqual(axes["status"], "FAIL")
+        axis_fields = axes["axes"][0]["fields"]
+        self.assertEqual(axis_fields["unit"]["status"], "FAIL")
+        self.assertEqual(axis_fields["identifier"]["status"], "FAIL")
 
     def test_package_run_history_is_append_only(self):
         manifest = self._base_manifest()

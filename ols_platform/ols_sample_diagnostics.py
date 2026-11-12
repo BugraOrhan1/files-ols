@@ -38,172 +38,9 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _value_at_path(value: Any, path: str) -> tuple[bool, Any]:
-    current = value
-    for component in path.split("."):
-        if isinstance(current, dict) and component in current:
-            current = current[component]
-        elif isinstance(current, list) and component.isdecimal():
-            index = int(component)
-            if index >= len(current):
-                return False, None
-            current = current[index]
-        else:
-            return False, None
-    return True, current
-
-
-def compare_reference(
-    report: dict[str, Any],
-    manifest_path: Path | None,
-) -> dict[str, Any]:
-    if manifest_path is None or not manifest_path.is_file():
-        return {
-            "status": "NOT_TESTED",
-            "reason": "No independent WinOLS reference manifest is available.",
-            "comparisons": [],
-        }
-
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return {
-            "status": "INCONCLUSIVE",
-            "reason": f"Reference manifest cannot be read: {type(exc).__name__}: {exc}",
-            "comparisons": [],
-        }
-
-    if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
-        return {
-            "status": "INCONCLUSIVE",
-            "reason": "Reference manifest schema is missing or unsupported.",
-            "comparisons": [],
-        }
-
-    sample = manifest.get("sample")
-    reference = manifest.get("reference")
-    observations = manifest.get("observations")
-    source = report["source"]
-    if not isinstance(sample, dict) or not isinstance(reference, dict):
-        return {
-            "status": "INCONCLUSIVE",
-            "reason": "Reference sample identity or provenance is missing.",
-            "comparisons": [],
-        }
-    if (
-        sample.get("filename") != source["filename"]
-        or sample.get("sha256") != source["sha256"]
-    ):
-        return {
-            "status": "INCONCLUSIVE",
-            "reason": "Reference package does not identify this exact OLS sample.",
-            "comparisons": [],
-        }
-
-    artifact_value = reference.get("artifact_path")
-    artifact_hash = reference.get("artifact_sha256")
-    if not isinstance(artifact_value, str) or not artifact_value or not artifact_hash:
-        return {
-            "status": "NOT_TESTED",
-            "reason": "No hashed independent export artifact is recorded.",
-            "comparisons": [],
-        }
-    artifact_path = (manifest_path.parent / artifact_value).resolve()
-    try:
-        actual_artifact_hash = sha256_file(artifact_path)
-    except OSError as exc:
-        return {
-            "status": "INCONCLUSIVE",
-            "reason": f"Reference artifact is unavailable: {type(exc).__name__}: {exc}",
-            "comparisons": [],
-        }
-    if actual_artifact_hash != artifact_hash:
-        return {
-            "status": "INCONCLUSIVE",
-            "reason": "Reference artifact SHA-256 does not match its manifest.",
-            "comparisons": [],
-        }
-
-    required_provenance = (
-        reference.get("source") == "independent_winols_export"
-        and reference.get("export_method") not in (None, "", "unknown")
-        and reference.get("software_version") not in (None, "", "unknown")
-        and reference.get("project_relation") == "confirmed"
-        and reference.get("validation_status") == "independently_confirmed"
-        and bool(reference.get("validated_by"))
-        and bool(reference.get("validation_notes"))
-    )
-    if not required_provenance:
-        return {
-            "status": "INCONCLUSIVE",
-            "reason": (
-                "Reference provenance is not independently confirmed; parser "
-                "output, unknown export settings, or unconfirmed project "
-                "relationships cannot validate a parse."
-            ),
-            "comparisons": [],
-        }
-    if not isinstance(observations, dict) or not observations:
-        return {
-            "status": "NOT_TESTED",
-            "reason": "No independently recorded field observations are available.",
-            "comparisons": [],
-        }
-
-    comparisons: list[dict[str, Any]] = []
-    for field_path, expected in observations.items():
-        if not isinstance(field_path, str) or not field_path:
-            return {
-                "status": "INCONCLUSIVE",
-                "reason": "Reference observations contain an invalid field path.",
-                "comparisons": [],
-            }
-        exists, actual = _value_at_path(report, field_path)
-        if not exists:
-            status = "NOT_COMPARABLE"
-            message = "The parser diagnostic does not expose this reference field."
-        else:
-            status = "PASS" if actual == expected else "FAIL"
-            message = "Values match." if status == "PASS" else "Values differ."
-        comparisons.append(
-            {
-                "field": field_path,
-                "status": status,
-                "expected": expected,
-                "actual": actual,
-                "message": message,
-            }
-        )
-
-    statuses = {item["status"] for item in comparisons}
-    overall_status = (
-        "FAIL"
-        if "FAIL" in statuses
-        else "PARTIAL"
-        if "NOT_COMPARABLE" in statuses
-        or reference.get("coverage_complete") is not True
-        else "PASS"
-    )
-    return {
-        "status": overall_status,
-        "reason": (
-            "Compared the available parser fields with a hash-verified, "
-            "independently confirmed WinOLS export."
-        ),
-        "artifact": {
-            "path": str(artifact_path),
-            "sha256": actual_artifact_hash,
-            "export_method": reference["export_method"],
-            "software_version": reference["software_version"],
-        },
-        "comparisons": comparisons,
-    }
-
-
 def build_sample_report(
     source: Path,
     reader: ProjectInspector,
-    reference_manifest: Path | None = None,
 ) -> dict[str, Any]:
     snapshot = reader.inspect(source)
     metadata_status = snapshot.data_structure.get("metadata_field_status", {})
@@ -290,40 +127,14 @@ def build_sample_report(
         "warnings": warnings,
         "reference_validation": {
             "status": "NOT_TESTED",
-            "reason": "Reference comparison has not run.",
+            "reason": (
+                "Use the canonical WinOLS reference-package commands for "
+                "metadata, version, and map comparisons."
+            ),
             "comparisons": [],
         },
     }
-    report["reference_validation"] = compare_reference(report, reference_manifest)
     return report
-
-
-def make_reference_template(report: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "schema_version": 1,
-        "sample": {
-            "filename": report["source"]["filename"],
-            "sha256": report["source"]["sha256"],
-        },
-        "reference": {
-            "source": "unknown",
-            "export_method": "unknown",
-            "software_version": "unknown",
-            "artifact_path": "",
-            "artifact_sha256": "",
-            "project_relation": "unknown",
-            "validation_status": "NOT_TESTED",
-            "validated_by": "",
-            "validation_notes": "",
-            "coverage_complete": False,
-        },
-        "observations": {},
-        "notes": (
-            "Populate only from an independently produced WinOLS export. "
-            "Record the export artifact hash, exact export method, WinOLS "
-            "version, and confirmed relation to this exact OLS source."
-        ),
-    }
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -333,16 +144,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--samples-dir", required=True, type=Path)
     parser.add_argument("--py-ols-path", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument(
-        "--reference-dir",
-        type=Path,
-        help="Optional directory containing <sample-stem>.json reference manifests.",
-    )
-    parser.add_argument(
-        "--reference-template-dir",
-        type=Path,
-        help="Optional directory for NOT_TESTED reference-package templates.",
-    )
     return parser
 
 
@@ -369,24 +170,8 @@ def main(argv: list[str] | None = None) -> int:
                 }
             )
             continue
-        manifest = (
-            args.reference_dir / f"{source.stem}.json"
-            if args.reference_dir is not None
-            else None
-        )
-        report = build_sample_report(source, reader, manifest)
+        report = build_sample_report(source, reader)
         samples.append(report)
-        if args.reference_template_dir is not None:
-            template = args.reference_template_dir / f"{source.stem}.json"
-            if template.exists():
-                raise FileExistsError(
-                    f"Refusing to overwrite reference template: {template}"
-                )
-            template.parent.mkdir(parents=True, exist_ok=True)
-            template.write_text(
-                json.dumps(make_reference_template(report), indent=2) + "\n",
-                encoding="utf-8",
-            )
 
     output = {
         "report_schema_version": 1,

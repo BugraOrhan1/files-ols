@@ -280,15 +280,12 @@ rechecked: all ten checks were `INCONCLUSIVE`; zero versions were independently
 confirmed. No live SQLite database was opened or changed. The `100010054.ols`
 reference package is only a template with no artifacts.
 
-The new comparison manifest requires an exact source filename/hash, a hashed
-export artifact, recorded export method and WinOLS version, confirmed project
-relation, complete field coverage, validation status and reviewer attestation.
-It reports per-field `PASS`, `FAIL`, or `NOT_COMPARABLE`; incomplete coverage
-cannot produce an overall `PASS`. These provenance claims still require human
-review of the actual export; a hash alone does not establish its origin. Since
-no existing package meets these gates, the eight-sample independent
-metadata/map/version validation remains **`NOT_TESTED`**. No WinOLS automation
-or new exports were run.
+Phase 11C briefly added a second sample-diagnostics reference manifest. Phase
+11D removes that parallel format and directs reference comparisons through the
+existing WinOLS reference-package manifest and its inspection/version/map
+workflow. No existing package meets the independent evidence gates, so the
+eight-sample independent metadata/map/version validation remains
+**`NOT_TESTED`**. No WinOLS automation or new exports were run.
 
 ### Phase 11C verification and limits
 
@@ -315,3 +312,84 @@ or new exports were run.
 Phase 11 remains **in progress**. This phase delivers reproducible observation
 and reference-test scaffolding; structural parser completeness, version/slot
 relationships, and independent WinOLS validation remain unresolved.
+
+## Phase 11D: independent WinOLS reference workflow
+
+Phase 11D reuses the canonical `reference-package` manifest and CLI rather
+than maintaining a second sample-diagnostics reference format. The packet
+template and checklist capture the source OLS hash and size; WinOLS project
+identity and OLS-to-project evidence; each export's hash, size, type,
+representation, WinOLS version, export method/settings, project/version/slot
+relationships, reviewed fields, reviewer evidence, coverage, and missing
+evidence. The root `project_id` remains the local index ID; the WinOLS
+project ID is separate and stays unknown until confirmed.
+
+The workflow exposes `PASS`, `FAIL`, and `NOT_COMPARABLE` field results.
+Project metadata JSON uses `{"metadata": {...}}`; only fields explicitly
+reviewed against an independent WinOLS artifact are compared. Map rows require
+an explicitly reviewed parser ordinal, not a name-based join; addresses are
+compared only when the parser and export representations are declared
+equivalent. Missing provenance, uncertain relations, hash/size mismatches, or
+incomplete coverage cannot produce a general validation `PASS`. Package
+integrity and `version_evidence_status` remain distinct from a passing binary
+comparison and from ECU compatibility. Parser output is never accepted as an
+independent reference.
+
+### Existing reference inventory and required follow-up
+
+No existing export package had enough provenance to independently validate a
+version, parser metadata, or map definition. Existing manifests for
+`100004.ols`, `100007.ols`, and `100009.ols` contain four, four, and two binary
+artifacts respectively, but still lack confirmed WinOLS version/export
+settings and individual artifact-to-version/slot and representation evidence.
+`100010054.ols` has a template with no artifacts. No package was found for
+`100008.ols`, `100010.ols`, `10001004.ols`, or `10001005.ols`. These are
+inventory observations; no missing relationship was inferred from filenames
+or hashes.
+
+Next steps for the samples:
+
+- For `100004.ols`, `100007.ols`, and `100009.ols`, confirm each existing
+  export's source, WinOLS version/method/settings, representation, and exact
+  project-version-slot relationship in WinOLS; add independent metadata and
+  map exports where available.
+- For `100008.ols`, `100010.ols`, `10001004.ols`, and `10001005.ols`, create
+  packets from the canonical template and record independently confirmed
+  project/version metadata and separate exports for each available version.
+- For `100010054.ols`, complete its existing template with the same project,
+  export, and reviewer evidence rather than creating a parallel manifest.
+- For the map-bearing samples `100009.ols` and `100010054.ols`, independently
+  confirm the map inventory, dimensions/axes, and address representation
+  before running the map comparison. Parser axis warnings remain unresolved.
+
+Until these exports and relations are supplied and reviewed, independent
+validation for all eight samples is **`NOT_TESTED`**. No WinOLS automation or
+new export was performed, and the parser samples remain read-only.
+
+### Phase 11D verification and limits
+
+- The targeted reference-package tests passed: 18 tests; the parser-diagnostic
+  tests passed: 2 tests.
+- The complete configured suite ran 91 tests: 91 passed, 0 failed, 0 skipped.
+  The two real-parser tests ran, including the import of all eight OLS samples
+  into a temporary database and the damaged-file failure case. The captured
+  unittest output ends with `Ran 91 tests` and `OK`; the Python child exit was
+  `0`.
+- The PowerShell tool wrapper reported exit `1` for the full-suite invocation
+  even though the captured child exit was `0` and the complete log reports
+  success. The two statuses are recorded separately; no test failure was
+  suppressed or reclassified. A separate launch path stalled at the final
+  worker pause/resume test and was not used as evidence.
+- The eight source sample SHA-256 values were checked before and after the
+  completed run; all remained equal to the Phase 11C table above.
+- PID `45712` remained the existing Python continuous hash worker. Its process
+  and command line were checked read-only; it remained responsive and was not
+  stopped, restarted, paused, or reconfigured. The live index and queue were
+  not opened or changed by this work.
+- Tests used temporary databases and synthetic fixtures. No OLS, BIN, ORI,
+  SQLite, backup, cache, or environment files were added to Git.
+
+Phase 11D completes the reproducible reference-workflow implementation and
+regression coverage, not the underlying independent data validation. Phase 11
+remains **in progress** until the required WinOLS exports and structural
+version/map relationships are independently confirmed.
