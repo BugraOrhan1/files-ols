@@ -865,6 +865,10 @@ relationship is incomplete. No independent WinOLS exports were available for
 the eight samples during Phase 11D, so their structural validation remains
 `NOT_TESTED`.
 
+### Phase 11E independent parser audit
+
+The Phase 11E audit compared read-only observations from `py-ols` and `jinglinsen/ols-parser` on the eight tracked OLS samples. Neither parser is ground truth; disagreements and extracted hashes do not independently validate maps, versions, or binary exports. See the [audit and verified test results](./PHASE11E_STATUS.md) and [machine-readable parser report](./reports/phase11e_parser_audit.json). Independent WinOLS validation remains `NOT_TESTED`; Phase 11 remains in progress.
+
 ## Phase 5 limits
 
 The inventory command is a dry-run and is not the 6-TB indexer. It has not been
