@@ -72,15 +72,21 @@ def _is_process_alive(process_id: int) -> bool:
 
 
 class IndexDatabase:
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(path, timeout=30)
+    def __init__(self, path: Path, *, read_only: bool = False) -> None:
+        self.path = Path(path)
+        if read_only:
+            uri = f"{self.path.resolve().as_uri()}?mode=ro"
+            self.connection = sqlite3.connect(uri, uri=True, timeout=30)
+            self.connection.execute("PRAGMA query_only = ON")
+        else:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.connection = sqlite3.connect(self.path, timeout=30)
         self.connection.row_factory = sqlite3.Row
-        self.connection.execute("PRAGMA foreign_keys = ON")
-        self.connection.execute("PRAGMA journal_mode = WAL")
         self.connection.execute("PRAGMA busy_timeout = 30000")
-        self._initialize()
+        if not read_only:
+            self.connection.execute("PRAGMA foreign_keys = ON")
+            self.connection.execute("PRAGMA journal_mode = WAL")
+            self._initialize()
 
     def close(self) -> None:
         self.connection.close()

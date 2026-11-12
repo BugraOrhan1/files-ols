@@ -148,6 +148,15 @@ or establish that two files are compatible tune/original pairs.
 python -m ols_platform.cli compare original.bin tuned.bin
 ```
 
+For a comparison that must not create or write to the SQLite index, use
+`--no-store`. `--output` writes a JSON report to a new path and refuses to
+overwrite an existing file or either comparison input:
+
+```powershell
+python -m ols_platform.cli compare original.bin tuned.bin --no-store `
+  --output data\comparison-reports\comparison.json
+```
+
 For WinOLS reference manifests, first review the generated per-project
 manifest, then import it and run validation. Binary exports without an explicit
 slot mapping can produce candidate matches, but these remain inconclusive if
@@ -170,6 +179,18 @@ only referenced by path, size, and SHA-256.
 ```powershell
 python -m ols_platform.cli reference-package-template 8
 python -m ols_platform.cli reference-package-inspect data\reference-packets\8\manifest.json
+```
+
+Manifest version 1 is described by
+[schemas/winols-reference-package-v1.schema.json](./schemas/winols-reference-package-v1.schema.json).
+Run the offline audit to execute the existing package, version, metadata and
+map checks without writing run history or other data to the index. The index
+must already exist and is opened read-only. Report output must be a new path:
+
+```powershell
+python -m ols_platform.cli reference-package-audit `
+  data\reference-packets\8\manifest.json `
+  --output data\reference-reports\project-8-offline-audit.json
 ```
 
 Place each actual WinOLS raw version export separately in
@@ -917,3 +938,12 @@ are generated. No WinOLS automation is enabled. Use the export queue and the
 existing reference packet workflow until the installed WinOLS version,
 documented automation interface, license permissions, and correct version
 selection can be established.
+
+## External parser and tooling review
+
+Phase 17 reviewed eight public parser, extractor and comparison repositories
+at pinned commits. No external source code was copied or adopted, and none of
+the alternatives was established as an authoritative WinOLS parser. See
+[PHASE17_STATUS.md](./PHASE17_STATUS.md) and
+[reports/external_repo_review.md](./reports/external_repo_review.md) for the
+license, issue-tracker, provenance and validation findings.
