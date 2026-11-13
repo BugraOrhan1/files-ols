@@ -78,7 +78,7 @@ class AppTests(unittest.TestCase):
         tuned = self.root_dir / "al getuned.bin"
         tuned.write_bytes(make_stage1(make_original(1)))
         self.app.set_original(tuned)
-        self.assertIn("al getuned", self.app.status_text)
+        self.assertIn("al bewerkt", self.app.status_text)
         self.assertEqual(str(self.app.make_button["state"]), "disabled")
 
 

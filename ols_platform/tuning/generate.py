@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .identity import classify_input
-from .package import PROFILE_LABELS
+from .ols_versions import profile_label
 
 
 class GenerationRejected(Exception):
@@ -99,7 +99,7 @@ def _select_variant(package, data: bytes) -> tuple[dict, dict, dict]:
         raise GenerationRejected(
             "ecu_not_recognized",
             "De ECU van dit bestand komt niet voor in de bibliotheek "
-            f"(bekende families: {known}). Voeg WinOLS-projecten van deze ECU met een Stage 1 toe "
+            f"(bekende families: {known}). Voeg WinOLS-projecten van deze ECU met getunede versies toe "
             "en werk de bibliotheek bij.",
         )
     if not partial:
@@ -132,10 +132,11 @@ def _select_variant(package, data: bytes) -> tuple[dict, dict, dict]:
     )
 
 
-def _check_zones(blob: dict[str, Any], data: bytes) -> None:
+def _check_zones(blob: dict[str, Any], data: bytes, profile_name: str) -> None:
     zone_hits = sorted({
         zone["label"] for zone in blob.get("modification_zones", [])
-        if data[zone["start"]:zone["end"]].hex() == zone["tuned"]
+        if zone.get("profile") != profile_name
+        and data[zone["start"]:zone["end"]].hex() == zone["tuned"]
         and zone["tuned"] != zone["original"]
     })
     if zone_hits:
@@ -154,7 +155,8 @@ def _edits_match(data: bytes, edits: list, column: int) -> bool:
     return True
 
 
-def _known_pair(known: list[dict[str, Any]], data: bytes, input_sha: str) -> dict[str, Any] | None:
+def _known_pair(known: list[dict[str, Any]], data: bytes, input_sha: str,
+                profile_name: str = "stage1") -> dict[str, Any] | None:
     """Return the training pair whose original matches this input in every
     byte that pair's Stage 1 changes (identical original -> identical tune)."""
 
@@ -162,8 +164,8 @@ def _known_pair(known: list[dict[str, Any]], data: bytes, input_sha: str) -> dic
         if pair["edits"] and _edits_match(data, pair["edits"], 2) and not _edits_match(data, pair["edits"], 1):
             raise GenerationRejected(
                 "already_tuned",
-                "Dit bestand is al getuned: het bevat precies de Stage 1-wijzigingen van "
-                f"trainingsproject {pair.get('project_name') or pair['pair_id']}. Open het originele bestand.",
+                f"Dit bestand is al bewerkt: het bevat precies de {profile_label(profile_name)}-wijzigingen "
+                f"van project {pair.get('project_name') or pair['pair_id']}. Open het originele bestand.",
             )
     matches = [p for p in known if p["edits"] and _edits_match(data, p["edits"], 1)]
     if not matches:
@@ -203,7 +205,8 @@ def _region_looks_tuned(region: dict[str, Any], data: bytes) -> bool:
     return decisive >= 3 and votes / decisive > 0.5
 
 
-def _check_mixed_input(blob: dict[str, Any], profile: dict[str, Any], data: bytes) -> None:
+def _check_mixed_input(blob: dict[str, Any], profile: dict[str, Any], data: bytes, profile_name: str) -> None:
+    label = profile_label(profile_name)
     tuned_hits = 0
     original_hits = 0
     for region in profile["regions"]:
@@ -220,14 +223,14 @@ def _check_mixed_input(blob: dict[str, Any], profile: dict[str, Any], data: byte
     if tuned_hits and tuned_hits / total >= 0.5:
         raise GenerationRejected(
             "already_tuned",
-            f"Dit bestand is al getuned: {tuned_hits} van {total} geleerde "
-            "Stage 1-gebieden bevatten al de getunede waarden. Open het originele bestand.",
+            f"Dit bestand is al bewerkt: {tuned_hits} van {total} geleerde gebieden van {label} "
+            "bevatten al de gewijzigde waarden. Open het originele bestand.",
         )
-    _check_zones(blob, data)
+    _check_zones(blob, data, profile_name)
     if tuned_hits:
         raise GenerationRejected(
             "partially_tuned",
-            f"{tuned_hits} van {total} Stage 1-gebieden zijn al gewijzigd en de rest niet. "
+            f"{tuned_hits} van {total} gebieden van {label} zijn al gewijzigd en de rest niet. "
             "Gemengde of half bewerkte invoer wordt niet verwerkt.",
         )
 
@@ -281,6 +284,19 @@ def _apply_region(region: dict[str, Any], data: bytes, settings: dict[str, Any])
     return bytes(out), "+".join(sorted(methods)) or "exact", []
 
 
+def available_profiles(data: bytes, package) -> tuple[dict, dict, list[str]]:
+    """Recognise the variant and list the profiles it supports (best first)."""
+
+    from .ols_versions import profile_sort_key
+
+    classification = classify_input(data)
+    if classification.kind != "raw_image":
+        raise GenerationRejected(f"input_{classification.kind}", classification.message)
+    family, variant, _identity = _select_variant(package, data)
+    profiles = sorted(variant["profiles"], key=profile_sort_key)
+    return family, variant, profiles
+
+
 def _integrity(family: dict[str, Any], contracts: dict | None) -> dict[str, Any]:
     contract = (contracts or {}).get(family["family_key"], {"contract": "UNKNOWN"})
     ready = contract.get("contract") == "FLASH_TOOL_CORRECTS_ON_WRITE"
@@ -306,15 +322,15 @@ def generate(data: bytes, profile_name: str, package, contracts: dict | None = N
     profile = blob["profiles"].get(profile_name)
     known = blob["known_pairs"].get(profile_name, [])
     if profile is None and not known:
-        available = ", ".join(PROFILE_LABELS.get(p, p) for p in blob["profiles"]) or "geen"
+        available = ", ".join(profile_label(p) for p in blob["profiles"]) or "geen"
         raise GenerationRejected(
             "profile_not_available",
-            f"Profiel {PROFILE_LABELS.get(profile_name, profile_name)} is voor deze softwarevariant "
+            f"Profiel {profile_label(profile_name)} is voor deze softwarevariant "
             f"niet getraind (beschikbaar: {available}).",
         )
     input_sha = hashlib.sha256(data).hexdigest()
-    pair = _known_pair(known, data, input_sha)  # raises already_tuned first
-    _check_zones(blob, data)
+    pair = _known_pair(known, data, input_sha, profile_name)  # raises already_tuned first
+    _check_zones(blob, data, profile_name)
     if pair is not None:
         output = bytearray(data)
         changes = []
@@ -327,13 +343,13 @@ def generate(data: bytes, profile_name: str, package, contracts: dict | None = N
                 "changed_cells": None, "map": None, "label": f"Wijziging 0x{start:X}",
             })
         out_bytes = bytes(output)
-        version = pair.get("tuned_version_name") or "Stage 1"
+        version = pair.get("tuned_version_name") or profile_label(profile_name)
         notes = [
             f"Komt overeen met project {pair.get('project_name') or pair['pair_id']} "
-            f"(alle {len(pair['edits'])} Stage 1-gebieden gelijk); de versie '{version}' uit dat project wordt gebruikt."
+            f"(alle {len(pair['edits'])} gewijzigde gebieden gelijk); de versie '{version}' uit dat project wordt gebruikt."
         ]
         if pair["alternatives"]:
-            notes.append(f"Er bestaan {pair['alternatives']} andere Stage 1-varianten voor dit origineel; "
+            notes.append(f"Er bestaan {pair['alternatives']} andere varianten van {profile_label(profile_name)} voor dit origineel; "
                          "de meest voorkomende is gekozen.")
         return GenerationResult(
             output=out_bytes, family_key=family["family_key"], variant_key=variant["variant_key"],
@@ -346,7 +362,7 @@ def generate(data: bytes, profile_name: str, package, contracts: dict | None = N
         )
     if profile is None or not profile["regions"]:
         raise GenerationRejected("empty_profile", "Het profiel bevat geen geleerde wijzigingen.")
-    _check_mixed_input(blob, profile, data)
+    _check_mixed_input(blob, profile, data, profile_name)
     settings = package["settings"]
     output = bytearray(data)
     changes = []
@@ -393,7 +409,7 @@ def generate(data: bytes, profile_name: str, package, contracts: dict | None = N
             first.code,
             first.message + (
                 f" ({len(failures)} van {len(profile['regions'])} samenhangende gebieden niet "
-                "toepasbaar; Stage 1 wordt alleen als geheel toegepast.)"
+                "toepasbaar; een tuning wordt alleen als geheel toegepast.)"
                 if len(failures) > 1 else ""
             ),
             {"failures": [{"code": f.code, "message": f.message} for f in failures[:50]]},

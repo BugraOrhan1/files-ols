@@ -33,7 +33,6 @@ from .learn import DEFAULT_SETTINGS, TrainingPair, diff_regions, learn_modificat
 PACKAGE_FORMAT = "ols-tuner-package"
 PACKAGE_SCHEMA = 2
 PACKAGE_SUFFIX = ".olstune"
-PROFILE_LABELS = {"stage1": "Stage 1"}
 MAX_LEARNING_PAIRS = 32  # per variant; all pairs stay available as known pairs
 _ZIP_DATE = (2020, 1, 1, 0, 0, 0)
 
@@ -110,6 +109,90 @@ class Package:
         return data
 
 
+def prepare_variant(pairs_by_profile: dict[str, list[TrainingPair]],
+                    extra_known: dict[str, Iterable[TrainingPair]] | None = None,
+                    zone_pairs: Iterable[TrainingPair] = (),
+                    settings: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Learn every profile of one software variant into a cacheable unit.
+
+    ``pairs_by_profile`` holds the learning pairs (already capped),
+    ``extra_known`` pairs beyond the cap that stay available as exact known
+    pairs, ``zone_pairs`` pairs of unrecognised versions used only to spot
+    already-modified input.
+    """
+
+    cfg = dict(DEFAULT_SETTINGS)
+    cfg.update(settings or {})
+    extra_known = extra_known or {}
+    learning = {k: sorted(v, key=lambda p: p.pair_id) for k, v in pairs_by_profile.items() if v}
+    first = learning[min(learning)][0]
+    variant_id = variant_id_for(first.family_key, first.variant_key)
+    profiles: dict[str, Any] = {}
+    known_pairs: dict[str, list[dict[str, Any]]] = {}
+    all_known: list[TrainingPair] = []
+    learn_ids: set[str] = set()
+    for profile, learn_set in sorted(learning.items()):
+        learn_set = learn_set[:MAX_LEARNING_PAIRS]
+        learn_ids.update(p.pair_id for p in learn_set)
+        profiles[profile] = learn_profile(learn_set, cfg)
+        known = sorted({p.pair_id: p for p in [*learning[profile], *extra_known.get(profile, ())]}.values(),
+                       key=lambda p: p.pair_id)
+        all_known.extend(known)
+        known_pairs[profile] = [
+            {
+                "pair_id": p.pair_id,
+                "project_name": p.record.get("project_name", ""),
+                "original_sha256": p.record.get("original_sha256"),
+                "tuned_sha256": p.record.get("tuned_sha256"),
+                "tuned_version_name": p.record.get("tuned_version_name", ""),
+                "edits": known_pair_edits(p),
+            }
+            for p in known
+        ]
+    zones = []
+    zone_sources = [p for profile in sorted(learning) for p in learning[profile][:MAX_LEARNING_PAIRS]]
+    zone_sources += sorted(zone_pairs, key=lambda p: p.pair_id)[:MAX_LEARNING_PAIRS]
+    for pair in zone_sources:
+        for zone in learn_modification_zones([pair], cfg):
+            zone["profile"] = pair.profile
+            zones.append(zone)
+    zones.sort(key=lambda z: (z["start"], z["end"], z["profile"], z["label"]))
+    blob = {"variant_id": variant_id, "profiles": profiles, "known_pairs": known_pairs,
+            "modification_zones": zones}
+    raw = _canonical(blob).decode()
+    projects = sorted({p.record.get("project_sha256", "") for p in all_known} - {""})
+    states = sorted({p.record.get("checksum_state", "UNKNOWN") for p in all_known})
+    entry = {
+        "variant_id": variant_id,
+        "variant_key": first.variant_key,
+        "identity": first.identity,
+        "size": len(first.original),
+        "pairs": sorted(p.pair_id for p in all_known),
+        "learning_pairs": sorted(learn_ids),
+        "projects": projects,
+        "read_forms": sorted({p.record.get("read_form", "onbekend") for p in all_known}),
+        "evidence_level": "REPRODUCTION_ONLY" if len(projects) < 2 else "MULTI_PROJECT",
+        "profiles": {k: v["statistics"] | {"known_pairs": len(known_pairs[k])} for k, v in profiles.items()},
+        "sha256": hashlib.sha256(raw.encode()).hexdigest(),
+    }
+    selection = [
+        {k: v for k, v in sorted(p.record.items())} | {
+            "pair_id": p.pair_id, "profile": p.profile, "variant_id": variant_id,
+            "used_for_learning": p.pair_id in learn_ids,
+        }
+        for p in all_known
+    ]
+    family = {
+        "family_key": first.family_key,
+        "ecu_type": first.record.get("ecu_type") or first.family_key.rsplit("|", 1)[0],
+        "ecu_manufacturer": first.record.get("ecu_manufacturer", ""),
+        "size": len(first.original),
+        "family_identity": {"ecu_type": first.identity.get("ecu_type", [])},
+        "states": states,
+    }
+    return {"family": family, "entry": entry, "blob": raw, "selection": selection}
+
+
 class PackageBuilder:
     def __init__(self, settings: dict[str, Any] | None = None) -> None:
         self.settings = dict(DEFAULT_SETTINGS)
@@ -118,66 +201,24 @@ class PackageBuilder:
         self.blobs: dict[str, bytes] = {}
         self.selection: list[dict[str, Any]] = []
 
-    def add_variant(self, target: list[TrainingPair], others: list[TrainingPair],
-                    extra_known: Iterable[TrainingPair] = (), profile: str = "stage1") -> None:
-        """Learn one software variant. ``extra_known`` adds pairs that are not
-        used for learning (above the cap) but are kept as exact known pairs."""
-
-        target = sorted(target, key=lambda p: p.pair_id)
-        first = target[0]
-        family = self.families.setdefault(first.family_key, {
-            "family_key": first.family_key,
-            "ecu_type": first.record.get("ecu_type", ""),
-            "ecu_manufacturer": first.record.get("ecu_manufacturer", ""),
-            "size": len(first.original),
-            "family_identity": {"ecu_type": first.identity.get("ecu_type", [])},
+    def add_prepared(self, unit: dict[str, Any]) -> None:
+        info = unit["family"]
+        family = self.families.setdefault(info["family_key"], {
+            **{k: v for k, v in info.items() if k != "states"},
             "variants": [],
             "reference_checksum_states": [],
         })
-        known = sorted({p.pair_id: p for p in [*target, *extra_known]}.values(), key=lambda p: p.pair_id)
-        learn_set = target[:MAX_LEARNING_PAIRS]
-        learn_ids = {p.pair_id for p in learn_set}
-        learned = learn_profile(learn_set, self.settings)
-        variant_id = variant_id_for(first.family_key, first.variant_key)
-        blob = {
-            "variant_id": variant_id,
-            "profiles": {profile: learned},
-            "known_pairs": {profile: [
-                {
-                    "pair_id": p.pair_id,
-                    "project_name": p.record.get("project_name", ""),
-                    "original_sha256": p.record.get("original_sha256"),
-                    "tuned_sha256": p.record.get("tuned_sha256"),
-                    "tuned_version_name": p.record.get("tuned_version_name", ""),
-                    "edits": known_pair_edits(p),
-                }
-                for p in known
-            ]},
-            "modification_zones": learn_modification_zones(sorted(others, key=lambda p: p.pair_id), self.settings),
-        }
-        raw = _canonical(blob)
-        self.blobs[variant_id] = raw
-        projects = sorted({p.record.get("project_sha256", "") for p in known} - {""})
-        states = sorted({p.record.get("checksum_state", "UNKNOWN") for p in known})
-        family["reference_checksum_states"] = sorted(set(family["reference_checksum_states"]) | set(states))
-        family["variants"].append({
-            "variant_id": variant_id,
-            "variant_key": first.variant_key,
-            "identity": first.identity,
-            "size": len(first.original),
-            "pairs": [p.pair_id for p in known],
-            "learning_pairs": [p.pair_id for p in learn_set],
-            "projects": projects,
-            "read_forms": sorted({p.record.get("read_form", "onbekend") for p in known}),
-            "evidence_level": "REPRODUCTION_ONLY" if len(projects) < 2 else "MULTI_PROJECT",
-            "profiles": {profile: learned["statistics"]},
-            "sha256": hashlib.sha256(raw).hexdigest(),
-        })
-        for p in known:
-            self.selection.append({k: v for k, v in sorted(p.record.items())} | {
-                "pair_id": p.pair_id, "profile": p.profile, "variant_id": variant_id,
-                "used_for_learning": p.pair_id in learn_ids,
-            })
+        family["reference_checksum_states"] = sorted(set(family["reference_checksum_states"]) | set(info["states"]))
+        family["variants"].append(unit["entry"])
+        self.blobs[unit["entry"]["variant_id"]] = unit["blob"].encode()
+        self.selection.extend(unit["selection"])
+
+    def add_variant(self, pairs_by_profile: dict[str, list[TrainingPair]],
+                    extra_known: dict[str, Iterable[TrainingPair]] | None = None,
+                    zone_pairs: Iterable[TrainingPair] = ()) -> dict[str, Any]:
+        unit = prepare_variant(pairs_by_profile, extra_known, zone_pairs, self.settings)
+        self.add_prepared(unit)
+        return unit
 
     def finish(self, *, holdout: list[str] | None = None, excluded: list[dict[str, Any]] | None = None,
                test_results: dict[str, Any] | None = None) -> Package:
@@ -217,21 +258,25 @@ class PackageBuilder:
 def build_package(pairs: list[TrainingPair], *, other_pairs: list[TrainingPair] | None = None,
                   settings: dict[str, Any] | None = None, holdout: list[str] | None = None,
                   excluded: list[dict[str, Any]] | None = None,
-                  test_results: dict[str, Any] | None = None, profile: str = "stage1") -> Package:
-    """In-memory convenience wrapper (tests, small sets)."""
+                  test_results: dict[str, Any] | None = None) -> Package:
+    """In-memory convenience wrapper (tests, small sets). Every recognised
+    profile is learned; ``other_pairs`` (unrecognised versions) only feed the
+    modification zones."""
 
     holdout_set = set(holdout or [])
     builder = PackageBuilder(settings)
-    groups: dict[tuple[str, str], list[TrainingPair]] = {}
-    for pair in pairs:
-        if pair.pair_id not in holdout_set and pair.profile == profile:
-            groups.setdefault((pair.family_key, pair.variant_key), []).append(pair)
-    others: dict[tuple[str, str], list[TrainingPair]] = {}
-    for pair in other_pairs or []:
-        if pair.pair_id not in holdout_set:
-            others.setdefault((pair.family_key, pair.variant_key), []).append(pair)
+    groups: dict[tuple[str, str], dict[str, list[TrainingPair]]] = {}
+    zones: dict[tuple[str, str], list[TrainingPair]] = {}
+    for pair in [*pairs, *(other_pairs or [])]:
+        if pair.pair_id in holdout_set:
+            continue
+        key = (pair.family_key, pair.variant_key)
+        if pair.profile in ("other", "original"):
+            zones.setdefault(key, []).append(pair)
+        else:
+            groups.setdefault(key, {}).setdefault(pair.profile, []).append(pair)
     for key in sorted(groups):
-        builder.add_variant(groups[key], others.get(key, []), profile=profile)
+        builder.add_variant(groups[key], zone_pairs=zones.get(key, []))
     return builder.finish(holdout=sorted(holdout_set), excluded=excluded, test_results=test_results)
 
 

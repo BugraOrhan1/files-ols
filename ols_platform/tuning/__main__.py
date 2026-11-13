@@ -30,7 +30,9 @@ def _reader(path: str | None):
     if path:
         from ..reader import PyOlsReader
 
-        return PyOlsReader(Path(path))
+        reader = PyOlsReader(Path(path))
+        reader.source_path = Path(path)  # lets worker processes rebuild it
+        return reader
     from .ols_native import NativeOlsReader
 
     return NativeOlsReader()
@@ -60,18 +62,22 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--holdout", action="append", default=[],
                        help="Projectnaam of SHA-256 die buiten training blijft (incl. afstammelingen).")
     train.add_argument("--max-files", type=int)
+    train.add_argument("--workers", type=int, help="Aantal bestanden tegelijk (standaard: automatisch).")
     train.add_argument("--retry-delay", type=float, default=1.0)
     train.add_argument("--no-activate", action="store_true")
     train.add_argument("--report", type=Path)
 
     gen = sub.add_parser("generate", help="Maak getunde BIN.")
     gen.add_argument("original", type=Path)
-    gen.add_argument("--profile", default="stage1")
+    gen.add_argument("--profile", default="stage1", help="Bijv. stage1, stage2, egr_off, stage1+egr_off.")
     gen.add_argument("--output-dir", type=Path, required=True)
     gen.add_argument("--name")
     gen.add_argument("--package", type=Path, help="Pakketbestand i.p.v. het actieve pakket.")
     gen.add_argument("--dry-run", action="store_true", help="Alleen genereren en controleren.")
 
+    upd = sub.add_parser("update-library", help="Bibliotheek bijwerken met de mappen uit de app-instellingen "
+                         "(zo start de app het achtergrondproces).")
+    upd.add_argument("--workers", type=int)
     sub.add_parser("packages", help="Toon pakketten.")
     sub.add_parser("rollback", help="Activeer de vorige pakketversie.")
     inst = sub.add_parser("install-package")
@@ -93,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             summary = library.scan(
                 _sources(args.source), _reader(args.py_ols), export_dirs=args.exports,
-                max_files=args.max_files, retry_delay=args.retry_delay, progress=print,
+                max_files=args.max_files, retry_delay=args.retry_delay, progress=print, workers=args.workers,
             )
             training = library.train(holdout_projects=args.holdout, activate=not args.no_activate,
                                      progress=print)
@@ -137,6 +143,10 @@ def main(argv: list[str] | None = None) -> int:
         summary.update({"status": "GEËXPORTEERD", "output": str(out), "report": str(report)})
         print(json.dumps(summary, indent=2, ensure_ascii=False))
         return 0
+    if args.command == "update-library":
+        from .background import run_update
+
+        return run_update(store.root, workers=args.workers)
     if args.command == "packages":
         print(json.dumps({"active": store.active_id(), "packages": store.list_packages()}, indent=2))
         return 0
@@ -167,4 +177,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    import multiprocessing
+
+    multiprocessing.freeze_support()
     sys.exit(main())

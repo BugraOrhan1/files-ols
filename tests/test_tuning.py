@@ -44,16 +44,17 @@ class RevisionTagTests(unittest.TestCase):
         self.assertEqual(tag.versions[1].checksum_note, "CS-, OLS280 2.50")
         self.assertEqual(tag.declared_count, 2)
 
-    def test_profile_classification_keeps_combined_out(self):
-        self.assertEqual(classify_profile("Stage 1"), "stage1")
-        self.assertEqual(classify_profile("stage1"), "stage1")
-        self.assertEqual(classify_profile("Stage 1 + P&B"), "combined")
-        self.assertEqual(classify_profile("stage 1 = Vmax 280Km/h"), "combined")
-        self.assertEqual(classify_profile("EGR OFF"), "other")
-        for label in ("Stage1", "STAGE 1", "Stufe 1", "St1", "Stage 1 (450PS)", "Stage 1 450hp"):
-            self.assertEqual(classify_profile(label), "stage1", label)
-        for label in ("Stage 1 EGR OFF", "Stage 1 + DPF off", "Stage 1 v2"):
-            self.assertEqual(classify_profile(label), "combined", label)
+    def test_profile_classification_covers_all_tuning_types(self):
+        cases = {
+            "Stage 1": "stage1", "Stage1": "stage1", "STAGE 1": "stage1", "Stufe 1": "stage1", "St1": "stage1",
+            "Stage 1 (450PS)": "stage1", "Stage 1 450hp": "stage1", "Stage 2": "stage2",
+            "Stage 1 + P&B": "stage1+pop_bang", "stage 1 = Vmax 280Km/h": "stage1+vmax",
+            "Stage 1 EGR OFF": "stage1+egr_off", "EGR OFF": "egr_off", "P&B": "pop_bang",
+            "DPF OFF + Adblue OFF": "dpf_off+adblue_off", "Swiftec Vmax Off": "vmax",
+            "Stage 3 DPF EGR OFF": "stage3+egr_off+dpf_off", "Original": "original", "Daten": "other",
+        }
+        for label, expected in cases.items():
+            self.assertEqual(classify_profile(label), expected, label)
 
 
 class LearnAndGenerateTests(unittest.TestCase):
@@ -266,6 +267,17 @@ class ExportTests(unittest.TestCase):
         self.assertFalse((self.out / "vol.bin").exists())
         self.assertEqual(self.leftovers(), [])
 
+    def test_filesystem_without_hard_links_still_never_overwrites(self):
+        result = self.result()
+        with mock.patch.object(export_module.os, "link", side_effect=OSError(95, "Operation not supported")):
+            final, report = export_result(result, self.original_path, self.out, "usb.bin", self.package)
+            self.assertEqual(sha(final.read_bytes()), result.output_sha256)
+            self.assertTrue(report.exists())
+            with self.assertRaises(ExportBlocked) as ctx:
+                export_result(result, self.original_path, self.out, "usb.bin", self.package)
+        self.assertEqual(ctx.exception.code, "exists")
+        self.assertEqual(self.leftovers(), [])
+
     def test_changed_original_is_refused(self):
         result = self.result()
         self.original_path.write_bytes(make_original(43))
@@ -354,7 +366,7 @@ class LibraryTests(unittest.TestCase):
         self.assertEqual(len(library.all_pairs()), 2)  # nothing lost
         library.close()
 
-    def test_combined_versions_are_excluded_but_used_for_mixed_detection(self):
+    def test_combined_versions_become_their_own_profile(self):
         def pnb(original):
             image = bytearray(make_stage1(original))
             image[0x7800:0x7804] = b"\xde\xad\xbe\xef"
@@ -365,10 +377,17 @@ class LibraryTests(unittest.TestCase):
         library.scan({"Database 1": self.source}, self.reader)
         library.train()
         package = self.store.load_active()
-        self.assertEqual([s["profile"] for s in package["training_selection"]], ["stage1"])
-        self.assertTrue(package["excluded_candidates"])
+        self.assertEqual(sorted(s["profile"] for s in package["training_selection"]),
+                         ["stage1", "stage1+pop_bang"])
         variant_id = package["families"][0]["variants"][0]["variant_id"]
-        self.assertTrue(package.load_variant(variant_id)["modification_zones"])
+        blob = package.load_variant(variant_id)
+        self.assertEqual(sorted(blob["profiles"]), ["stage1", "stage1+pop_bang"])
+        original = make_original(1)
+        self.assertEqual(generate(original, "stage1+pop_bang", package).output, pnb(original))
+        self.assertEqual(generate(original, "stage1", package).output, make_stage1(original))
+        with self.assertRaises(GenerationRejected) as ctx:
+            generate(pnb(original), "stage1", package)
+        self.assertIn(ctx.exception.code, ("already_tuned", "other_modification_present"))
         library.close()
 
     def test_holdout_closure_follows_duplicates(self):
@@ -408,7 +427,7 @@ class RealSampleReproductionTests(unittest.TestCase):
         cls.tmp.cleanup()
 
     def test_confirmed_pairs_are_independently_export_matched(self):
-        selection = self.package["training_selection"]
+        selection = [s for s in self.package["training_selection"] if s["profile"] == "stage1"]
         self.assertEqual(sorted(s["ecu_type"] for s in selection), ["MDG1_MD1CP002", "SIMOS18.10"])
         for item in selection:
             self.assertIn("original_matches_independent_winols_export_sha256", item["evidence"])
@@ -442,7 +461,7 @@ class RealSampleReproductionTests(unittest.TestCase):
             "WinOLS (BMW 7er (Stage 1) - B57D30S0-G1).bin": "already_tuned",
             "WinOLS (VW Golf (P&B) - SCG0051000000)": "other_modification_present",
             "WinOLS (VW Golf (Stage 1) - SCG0051000000)": "already_tuned",
-            "WinOLS (Audi A8 (Original) - 522813).DTF": "ecu_not_recognized",
+            "WinOLS (Audi A8 (Original) - 522813).DTF": "profile_not_available",
         }
         for name, code in cases.items():
             with self.assertRaises(GenerationRejected) as ctx:
@@ -501,4 +520,44 @@ class ScaleBehaviourTests(unittest.TestCase):
         result = generate(pair.original, "stage1", package)
         self.assertEqual(result.output, pair.tuned)
         self.assertEqual(result.evidence_level, "KNOWN_PAIR")
-        self.assertTrue(any("andere Stage 1" in n for n in result.notes))
+        self.assertTrue(any("andere varianten" in n for n in result.notes))
+
+
+class AllProfilesRealSampleTests(unittest.TestCase):
+    """Every WinOLS version export in the repository is reproduced exactly."""
+
+    def test_every_exported_version_is_reproduced(self):
+        from ols_platform.tuning.ols_native import NativeOlsReader
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PackageStore(Path(tmp) / "store")
+            library = Library(store)
+            library.scan({"repo": REPO / "ols files als ols"}, NativeOlsReader(), workers=2)
+            library.train()
+            library.close()
+            package = store.load_active()
+            checked = self._check_all(package)
+        self.assertEqual(checked, 10)
+
+    def _check_all(self, package):
+        import re
+
+        from ols_platform.tuning.generate import available_profiles
+
+        exports = sorted(EXPORTS.iterdir())
+        checked = 0
+        for original in exports:
+            match = re.match(r"WinOLS \((.+?) \((.+)\) - ", original.name)
+            if match.group(2) != "Original":
+                continue
+            data = original.read_bytes()
+            _f, _v, profiles = available_profiles(data, package)
+            for tuned in exports:
+                other = re.match(r"WinOLS \((.+?) \((.+)\) - ", tuned.name)
+                if other.group(1) != match.group(1) or other.group(2) == "Original":
+                    continue
+                profile = classify_profile(other.group(2).replace("Km-h", "Km/h"))
+                self.assertIn(profile, profiles, tuned.name)
+                self.assertEqual(generate(data, profile, package).output, tuned.read_bytes(), tuned.name)
+                checked += 1
+        return checked

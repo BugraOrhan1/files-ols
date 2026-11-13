@@ -10,16 +10,16 @@ from __future__ import annotations
 
 import json
 import os
-import queue
 import subprocess
 import sys
-import threading
 from pathlib import Path
 
 from . import SOFTWARE_VERSION
 from .export import ExportBlocked, export_result
-from .generate import GenerationRejected, GenerationResult, generate
-from .package import PROFILE_LABELS, PackageStore, write_package
+from .background import read_status, request_stop, start_background
+from .generate import GenerationRejected, GenerationResult, available_profiles, generate
+from .ols_versions import profile_label
+from .package import PackageStore, write_package
 
 DEFAULT_SOURCES = [
     "Database 1=\\\\Dell\\d\\Database 1",
@@ -37,9 +37,9 @@ COLORS = {
 }
 
 EVIDENCE_LABELS = {
-    "KNOWN_PAIR": "Bekend origineel – exact de Stage 1 uit uw database",
-    "MULTI_PROJECT": "Geleerde Stage 1 (meerdere projecten van deze software)",
-    "REPRODUCTION_ONLY": "Geleerde Stage 1 (slechts één project van deze software – extra controle aanbevolen)",
+    "KNOWN_PAIR": "Bekend origineel – exact de tuning uit uw database",
+    "MULTI_PROJECT": "Geleerde tuning (meerdere projecten van deze software)",
+    "REPRODUCTION_ONLY": "Geleerde tuning (slechts één project van deze software – extra controle aanbevolen)",
 }
 
 
@@ -107,7 +107,7 @@ class MessagePanel:
 
         self.frame = tk.Frame(parent, bd=0, highlightthickness=0)
         self.title = tk.Label(self.frame, anchor="w", justify="left", font=("Segoe UI", 11, "bold"))
-        self.body = tk.Label(self.frame, anchor="w", justify="left", font=("Segoe UI", 10), wraplength=640)
+        self.body = tk.Label(self.frame, anchor="w", justify="left", font=("Segoe UI", 10), wraplength=700)
         self.title.pack(fill="x", padx=14, pady=(10, 0))
         self.body.pack(fill="x", padx=14, pady=(2, 10))
         self.text = ""
@@ -135,8 +135,8 @@ class TunerApp:
         self.library_window: LibraryWindow | None = None
 
         root.title("OLS Tuner")
-        root.geometry("760x600")
-        root.minsize(680, 560)
+        root.geometry("780x700")
+        root.minsize(700, 640)
         _style(root)
 
         outer = ttk.Frame(root, padding=(20, 16))
@@ -149,6 +149,8 @@ class TunerApp:
         ttk.Label(left, text="OLS Tuner", style="Title.TLabel").pack(anchor="w")
         self.package_var = tk.StringVar()
         ttk.Label(left, textvariable=self.package_var, style="Sub.TLabel", wraplength=520).pack(anchor="w")
+        self.bg_var = tk.StringVar()
+        ttk.Label(left, textvariable=self.bg_var, foreground="#1a5fb4", wraplength=520).pack(anchor="w")
         ttk.Button(header, text="Bibliotheek…", command=self.open_library).pack(side="right", anchor="n")
 
         # Step 1
@@ -165,13 +167,14 @@ class TunerApp:
         # Step 2
         step2 = ttk.LabelFrame(outer, text="  2   Tuning  ", style="Step.TLabelframe", padding=12)
         step2.pack(fill="x", pady=8)
-        self.profile_var = tk.StringVar(value="Stage 1")
+        self.profile_var = tk.StringVar(value="")
+        self.profile_map: dict[str, str] = {}
         self.profile_box = ttk.Combobox(step2, textvariable=self.profile_var, state="readonly",
-                                        values=["Stage 1"], width=24)
+                                        values=[], width=34)
         self.profile_box.pack(side="left")
         self.profile_box.bind("<<ComboboxSelected>>", lambda _e: self.check_original())
-        ttk.Label(step2, text="Alleen profielen waarvoor de bibliotheek trainingsdata heeft.",
-                  style="Muted.TLabel").pack(side="left", padx=14)
+        ttk.Label(step2, text="De lijst toont welke tunings uw database voor deze software bevat.",
+                  style="Muted.TLabel", wraplength=330).pack(side="left", padx=14)
 
         # Step 3
         step3 = ttk.LabelFrame(outer, text="  3   Getunde BIN  ", style="Step.TLabelframe", padding=12)
@@ -191,7 +194,9 @@ class TunerApp:
         ttk.Label(footer, text=f"Versie {SOFTWARE_VERSION}  ·  gegevens: {self.store.root}",
                   style="Muted.TLabel").pack(side="left")
 
+        self.active_id = None
         self.reload_package()
+        self.root.after(1500, self.poll_background)
 
     # ----- state ------------------------------------------------------------
     @property
@@ -211,26 +216,47 @@ class TunerApp:
             self.message.show(
                 "warn", "Welkom – eerst de bibliotheek opbouwen",
                 "Klik rechtsboven op 'Bibliotheek…'. Voeg onder 'Bronmappen' uw mappen met WinOLS-projecten "
-                "toe (de vijf Dell-mappen staan er al) en klik op 'Bibliotheek bijwerken'. "
-                "Heeft u al een modelpakket? Koppel het dan aan onder 'Pakketten'.")
+                "toe (de vijf Dell-mappen staan er al) en klik op 'Bibliotheek bijwerken'. Het bijwerken loopt "
+                "op de achtergrond; zodra de eerste voorbeelden verwerkt zijn, kunt u al beginnen.")
             self.make_button.configure(state="disabled")
             return
+        self.active_id = self.package.package_id
         families = len(self.package["families"])
         variants = sum(1 for _ in self.package.variants())
         pairs = len(self.package["training_selection"])
+        profiles = len({p for _f, v in self.package.variants() for p in v["profiles"]})
         self.package_var.set(
-            f"Bibliotheek: {pairs} Stage 1-voorbeelden · {variants} softwarevarianten · "
-            f"{families} ECU-families  (pakket {self.package.package_id}, {self.package['created_at'][:10]})")
-        profiles = sorted({PROFILE_LABELS.get(p, p) for _f, v in self.package.variants() for p in v["profiles"]})
-        self.profile_box.configure(values=profiles or ["Stage 1"])
+            f"Bibliotheek: {pairs} voorbeelden · {profiles} soorten tuning · {variants} softwarevarianten · "
+            f"{families} ECU-families  (bijgewerkt {self.package['created_at'][:16].replace('T', ' ')} UTC)")
         if self.original is None:
             self.message.show("info", "Klaar voor gebruik", "Open een origineel bestand om te beginnen.")
         else:
-            self.check_original()
+            self.update_profiles()
 
     def _profile_key(self) -> str:
-        reverse = {v: k for k, v in PROFILE_LABELS.items()}
-        return reverse.get(self.profile_var.get(), self.profile_var.get())
+        return self.profile_map.get(self.profile_var.get(), "")
+
+    def poll_background(self) -> None:
+        """Show background library progress and load new versions automatically."""
+
+        try:
+            status = read_status(self.store.root)
+            if status["running"]:
+                cur = status.get("current") or {}
+                where = f" – {cur['source']}: {cur['done']} van {cur['found']} projecten" if cur else ""
+                phase = " (nieuwe versie wordt gemaakt)" if status.get("phase") == "leren" else ""
+                self.bg_var.set(f"Bibliotheek wordt op de achtergrond bijgewerkt{where}{phase}. U kunt gewoon doorwerken.")
+            else:
+                self.bg_var.set("")
+            active = self.store.active_id()
+            if active and active != self.active_id:
+                self.reload_package()
+                if self.package is not None and status["running"]:
+                    self.bg_var.set(self.bg_var.get() + "  Nieuwe bibliotheekversie geladen.")
+        except Exception:
+            pass
+        if self.root.winfo_exists():
+            self.root.after(2000, self.poll_background)
 
     # ----- actions ----------------------------------------------------------
     def choose_original(self) -> None:
@@ -248,6 +274,34 @@ class TunerApp:
         size = path.stat().st_size
         self.file_var.set(path.name)
         self.file_detail_var.set(f"{size:,} bytes  ·  {path.parent}".replace(",", "."))
+        self.update_profiles()
+
+    def update_profiles(self) -> None:
+        """Fill the tuning list with the profiles this file's software supports."""
+
+        self.result = None
+        self.make_button.configure(state="disabled")
+        if self.original is None:
+            return
+        if self.package is None:
+            self.message.show("warn", "Nog geen bibliotheek", "Bouw eerst de bibliotheek op via 'Bibliotheek…'.")
+            return
+        try:
+            _family, _variant, profiles = available_profiles(self.original.read_bytes(), self.package)
+        except GenerationRejected as exc:
+            self.profile_map = {}
+            self.profile_box.configure(values=[])
+            self.profile_var.set("")
+            self.message.show("error", "Dit bestand kan niet getuned worden", exc.message)
+            return
+        except OSError as exc:
+            self.message.show("error", "Bestand kon niet gelezen worden", str(exc))
+            return
+        previous = self._profile_key()
+        self.profile_map = {profile_label(p): p for p in profiles}
+        self.profile_box.configure(values=list(self.profile_map))
+        choice = previous if previous in profiles else ("stage1" if "stage1" in profiles else profiles[0])
+        self.profile_var.set(profile_label(choice))
         self.check_original()
 
     def check_original(self) -> None:
@@ -259,6 +313,8 @@ class TunerApp:
             return
         if self.package is None:
             self.message.show("warn", "Nog geen bibliotheek", "Bouw eerst de bibliotheek op via 'Bibliotheek…'.")
+            return
+        if not self._profile_key():
             return
         self.root.configure(cursor="watch")
         self.root.update_idletasks()
@@ -276,7 +332,8 @@ class TunerApp:
         self.result = result
         lines = [EVIDENCE_LABELS.get(result.evidence_level, result.evidence_level)]
         lines.extend(result.notes)
-        lines.append(f"ECU: {result.identity['family']}  ·  {len(result.changes)} gebieden worden aangepast.")
+        lines.append(f"Tuning: {profile_label(result.profile)}  ·  ECU: {result.identity['family']}  ·  "
+                     f"{len(result.changes)} gebieden worden aangepast.")
         if not result.integrity["ready_for_use"]:
             lines.append("Let op: voor deze ECU-familie is nog niet vastgelegd hoe de checksum wordt "
                          "gecorrigeerd. Doe dat onder Bibliotheek… → Checksum.")
@@ -292,7 +349,8 @@ class TunerApp:
                 return None
         result = self.result
         output_dir = Path(self.settings.data["output_dir"])
-        name = f"{self.original.stem}_{self.profile_var.get().replace(' ', '')}_{result.output_sha256[:8]}.bin"
+        tag = "".join(ch if ch.isalnum() else "-" for ch in profile_label(result.profile)).strip("-")
+        name = f"{self.original.stem}_{tag}_{result.output_sha256[:8]}.bin".replace("--", "-")
         if ask_path:
             from tkinter import filedialog
 
@@ -339,7 +397,7 @@ class TunerApp:
 
 
 class LibraryWindow:
-    TABS = ("Bronmappen", "Overzicht", "Pakketten", "Checksum", "Instellingen")
+    TABS = ("Bronmappen", "Overzicht", "Versies", "Checksum", "Instellingen")
 
     def __init__(self, app: TunerApp) -> None:
         tk, ttk = app.tk, app.ttk
@@ -348,8 +406,8 @@ class LibraryWindow:
         self.win.title("OLS Tuner – Bibliotheek")
         self.win.geometry("900x620")
         self.win.minsize(780, 540)
-        self.queue: queue.Queue = queue.Queue()
-        self.stop_event: threading.Event | None = None
+        self.last_log: list[str] = []
+        self.last_state = None
         self.notebook = ttk.Notebook(self.win)
         self.notebook.pack(fill="both", expand=True, padx=12, pady=12)
         self.tabs = {}
@@ -359,7 +417,7 @@ class LibraryWindow:
             self.tabs[name] = frame
         self._build_sources(self.tabs["Bronmappen"])
         self._build_overview(self.tabs["Overzicht"])
-        self._build_packages(self.tabs["Pakketten"])
+        self._build_packages(self.tabs["Versies"])
         self._build_checksum(self.tabs["Checksum"])
         self._build_settings(self.tabs["Instellingen"])
         self.refresh()
@@ -394,8 +452,9 @@ class LibraryWindow:
         self.run_button.pack(side="left")
         self.stop_button = ttk.Button(controls, text="Stoppen", command=self.stop, state="disabled")
         self.stop_button.pack(side="left", padx=8)
-        ttk.Label(controls, text="Onderbreken mag: een volgende keer gaat hij verder waar hij was.",
-                  style="Muted.TLabel").pack(side="left", padx=8)
+        ttk.Label(controls, text="Loopt op de achtergrond door, ook als u dit venster of de app sluit. "
+                  "Bij stoppen wordt alles wat al gescand is direct bruikbaar.",
+                  style="Muted.TLabel", wraplength=470).pack(side="left", padx=8)
         self.progress_var = tk.StringVar(value="")
         self.progress = ttk.Progressbar(run, mode="determinate", maximum=100)
         self.progress.pack(fill="x", pady=(10, 2))
@@ -481,219 +540,212 @@ class LibraryWindow:
     def write(self, text: str) -> None:
         self.log.insert("end", text + "\n")
         self.log.see("end")
+        self.last_log = []  # force the next status poll to redraw
 
     def update_library(self) -> None:
-        from .__main__ import _reader, _sources
-        from .library import Library
-
-        lines = self._sources()
-        if not lines:
+        if not self._sources():
             self.write("Voeg eerst minstens één map toe.")
             return
-        self.app.settings.data.update({"exports": self.exports_var.get(), "py_ols": self.py_ols_var.get()})
         self.app.settings.save()
-        store = self.app.store
-        exports = [Path(self.exports_var.get())] if self.exports_var.get() else []
-        py_ols = self.py_ols_var.get() or None
-        self.stop_event = threading.Event()
-        stop = self.stop_event
-        self.run_button.configure(state="disabled")
-        self.stop_button.configure(state="normal")
-        self.progress.configure(value=0)
-        self.progress_var.set("Bezig met starten…")
-
-        def work():
-            try:
-                library = Library(store)
-                try:
-                    summary = library.scan(
-                        _sources(lines), _reader(py_ols), export_dirs=exports, stop=stop,
-                        progress=lambda m: self.queue.put(("log", m)),
-                        on_file=lambda src, done, found: self.queue.put(("progress", src, done, found)),
-                    )
-                    self.queue.put(("scan", summary))
-                    if stop.is_set():
-                        self.queue.put(("log", "Gestopt. Wat al gelezen is, blijft bewaard."))
-                    else:
-                        self.queue.put(("log", "Leren uit de gevonden voorbeelden…"))
-                        training = library.train(progress=lambda m: self.queue.put(("log", m)))
-                        self.queue.put(("trained", training))
-                finally:
-                    library.close()
-            except Exception as exc:  # shown to the user; the app keeps running
-                self.queue.put(("error", str(exc)))
-            self.queue.put(("done",))
-
-        threading.Thread(target=work, daemon=True).start()
+        if start_background(self.app.store.root):
+            self.write("Bijwerken gestart op de achtergrond.")
+        else:
+            self.write("Het bijwerken loopt al.")
+        self.poll(once=True)
 
     def stop(self) -> None:
-        if self.stop_event is not None:
-            self.stop_event.set()
-            self.progress_var.set("Stoppen na het huidige project…")
+        request_stop(self.app.store.root)
+        self.progress_var.set("Stoppen… lopende projecten worden afgemaakt, daarna wordt geleerd van wat al gescand is.")
 
-    def poll(self) -> None:
+    def poll(self, once: bool = False) -> None:
         try:
-            while True:
-                item = self.queue.get_nowait()
-                kind = item[0]
-                if kind == "log":
-                    self.write(item[1])
-                elif kind == "progress":
-                    _, source, done, found = item
-                    self.progress.configure(value=(done / found * 100) if found else 100)
-                    self.progress_var.set(f"{source}: {done} van {found} projecten gelezen")
-                elif kind == "scan":
+            status = read_status(self.app.store.root)
+            running = status["running"]
+            self.run_button.configure(state="disabled" if running else "normal")
+            self.stop_button.configure(state="normal" if running else "disabled")
+            cur = status.get("current") or {}
+            if running:
+                if cur.get("found"):
+                    self.progress.configure(value=cur["done"] / cur["found"] * 100)
+                text = f"{cur.get('source', '')}: {cur.get('done', 0)} van {cur.get('found', 0)} projecten gelezen" if cur else "Bezig…"
+                if status.get("phase") == "leren":
+                    text += " – nieuwe bibliotheekversie wordt gemaakt"
+                if not self.progress_var.get().startswith("Stoppen"):
+                    self.progress_var.set(text)
+            elif status.get("state") in ("finished", "stopped", "failed", "interrupted"):
+                labels = {"finished": "Klaar.", "stopped": "Gestopt – wat al gescand is, is bruikbaar.",
+                          "failed": f"Mislukt: {status.get('message', '')}",
+                          "interrupted": "Onderbroken (bijv. pc uitgezet). Klik op 'Bibliotheek bijwerken' om verder te gaan."}
+                self.progress.configure(value=100 if status["state"] == "finished" else self.progress["value"])
+                self.progress_var.set(labels[status["state"]])
+            log = status.get("log") or []
+            if log != self.last_log:
+                self.log.delete("1.0", "end")
+                self.log.insert("end", "\n".join(log) + "\n")
+                self.log.see("end")
+                self.last_log = log
+            if status.get("state") != self.last_state:
+                self.last_state = status.get("state")
+                if status.get("sources"):
                     stats = self.app.settings.data.setdefault("source_stats", {})
-                    for key, st in item[1]["sources"].items():
-                        if st["status"].startswith("unavailable"):
-                            text = "niet bereikbaar"
-                        else:
-                            text = (f"{st['found']} projecten, {st.get('stage1_pairs', 0)} Stage 1-voorbeelden"
-                                    + (f", {st['retry_pending']} opnieuw proberen" if st["retry_pending"] else ""))
-                        stats[key] = text
-                        self.write(f"{key}: {text}")
+                    for key, st in status["sources"].items():
+                        stats[key] = "niet bereikbaar" if st["status"].startswith("unavailable") else (
+                            f"{st['found']} projecten, {st['confirmed_pairs']} voorbeelden"
+                            + (f", {st['retry_pending']} opnieuw proberen" if st["retry_pending"] else ""))
                     self.app.settings.save()
-                    self.refresh_sources()
-                elif kind == "trained":
-                    t = item[1]
-                    self.write(f"Nieuw pakket {t['package_id']}: {t['pairs_used']} voorbeelden "
-                               f"(+{len(t['pairs_added_since_previous'])} nieuw).")
-                elif kind == "error":
-                    self.write(f"Fout: {item[1]}")
-                    self.progress_var.set("Mislukt – zie melding hierboven.")
-                elif kind == "done":
-                    self.run_button.configure(state="normal")
-                    self.stop_button.configure(state="disabled")
-                    if not self.progress_var.get().startswith("Mislukt"):
-                        self.progress.configure(value=100)
-                        self.progress_var.set("Klaar.")
-                    self.app.reload_package()
+                if not running:
                     self.refresh()
-        except queue.Empty:
-            pass
-        if self.win.winfo_exists():
-            self.win.after(250, self.poll)
+        except Exception as exc:
+            self.progress_var.set(f"Status kon niet worden gelezen: {exc}")
+        if not once and self.win.winfo_exists():
+            self.win.after(1000, self.poll)
 
     # ----- Overzicht --------------------------------------------------------
     def _build_overview(self, tab) -> None:
         ttk, tk = self.ttk, self.tk
         self.summary_var = tk.StringVar()
         ttk.Label(tab, textvariable=self.summary_var, style="Big.TLabel").pack(anchor="w")
-        ttk.Label(tab, text="Per ECU-familie en softwarevariant: waarvoor de app een Stage 1 kan maken.",
-                  style="Sub.TLabel").pack(anchor="w", pady=(0, 8))
+        self.scan_var = tk.StringVar()
+        ttk.Label(tab, textvariable=self.scan_var, style="Sub.TLabel", wraplength=840, justify="left").pack(anchor="w", pady=(2, 8))
+        top = ttk.Frame(tab)
+        top.pack(fill="x")
+        ttk.Button(top, text="Vernieuwen", command=self.refresh_overview).pack(side="right")
         frame = ttk.Frame(tab)
-        frame.pack(fill="both", expand=True)
-        cols = (("projects", "Projecten", 80), ("pairs", "Voorbeelden", 100),
-                ("evidence", "Bewijs", 150), ("checksum", "Checksum", 170))
+        frame.pack(fill="both", expand=True, pady=(6, 0))
+        cols = (("tunings", "Soorten tuning", 230), ("projects", "Projecten", 75), ("pairs", "Voorbeelden", 95),
+                ("checksum", "Checksum", 115))
         self.overview = ttk.Treeview(frame, columns=[c[0] for c in cols], show="tree headings")
         self.overview.heading("#0", text="ECU-familie / softwarevariant")
-        self.overview.column("#0", width=300)
+        self.overview.column("#0", width=320)
         for col, label, width in cols:
-            self.overview.heading(col, text=label)
+            self.overview.heading(col, text=label, anchor="w")
             self.overview.column(col, width=width, anchor="w")
         scroll = ttk.Scrollbar(frame, command=self.overview.yview)
         self.overview.configure(yscrollcommand=scroll.set)
         self.overview.pack(side="left", fill="both", expand=True)
         scroll.pack(side="left", fill="y")
 
+    def _scan_text(self) -> str:
+        db = self.app.store.root / "library.sqlite3"
+        if not db.exists():
+            return "Nog niets gescand."
+        import sqlite3
+
+        try:
+            connection = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+            try:
+                files = dict(connection.execute("SELECT source, COUNT(*) FROM files GROUP BY source").fetchall())
+                pairs = dict(connection.execute("SELECT source, COUNT(*) FROM pairs GROUP BY source").fetchall())
+            finally:
+                connection.close()
+        except sqlite3.Error as exc:
+            return f"Scanstatus niet leesbaar: {exc}"
+        parts = [f"{src}: {files.get(src, 0)} gescand, {pairs.get(src, 0)} voorbeelden" for src in sorted(set(files) | set(pairs))]
+        status = read_status(self.app.store.root)
+        prefix = "Scan loopt nog. " if status["running"] else ""
+        return prefix + ("Gescand per map – " + "  ·  ".join(parts) if parts else "Nog niets gescand.")
+
     def refresh_overview(self) -> None:
+        self.scan_var.set(self._scan_text())
         self.overview.delete(*self.overview.get_children())
         package = self.app.package
         if package is None:
-            self.summary_var.set("Nog geen bibliotheek.")
+            self.summary_var.set("Nog geen bibliotheekversie. Start 'Bibliotheek bijwerken'; tussentijds verschijnen hier de resultaten.")
             return
         contracts = self.app.store.contracts()
         variants = sum(1 for _ in package.variants())
-        self.summary_var.set(f"{len(package['training_selection'])} Stage 1-voorbeelden · {variants} "
-                             f"softwarevarianten · {len(package['families'])} ECU-families")
-        evidence = {"REPRODUCTION_ONLY": "1 project", "MULTI_PROJECT": "meerdere projecten"}
+        self.summary_var.set(f"{len(package['training_selection'])} voorbeelden · {variants} softwarevarianten · "
+                             f"{len(package['families'])} ECU-families")
         for family in package["families"]:
             contract = contracts.get(family["family_key"], {}).get("contract", "UNKNOWN")
-            check = "door AutoTuner (vastgelegd)" if contract == "FLASH_TOOL_CORRECTS_ON_WRITE" else "niet vastgelegd"
+            check = "vastgelegd" if contract == "FLASH_TOOL_CORRECTS_ON_WRITE" else "niet vastgelegd"
             projects = len({p for v in family["variants"] for p in v["projects"]})
             pairs = sum(len(v["pairs"]) for v in family["variants"])
+            fam_profiles = sorted({p for v in family["variants"] for p in v["profiles"]})
             fam_id = self.overview.insert(
-                "", "end", text=f"{family['ecu_type'] or family['family_key']}  ({family['size']:,} bytes)".replace(",", "."),
-                values=(projects, pairs, "", check), open=False)
+                "", "end", text=f"{family['ecu_type'] or family['family_key']}  ({family['size']:,} B)".replace(",", "."),
+                values=(f"{len(fam_profiles)} {'soort' if len(fam_profiles) == 1 else 'soorten'}", projects, pairs, check),
+                open=False)
             for variant in family["variants"]:
                 label = variant["variant_key"].replace("|", "  ·  ")
+                tunings = ", ".join(profile_label(p) for p in sorted(variant["profiles"]))
                 self.overview.insert(fam_id, "end", text=label[:120], values=(
-                    len(variant["projects"]), len(variant["pairs"]),
-                    evidence.get(variant["evidence_level"], variant["evidence_level"]), ""))
+                    tunings, len(variant["projects"]), len(variant["pairs"]), ""))
 
-    # ----- Pakketten --------------------------------------------------------
+    # ----- Versies ---------------------------------------------------------
     def _build_packages(self, tab) -> None:
         ttk = self.ttk
-        ttk.Label(tab, text="Elke keer bijwerken maakt een nieuwe versie; oudere versies blijven bewaard.",
-                  style="Sub.TLabel").pack(anchor="w", pady=(0, 8))
+        ttk.Label(tab, text="U hoeft hier normaal niets te doen. Elke keer dat de bibliotheek wordt bijgewerkt, "
+                  "maakt de app automatisch een nieuwe versie van wat hij geleerd heeft en gebruikt die meteen. "
+                  "Oudere versies blijven bewaard, zodat u terug kunt.", style="Sub.TLabel", wraplength=840,
+                  justify="left").pack(anchor="w", pady=(0, 8))
         frame = ttk.Frame(tab)
         frame.pack(fill="both", expand=True)
-        cols = (("active", "", 60), ("id", "Pakket", 160), ("date", "Gemaakt", 180),
-                ("variants", "Varianten", 90), ("pairs", "Voorbeelden", 100))
+        cols = (("active", "", 70), ("date", "Gemaakt", 170), ("pairs", "Voorbeelden", 100),
+                ("variants", "Softwarevarianten", 130), ("id", "Kenmerk", 150))
         self.package_tree = ttk.Treeview(frame, columns=[c[0] for c in cols], show="headings", height=10)
         for col, label, width in cols:
-            self.package_tree.heading(col, text=label)
+            self.package_tree.heading(col, text=label, anchor="w")
             self.package_tree.column(col, width=width, anchor="w")
         self.package_tree.pack(side="left", fill="both", expand=True)
         buttons = ttk.Frame(frame)
         buttons.pack(side="left", fill="y", padx=(10, 0))
-        ttk.Button(buttons, text="Pakket aankoppelen…", command=self.attach).pack(fill="x")
-        ttk.Button(buttons, text="Vorige versie herstellen", command=self.rollback).pack(fill="x", pady=4)
-        ttk.Button(buttons, text="Pakket exporteren…", command=self.export_package).pack(fill="x")
-        ttk.Label(tab, text="Pakketten bevatten gegevens uit klantbestanden: alleen lokaal bewaren.",
-                  style="Muted.TLabel").pack(anchor="w", pady=(8, 0))
+        ttk.Button(buttons, text="Terug naar vorige versie", command=self.rollback).pack(fill="x")
+        ttk.Button(buttons, text="Back-up maken…", command=self.export_package).pack(fill="x", pady=(16, 4))
+        ttk.Button(buttons, text="Back-up terugzetten…", command=self.attach).pack(fill="x")
+        ttk.Label(tab, text="Een back-up (.olstune) bevat gegevens uit klantbestanden: alleen lokaal bewaren. "
+                  "Handig om de bibliotheek naar een andere pc te verhuizen.", style="Muted.TLabel").pack(anchor="w", pady=(8, 0))
 
     def refresh_packages(self) -> None:
         self.package_tree.delete(*self.package_tree.get_children())
         active = self.app.store.active_id()
-        for item in reversed(self.app.store.list_packages()):
+        for item in sorted(self.app.store.list_packages(), key=lambda i: i.get("created_at", ""), reverse=True):
             if "error" in item:
-                self.package_tree.insert("", "end", values=("", Path(item["path"]).name, item["error"][:60], "", ""))
                 continue
             self.package_tree.insert("", "end", values=(
-                "actief" if item["package_id"] == active else "", item["package_id"],
-                item["created_at"].replace("T", " ")[:19], item["variants"], item["pairs"]))
+                "in gebruik" if item["package_id"] == active else "", item["created_at"].replace("T", " ")[:16],
+                item["pairs"], item["variants"], item["package_id"]))
 
     def attach(self) -> None:
         from tkinter import filedialog, messagebox
 
-        path = filedialog.askopenfilename(title="Modelpakket aankoppelen",
-                                          filetypes=[("Modelpakket", "*.olstune"), ("Alle bestanden", "*.*")])
+        path = filedialog.askopenfilename(title="Back-up terugzetten",
+                                          filetypes=[("Bibliotheek-back-up", "*.olstune"), ("Alle bestanden", "*.*")])
         if not path:
             return
         try:
-            package = self.app.store.install_file(Path(path))
+            self.app.store.install_file(Path(path))
         except (OSError, ValueError) as exc:
-            messagebox.showerror("Aankoppelen mislukt", str(exc), parent=self.win)
+            messagebox.showerror("Terugzetten mislukt", str(exc), parent=self.win)
             return
         self.app.reload_package()
         self.refresh()
-        messagebox.showinfo("Pakket aangekoppeld", f"Pakket {package.package_id} is nu actief.", parent=self.win)
+        messagebox.showinfo("Teruggezet", "De back-up is teruggezet en in gebruik.", parent=self.win)
 
     def rollback(self) -> None:
         from tkinter import messagebox
 
         try:
-            previous = self.app.store.rollback()
+            self.app.store.rollback()
         except ValueError as exc:
             messagebox.showinfo("Geen vorige versie", str(exc), parent=self.win)
             return
         self.app.reload_package()
         self.refresh()
-        messagebox.showinfo("Hersteld", f"Pakket {previous} is weer actief.", parent=self.win)
+        messagebox.showinfo("Teruggezet", "De vorige versie is weer in gebruik.", parent=self.win)
 
     def export_package(self) -> None:
         from tkinter import filedialog, messagebox
 
         if not self.app.package:
-            messagebox.showinfo("Geen pakket", "Er is nog geen actief pakket.", parent=self.win)
+            messagebox.showinfo("Geen versie", "Er is nog geen bibliotheekversie.", parent=self.win)
             return
         path = filedialog.asksaveasfilename(defaultextension=".olstune",
-                                            initialfile=f"{self.app.package.package_id}.olstune",
-                                            filetypes=[("Modelpakket", "*.olstune")])
+                                            initialfile=f"bibliotheek-{self.app.package['created_at'][:10]}.olstune",
+                                            filetypes=[("Bibliotheek-back-up", "*.olstune")])
         if path:
             write_package(self.app.package, Path(path))
-            messagebox.showinfo("Geëxporteerd", f"Pakket opgeslagen als {path}", parent=self.win)
+            messagebox.showinfo("Back-up gemaakt", f"Opgeslagen als {path}", parent=self.win)
 
     # ----- Checksum ---------------------------------------------------------
     def _build_checksum(self, tab) -> None:
@@ -788,6 +840,9 @@ class LibraryWindow:
 
 
 def main(argv: list[str] | None = None) -> int:
+    import multiprocessing
+
+    multiprocessing.freeze_support()  # worker processes of the frozen EXE
     argv = list(sys.argv[1:] if argv is None else argv)
     if sys.stdout is None or sys.stderr is None:
         # Windowed EXE has no console: send text output to OLS_TUNER_LOG.
@@ -802,7 +857,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, indent=2))
         return 0 if result["passed"] else 1
     if argv and argv[0] in ("train", "generate", "packages", "rollback", "install-package",
-                            "export-package", "contract", "--store"):
+                            "export-package", "contract", "update-library", "--store"):
         from .__main__ import main as cli_main
 
         return cli_main(argv)

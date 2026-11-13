@@ -5,18 +5,18 @@ Gebruik
 2. Kies bij "2. Kies tuning" Stage 1 en klik "3. Maak getunde BIN"; kies waar u opslaat.
 3. Lees de reden als het bestand wordt geweigerd; anders staat naast de BIN een .rapport.json.
 
-Eigen modelpakket
-- Lokale opslag: %LOCALAPPDATA%\OLS Tuner\  (packages\*.olstune, active.json,
-  integrity_contracts.json, library.sqlite3, pairs\)
-- Eerste start: "Bibliotheek en diagnose..." > "Bibliotheek bijwerken" analyseert
-  alle WinOLS-projecten in de bronmappen (standaard \\Dell\d\Database 1-4 en Default)
-  met de ingebouwde OLS-lezer; WinOLS en py-ols zijn niet nodig. Onderbreken mag:
-  een volgende run gaat verder waar de vorige stopte.
-- Daarna geldt: een origineel dat in de database voorkomt (zelfde bytes in alle
-  Stage 1-gebieden) krijgt exact die Stage 1 terug; een ander origineel van een
-  bekende softwarevariant krijgt de geleerde Stage 1 als de waarden binnen het
-  geleerde bereik vallen; anders volgt een weigering met reden.
-- Pakketten bevatten bytes uit klantbestanden: houd ze lokaal.
+Bibliotheek
+- "Bibliotheek..." > Bronmappen: voeg mappen toe met "+ Map toevoegen..." (ook lokale
+  schijven) en klik "Bibliotheek bijwerken". Dit loopt op de achtergrond door, ook als u
+  het venster of de app sluit. Tussendoor en bij "Stoppen" wordt alles wat al gescand is
+  direct bruikbaar; een volgende keer gaat hij verder waar hij was.
+- Alle soorten tuning uit uw projecten worden geleerd (Stage 1/2/3, EGR, DPF, AdBlue,
+  Pop & Bang, Vmax, DTC, ... en combinaties). Na "Open origineel" toont de lijst bij
+  stap 2 wat uw database voor die software heeft.
+- Een origineel dat in de database voorkomt, krijgt exact die tuning terug.
+- Versies: elke bijwerking maakt automatisch een nieuwe versie; "Terug naar vorige
+  versie" en "Back-up maken/terugzetten" (om naar een andere pc te verhuizen).
+- Gegevens staan in %LOCALAPPDATA%\OLS Tuner\ en bevatten klantgegevens: lokaal houden.
 
-Integriteit: zonder vastgelegd checksumcontract per ECU-familie schrijft de app
-geen gebruiksklare BIN.
+Integriteit: zonder vastgelegd checksumcontract per ECU-familie (tab Checksum) schrijft
+de app geen gebruiksklare BIN.

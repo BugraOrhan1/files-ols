@@ -160,3 +160,29 @@ class FakeReader:
         layout, meta = self.layouts[key]
         slots = [_Slot(i, layout["base"] + i * layout["size"], layout["size"]) for i in range(layout["count"])]
         return _Snapshot(meta, slots)
+
+
+def write_native_project(path: Path, images: list[bytes], names: list[tuple[str, str]],
+                         meta: dict[str, str]) -> None:
+    """Synthetic project in the real WinOLS layout read by NativeOlsReader."""
+
+    from ols_platform.tuning.ols_native import HEADER_FIELDS, MAGIC
+
+    head = bytearray(MAGIC + struct.pack("<H", 597) + b"\x00" * 6)
+    for field in HEADER_FIELDS:
+        value = meta.get(field, "").encode("cp1252")
+        head += struct.pack("<I", len(value)) + value
+    head += b"\x00" * (0x200 - len(head))
+    tag = revision_tag_bytes(names)
+    size = len(images[0])
+    record_at = len(head)
+    head += b"\x00" * 64 + tag
+    head += b"\x00" * (4096 - len(head) % 4096)
+    base = len(head) - 4
+    record = struct.pack("<5I", 0, base, size, 0x42007899, len(images)) + struct.pack("<I", 8) + b"Original" + struct.pack("<I", 0)
+    head[record_at:record_at + len(record)] = record
+    body = bytearray(head)
+    for image in images:
+        body += image
+    body += b"\x00" * 4
+    path.write_bytes(bytes(body))

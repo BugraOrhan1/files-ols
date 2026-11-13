@@ -12,7 +12,7 @@ from typing import Any
 
 from . import SOFTWARE_VERSION
 from .generate import GenerationResult
-from .package import PROFILE_LABELS
+from .ols_versions import profile_label
 
 
 class ExportBlocked(Exception):
@@ -20,6 +20,31 @@ class ExportBlocked(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+def _publish(source: Path, target: Path) -> None:
+    """Move ``source`` to ``target`` without ever overwriting an existing file.
+
+    Hard links are atomic and fail if the target exists. File systems without
+    hard links (FAT32/exFAT USB sticks, some network shares) fall back to an
+    exclusive create followed by a replace of that just-created placeholder.
+    """
+
+    try:
+        os.link(source, target)
+        source.unlink()
+        return
+    except FileExistsError:
+        raise
+    except (AttributeError, NotImplementedError, OSError):
+        pass
+    fd = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY)  # raises FileExistsError
+    os.close(fd)
+    try:
+        os.replace(source, target)
+    except BaseException:
+        target.unlink(missing_ok=True)
+        raise
 
 
 def verify_output_file(original_path: Path, output_path: Path, allowed: list[tuple[int, int]],
@@ -70,7 +95,7 @@ def _report(result: GenerationResult, original_path: Path, output_path: Path,
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "input": {"file": original_path.name, "sha256": result.input_sha256},
         "output": {"file": output_path.name, "sha256": result.output_sha256},
-        "profile": PROFILE_LABELS.get(result.profile, result.profile),
+        "profile": profile_label(result.profile),
         "notes": result.notes,
         "package": {
             "package_id": result.package_id,
@@ -132,20 +157,9 @@ def export_result(result: GenerationResult, original_path: Path, output_dir: Pat
         report_tmp = output_dir / (".tune-" + os.urandom(6).hex() + ".json.part")
         report_tmp.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
         try:
-            # os.link fails if the target exists: atomic no-overwrite publish.
+            _publish(tmp, final)
             try:
-                os.link(tmp, final)
-            except (AttributeError, NotImplementedError, PermissionError):
-                if final.exists():
-                    raise FileExistsError(final)
-                os.replace(tmp, final)
-            except FileExistsError:
-                raise
-            try:
-                try:
-                    os.link(report_tmp, report_path)
-                except (AttributeError, NotImplementedError, PermissionError):
-                    os.replace(report_tmp, report_path)
+                _publish(report_tmp, report_path)
             except BaseException:
                 # Never leave a BIN without its report.
                 final.unlink(missing_ok=True)

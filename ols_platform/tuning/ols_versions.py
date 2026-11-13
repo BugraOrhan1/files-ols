@@ -73,39 +73,72 @@ def parse_revision_tag(head: bytes) -> RevisionTag | None:
     return None
 
 
-_EXTRA_WORK = re.compile(
-    r"\+|&|egr|dpf|fap|opf|gpf|vmax|v-max|pop|bang|burble|crackle|p ?& ?b|adblue|scr|nox|dtc|"
-    r"launch|lc\b|hardcut|cat\b|kat|swirl|flap|immo|start.?stop|e85|flex|lambda|o2|tva|maf|"
-    r"\boff\b|\baus\b|remove|delete|torq(ue)? ?monitor|speed ?limit|limiter",
-    re.IGNORECASE,
-)
+# Tuning components recognised in WinOLS version names. Order = display order.
+COMPONENTS: list[tuple[str, str, re.Pattern]] = [
+    (key, label, re.compile(pattern, re.IGNORECASE)) for key, label, pattern in (
+        ("egr_off", "EGR OFF", r"\b(egr|agr)\b|egr[ _-]?off"),
+        ("dpf_off", "DPF OFF", r"\b(dpf|fap|opf|gpf)\b|partikel"),
+        ("adblue_off", "AdBlue OFF", r"adblue|\bscr\b|\bnox\b"),
+        ("cat_off", "Lambda/KAT OFF", r"lambda|\bo2\b|\bcat\b|\bkat\b|decat"),
+        ("dtc_off", "DTC OFF", r"\bdtc"),
+        ("pop_bang", "Pop & Bang", r"pop|bang|burble|crackle|\bp ?& ?b\b|\bpnb\b"),
+        ("vmax", "Vmax", r"v ?-?max|speed ?limit|limiter"),
+        ("launch_control", "Launch control", r"launch|\blc\b"),
+        ("hardcut", "Hardcut", r"hard ?cut"),
+        ("immo_off", "IMMO OFF", r"immo"),
+        ("swirl_off", "Swirl/flaps OFF", r"swirl|\bflaps?\b|drall"),
+        ("start_stop_off", "Start/Stop OFF", r"start ?/? ?stop|\bs/s\b"),
+        ("maf_off", "MAF OFF", r"\bmaf\b|\blmm\b"),
+        ("torque_monitor_off", "Torque monitoring OFF", r"torq(ue)? ?monitor"),
+        ("evap_off", "EVAP OFF", r"evap"),
+        ("tva_off", "TVA OFF", r"\btva\b"),
+        ("e85", "E85/Flex", r"\be85\b|flex ?fuel"),
+    )
+]
+COMPONENT_LABELS = {key: label for key, label, _ in COMPONENTS}
+_STAGE = re.compile(r"\b(stage|stufe|st|step|etappe)[ ._-]?([1-4])(?!\d)", re.IGNORECASE)
+_ORIGINAL = {"original", "orginal", "ori", "org", "stock", "serie", "standard", "origineel"}
 
 
 def classify_profile(name: str) -> str:
-    """Return the tuning profile of a version name, or ``combined``/``other``.
+    """Canonical tuning profile of a WinOLS version name.
 
-    Pure Stage 1: labels such as ``Stage 1``, ``Stage1``, ``STAGE 1``, ``Stufe 1``,
-    ``St1``, optionally with power/torque info in brackets (``Stage 1 (450PS)``).
-    Anything that names an additional modification (EGR, DPF, Vmax, P&B, ...)
-    is ``combined`` and stays out of the pure set.
+    Returns ``original``, a profile key such as ``stage1``, ``egr_off`` or
+    ``stage1+egr_off+pop_bang`` (stage first, then components in a fixed
+    order), or ``other`` when nothing recognisable is named.
     """
 
     normalized = re.sub(r"\s+", " ", name.strip().lower())
-    if normalized in ("original", "orginal", "ori", "org", "stock", "serie", "standard"):
+    if normalized in _ORIGINAL:
         return "original"
-    core = re.sub(r"\((?:[^()]*)\)|\[[^\]]*\]", " ", normalized)
-    core = re.sub(r"\b\d{2,4} ?(ps|hp|pk|cv|kw|nm|bhp)\b", " ", core)
-    core = re.sub(r"\s+", " ", core).strip(" -_.:")
-    stage = re.match(r"^(stage|stufe|st|step|etappe)[ ._-]?(\d)\b", core)
-    if stage is None:
-        return "other"
-    if _EXTRA_WORK.search(core):
-        return "combined"
-    rest = core[stage.end():].strip(" -_.:")
-    if rest:
-        return "combined"
-    number = stage.group(2)
-    return {"1": "stage1", "2": "stage2", "3": "stage3"}.get(number, "other")
+    core = re.sub(r"\b\d{2,4} ?(ps|hp|pk|cv|kw|nm|bhp)\b", " ", normalized)
+    parts = []
+    stage = _STAGE.search(core)
+    if stage:
+        parts.append(f"stage{stage.group(2)}")
+        core = core[:stage.start()] + " " + core[stage.end():]
+    for key, _label, pattern in COMPONENTS:
+        if pattern.search(core):
+            parts.append(key)
+    return "+".join(parts) if parts else "other"
+
+
+def profile_label(profile: str) -> str:
+    if profile in ("original", "other"):
+        return {"original": "Origineel", "other": "Overig"}[profile]
+    labels = []
+    for part in profile.split("+"):
+        if part.startswith("stage"):
+            labels.append(f"Stage {part[5:]}")
+        else:
+            labels.append(COMPONENT_LABELS.get(part, part))
+    return " + ".join(labels)
+
+
+def profile_sort_key(profile: str) -> tuple:
+    parts = profile.split("+")
+    stage = parts[0][5:] if parts[0].startswith("stage") else "9"
+    return (len(parts), stage, profile)
 
 
 def checksum_state(note: str) -> str:

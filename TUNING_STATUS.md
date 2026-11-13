@@ -112,6 +112,18 @@ controleren; het is niet door deze software bewezen.
 | “Stage 1”-herkenning te streng | Veel bruikbare paren gemist | `Stage1`, `STAGE 1`, `Stufe 1`, `St1`, `Stage 1 (450PS)` = Stage 1; alles met EGR/DPF/Vmax/P&B/+ = gecombineerd | Tests op labels |
 | “Al getuned” werd soms als “andere bewerking” gemeld | Verwarrende reden | Volgorde van controles aangepast | VW Stage 1 → “al getuned” |
 
+## Ronde 3: alle tuningsoorten, achtergrond, snelheid
+
+| Onderdeel | Wat er veranderd is | Bewijs |
+| --- | --- | --- |
+| Alle soorten tuning | Versienamen worden profielen: `stage1..4` plus EGR/DPF/AdBlue/KAT/DTC/Pop & Bang/Vmax/Launch/Hardcut/IMMO/Swirl/Start-Stop/MAF/Torque/EVAP/TVA/E85 en combinaties (`stage1+egr_off`). Elk profiel wordt per softwarevariant geleerd; de app toont per bestand welke beschikbaar zijn. | Alle 10 WinOLS-exports in de repo (BMW, VW, Audi, Peugeot; 9 profielen) byte-identiek; test `test_every_exported_version_is_reproduced` |
+| Achtergrond | “Bibliotheek bijwerken” start een los proces (`update-library`); status in `library_status.json`, stoppen via `library.stop`. Loopt door bij sluiten van venster of app. | Test start detached proces, wacht op status `finished`; CI draait hetzelfde commando via de EXE |
+| Tussentijds bruikbaar | Elke 25 nieuwe voorbeelden of 10 minuten een nieuwe versie; bij stoppen altijd een versie van wat al gescand is; de app laadt nieuwe versies automatisch. | Test: stoppen na 10 van 30 projecten → pakket met precies die voorbeelden; hervatten slaat ze over |
+| Snelheid | Parallelle verwerking (standaard tot 4 processen), geen kopie bij lokale schijf, originelen één keer opgeslagen, snelle compressie, cache per variant | 120 MB voorbeelden: 1 proces 132 MB/s, 3 processen ≈ 620 MB/s (uit cache); 2e run zonder wijzigingen 0,1 s |
+| Overzicht | Toont per map hoeveel er al gescand is en hoeveel voorbeelden, ook tijdens het scannen | GUI-doorloop |
+| Modelpakketten | Heten nu “Versies”, worden automatisch gemaakt; alleen terugzetten en back-up | GUI-doorloop |
+| Export op USB/exFAT | Zonder hardlinks: exclusief aanmaken + vervangen, nog steeds nooit overschrijven | Test `test_filesystem_without_hard_links_still_never_overwrites` |
+
 ## Bekend Windows-probleem (bestaande code)
 
 Bestaande index-, inventaris- en workbenchcode vergelijkt soms `Path.resolve()`-paden met
