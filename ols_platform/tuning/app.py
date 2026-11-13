@@ -17,6 +17,7 @@ from pathlib import Path
 from . import SOFTWARE_VERSION
 from .export import ExportBlocked, export_result
 from .background import read_status, request_stop, start_background
+from .diagnostics import app_logger, close_logger, create_bundle
 from .generate import GenerationRejected, GenerationResult, available_profiles, generate
 from .ols_versions import profile_label
 from .package import PackageStore, write_package
@@ -128,6 +129,9 @@ class TunerApp:
         self.tk, self.ttk, self.root = tk, ttk, root
         self.store = store or PackageStore()
         self.settings = Settings(self.store)
+        self.log = app_logger(self.store.root)
+        self.log.info("App gestart (versie %s)", SOFTWARE_VERSION)
+        root.report_callback_exception = self._on_error
         self.package = None
         self.original: Path | None = None
         self.result: GenerationResult | None = None
@@ -185,6 +189,8 @@ class TunerApp:
         ttk.Button(step3, text="Open uitvoermap", command=self.open_output).pack(side="left", padx=(12, 0))
         self.report_button = ttk.Button(step3, text="Open rapport", command=self.open_report, state="disabled")
         self.report_button.pack(side="left", padx=(8, 0))
+        self.checksum_button = ttk.Button(step3, text="Checksum vastleggen…", command=self.confirm_checksum)
+        self.current_family: str | None = None
 
         self.message = MessagePanel(outer)
         self.message.frame.pack(fill="x", pady=(12, 0))
@@ -193,6 +199,7 @@ class TunerApp:
         footer.pack(side="bottom", fill="x")
         ttk.Label(footer, text=f"Versie {SOFTWARE_VERSION}  ·  gegevens: {self.store.root}",
                   style="Muted.TLabel").pack(side="left")
+        ttk.Button(footer, text="Diagnose opslaan…", command=self.save_diagnostics).pack(side="right")
 
         self.active_id = None
         self.reload_package()
@@ -274,6 +281,7 @@ class TunerApp:
         size = path.stat().st_size
         self.file_var.set(path.name)
         self.file_detail_var.set(f"{size:,} bytes  ·  {path.parent}".replace(",", "."))
+        self.log.info("Origineel geopend: %s (%d bytes)", path.name, size)
         self.update_profiles()
 
     def update_profiles(self) -> None:
@@ -292,12 +300,15 @@ class TunerApp:
             self.profile_map = {}
             self.profile_box.configure(values=[])
             self.profile_var.set("")
+            self.log.warning("Herkenning geweigerd [%s]: %s", exc.code, exc.message)
             self.message.show("error", "Dit bestand kan niet getuned worden", exc.message)
             return
         except OSError as exc:
             self.message.show("error", "Bestand kon niet gelezen worden", str(exc))
             return
         previous = self._profile_key()
+        self.log.info("Herkend: familie %s, variant %s, tunings: %s", _family["family_key"],
+                      _variant["variant_key"], ", ".join(profiles))
         self.profile_map = {profile_label(p): p for p in profiles}
         self.profile_box.configure(values=list(self.profile_map))
         choice = previous if previous in profiles else ("stage1" if "stage1" in profiles else profiles[0])
@@ -309,6 +320,7 @@ class TunerApp:
 
         self.result = None
         self.make_button.configure(state="disabled")
+        self.checksum_button.pack_forget()
         if self.original is None:
             return
         if self.package is None:
@@ -322,23 +334,31 @@ class TunerApp:
             data = self.original.read_bytes()
             result = generate(data, self._profile_key(), self.package, self.store.contracts())
         except GenerationRejected as exc:
+            self.log.warning("Tuning %s geweigerd [%s]: %s", self._profile_key(), exc.code, exc.message)
             self.message.show("error", "Dit bestand kan niet getuned worden", exc.message)
             return
         except OSError as exc:
+            self.log.error("Lezen mislukt: %s", exc)
             self.message.show("error", "Bestand kon niet gelezen worden", str(exc))
             return
         finally:
             self.root.configure(cursor="")
         self.result = result
+        self.current_family = result.family_key
+        self.log.info("Klaar om te maken: %s, %s, %d gebieden, bewijs %s, checksumcontract %s",
+                      result.profile, result.family_key, len(result.changes), result.evidence_level,
+                      result.integrity["contract"])
         lines = [EVIDENCE_LABELS.get(result.evidence_level, result.evidence_level)]
         lines.extend(result.notes)
         lines.append(f"Tuning: {profile_label(result.profile)}  ·  ECU: {result.identity['family']}  ·  "
                      f"{len(result.changes)} gebieden worden aangepast.")
         if not result.integrity["ready_for_use"]:
-            lines.append("Let op: voor deze ECU-familie is nog niet vastgelegd hoe de checksum wordt "
-                         "gecorrigeerd. Doe dat onder Bibliotheek… → Checksum.")
+            lines.append("De app past geen checksum aan. Klik op 'Checksum vastleggen…' als AutoTuner de "
+                         "checksum voor deze ECU bij het schrijven corrigeert; daarna kunt u de BIN maken.")
             self.message.show("warn", "Herkend – checksum nog niet vastgelegd", "\n".join(lines))
+            self.checksum_button.pack(side="left", padx=(8, 0))
             return
+        self.checksum_button.pack_forget()
         self.make_button.configure(state="normal")
         self.message.show("ok", "Herkend – klaar om te maken", "\n".join(lines))
 
@@ -367,8 +387,10 @@ class TunerApp:
         try:
             final, report = export_result(result, self.original, output_dir, name, self.package)
         except ExportBlocked as exc:
+            self.log.warning("Export geblokkeerd [%s]: %s", exc.code, exc.message)
             self.message.show("error", "Niet opgeslagen", exc.message)
             return None
+        self.log.info("Opgeslagen: %s (sha256 %s)", final, result.output_sha256[:16])
         self.last_output = final
         self.report_button.configure(state="normal")
         self.message.show(
@@ -378,6 +400,52 @@ class TunerApp:
             f"Resterende stap: {result.integrity['remaining_step']}\n"
             f"Rapport: {report.name}")
         return final
+
+    def close(self) -> None:
+        close_logger(self.log)
+
+    def confirm_checksum(self) -> None:
+        from tkinter import messagebox
+
+        if not self.current_family:
+            return
+        ecu = self.current_family.rsplit("|", 1)[0]
+        if not messagebox.askyesno(
+                "Checksum vastleggen",
+                f"Corrigeert AutoTuner de checksum voor ECU {ecu} bij het schrijven?\n\n"
+                "De app past zelf geen checksum aan. Bevestig alleen als u dit voor deze ECU zeker weet; "
+                "een BIN met een onjuiste checksum kan de ECU laten weigeren te starten.",
+                parent=self.root):
+            return
+        self.store.set_contract(self.current_family, "FLASH_TOOL_CORRECTS_ON_WRITE",
+                                f"Bevestigd door gebruiker via het hoofdscherm voor ECU {ecu}")
+        self.log.info("Checksumcontract vastgelegd voor %s", self.current_family)
+        self.checksum_button.pack_forget()
+        self.check_original()
+
+    def save_diagnostics(self) -> Path | None:
+        from datetime import datetime
+        from tkinter import filedialog, messagebox
+
+        name = f"OLSTuner-diagnose-{datetime.now().strftime('%Y%m%d-%H%M')}.zip"
+        path = filedialog.asksaveasfilename(title="Diagnose opslaan", initialfile=name, defaultextension=".zip",
+                                            initialdir=str(Path.home() / "Desktop"),
+                                            filetypes=[("ZIP-bestand", "*.zip")])
+        if not path:
+            return None
+        bundle = create_bundle(self.store, Path(path))
+        self.log.info("Diagnose opgeslagen: %s", bundle)
+        messagebox.showinfo("Diagnose opgeslagen",
+                            f"Opgeslagen als:\n{bundle}\n\nDit bestand bevat alleen logboeken en tellingen, "
+                            "geen klantbestanden. U kunt het naar de ontwikkelaar sturen.", parent=self.root)
+        return bundle
+
+    def _on_error(self, exc_type, exc, tb) -> None:
+        import traceback
+
+        self.log.error("Onverwachte fout: %s", "".join(traceback.format_exception(exc_type, exc, tb)))
+        self.message.show("error", "Onverwachte fout",
+                          f"{exc}\nDe details staan in het logboek. Gebruik 'Diagnose opslaan…' om ze te versturen.")
 
     def open_output(self) -> None:
         open_path(Path(self.settings.data["output_dir"]))
@@ -825,6 +893,10 @@ class LibraryWindow:
         ttk.Label(tab, text=f"Lokale gegevens (bibliotheek, pakketten): {self.app.store.root}",
                   style="Muted.TLabel").pack(anchor="w")
         ttk.Button(tab, text="Open gegevensmap", command=lambda: open_path(self.app.store.root)).pack(anchor="w", pady=4)
+        ttk.Button(tab, text="Diagnose opslaan…", command=self.app.save_diagnostics).pack(anchor="w", pady=4)
+        ttk.Label(tab, text="Logboeken: app.log (tunen), library_worker.log en library_status.json (bijwerken) "
+                  "in de gegevensmap. 'Diagnose opslaan' bundelt ze zonder klantbestanden.",
+                  style="Muted.TLabel", wraplength=820).pack(anchor="w")
 
     def save_settings(self) -> None:
         self.app.settings.data.update({"output_dir": self.output_var.get(), "exports": self.exports_var.get(),
@@ -865,6 +937,7 @@ def main(argv: list[str] | None = None) -> int:
 
     root = tk.Tk()
     app = TunerApp(root)
+    root.protocol("WM_DELETE_WINDOW", lambda: (app.close(), root.destroy()))
     if argv and argv[0] == "--gui-smoke":
         # Build every screen, then close: used in CI.
         window = app.open_library()

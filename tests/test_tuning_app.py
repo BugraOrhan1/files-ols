@@ -34,6 +34,7 @@ class AppTests(unittest.TestCase):
         self.app.settings.data["output_dir"] = str(self.root_dir / "uit")
 
     def tearDown(self):
+        self.app.close()
         self.tk.destroy()
         self.tmp.cleanup()
 
@@ -69,8 +70,13 @@ class AppTests(unittest.TestCase):
         self.app.set_original(original)
         self.assertIn("checksum", self.app.status_text.lower())
         self.assertEqual(str(self.app.make_button["state"]), "disabled")
-        self.store.set_contract("SYNECU-77|65536", "FLASH_TOOL_CORRECTS_ON_WRITE", "test-onderbouwing")
-        self.app.check_original()
+        self.assertTrue(self.app.checksum_button.winfo_manager())  # button offered
+        from unittest import mock
+
+        with mock.patch("tkinter.messagebox.askyesno", return_value=True):
+            self.app.confirm_checksum()
+        self.assertEqual(self.store.contracts()["SYNECU-77|65536"]["contract"], "FLASH_TOOL_CORRECTS_ON_WRITE")
+        self.assertFalse(self.app.checksum_button.winfo_manager())
         self.assertEqual(str(self.app.make_button["state"]), "normal")
         output = self.app.make_bin(ask_path=False)
         self.assertEqual(output.read_bytes(), pair.tuned)
@@ -80,6 +86,24 @@ class AppTests(unittest.TestCase):
         self.app.set_original(tuned)
         self.assertIn("al bewerkt", self.app.status_text)
         self.assertEqual(str(self.app.make_button["state"]), "disabled")
+        # Everything above is in the app log; the diagnostics bundle holds no customer bytes.
+        log = (self.store.root / "app.log").read_text(encoding="utf-8")
+        self.assertIn("Origineel geopend", log)
+        self.assertIn("already_tuned", log)
+        self.assertIn("Checksumcontract vastgelegd", log)
+        import zipfile
+        from unittest import mock
+
+        target = self.root_dir / "diag.zip"
+        with mock.patch("tkinter.filedialog.asksaveasfilename", return_value=str(target)), \
+                mock.patch("tkinter.messagebox.showinfo"):
+            self.app.save_diagnostics()
+        with zipfile.ZipFile(target) as archive:
+            names = set(archive.namelist())
+            self.assertIn("app.log", names)
+            self.assertIn("modelpakket.json", names)
+            self.assertFalse(any(n.startswith(("pairs", "originals", "packages")) for n in names))
+            self.assertNotIn(pair.original[0x4000:0x4040], b"".join(archive.read(n) for n in names))
 
 
 if __name__ == "__main__":

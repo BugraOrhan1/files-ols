@@ -18,5 +18,9 @@ Bibliotheek
   versie" en "Back-up maken/terugzetten" (om naar een andere pc te verhuizen).
 - Gegevens staan in %LOCALAPPDATA%\OLS Tuner\ en bevatten klantgegevens: lokaal houden.
 
-Integriteit: zonder vastgelegd checksumcontract per ECU-familie (tab Checksum) schrijft
-de app geen gebruiksklare BIN.
+Integriteit: de app past geen checksum aan. Bij een oranje melding verschijnt de knop
+"Checksum vastleggen..." om per ECU te bevestigen dat AutoTuner de checksum corrigeert.
+
+Problemen melden
+- Klik rechtsonder op "Diagnose opslaan..." en stuur de ZIP. Die bevat alleen logboeken
+  en tellingen (app.log, library_worker.log, library_status.json), geen klantbestanden.
