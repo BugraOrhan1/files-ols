@@ -71,10 +71,10 @@ jobs:
             $p = Start-Process -FilePath $exe -ArgumentList $argsList -Wait -PassThru -NoNewWindow
             return $p.ExitCode
           }
-          if ((Run @("--selftest")) -ne 0) { Get-Content $env:OLS_TUNER_LOG; throw "selftest failed" }
+          if ((Run @("--selftest")) -ne 0) { if (Test-Path $env:OLS_TUNER_LOG) { Get-Content $env:OLS_TUNER_LOG }; throw "selftest failed" }
           if ((Run @("--gui-smoke")) -ne 0) { throw "GUI smoke failed" }
           if ((Run @("packages")) -ne 0) { throw "packages on empty install failed" }
-          Get-Content $env:OLS_TUNER_LOG
+          if (Test-Path $env:OLS_TUNER_LOG) { Get-Content $env:OLS_TUNER_LOG }
 
       - name: Real-sample reproduction through the EXE
         shell: pwsh
@@ -98,16 +98,16 @@ jobs:
           $out = Join-Path $root "uitvoer map ü"
           if ((Run @("install-package", "`"$env:RUNNER_TEMP\frozen.olstune`"")) -ne 0) { throw "install failed" }
           $code = Run @("generate", "`"$orig`"", "--output-dir", "`"$out`"", "--name", "blocked.bin")
-          if ($code -ne 4) { Get-Content $env:OLS_TUNER_LOG; throw "expected export block without integrity contract, got $code" }
+          if ($code -ne 4) { if (Test-Path $env:OLS_TUNER_LOG) { Get-Content $env:OLS_TUNER_LOG }; throw "expected export block without integrity contract, got $code" }
           if (Test-Path (Join-Path $out "blocked.bin")) { throw "blocked export left a file" }
           if ((Run @("contract", "MDG1_MD1CP002|2621440", "--flash-tool-corrects", "--evidence", "`"CI-test, geen voertuigvalidatie`"")) -ne 0) { throw "contract failed" }
-          if ((Run @("generate", "`"$orig`"", "--output-dir", "`"$out`"", "--name", "stage1.bin")) -ne 0) { Get-Content $env:OLS_TUNER_LOG; throw "generate failed" }
+          if ((Run @("generate", "`"$orig`"", "--output-dir", "`"$out`"", "--name", "stage1.bin")) -ne 0) { if (Test-Path $env:OLS_TUNER_LOG) { Get-Content $env:OLS_TUNER_LOG }; throw "generate failed" }
           $got = (Get-FileHash (Join-Path $out "stage1.bin") -Algorithm SHA256).Hash
           $ref = (Get-FileHash "ols files geextracteert\WinOLS (BMW 7er (Stage 1) - B57D30S0-G1).bin" -Algorithm SHA256).Hash
           if ($got -ne $ref) { throw "EXE output differs from WinOLS Stage 1 export" }
           $code = Run @("generate", "`"ols files geextracteert\WinOLS (Audi A8 (Original) - 522813).DTF`"", "--output-dir", "`"$out`"")
           if ($code -ne 3) { throw "unsuitable original was not rejected ($code)" }
-          Get-Content $env:OLS_TUNER_LOG
+          if (Test-Path $env:OLS_TUNER_LOG) { Get-Content $env:OLS_TUNER_LOG }
           Write-Host "EXE reproduction OK: $got"
 
       - name: Upload Windows build
