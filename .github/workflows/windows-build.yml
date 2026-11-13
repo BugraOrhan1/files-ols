@@ -27,6 +27,17 @@ jobs:
           git -C $env:RUNNER_TEMP\py-ols checkout 4c283a80161e130b03eb8743c752a689ecda6b78
           "PY_OLS_PATH=$env:RUNNER_TEMP\py-ols" | Out-File -FilePath $env:GITHUB_ENV -Append
 
+      - name: Use a long-form temp directory
+        # The runner's default TEMP is an 8.3 short path (C:\Users\RUNNER~1\...).
+        # Existing index code compares resolved and unresolved paths, which
+        # differ for 8.3 aliases; see TUNING_STATUS.md (known Windows issue).
+        shell: pwsh
+        run: |
+          $t = Join-Path $env:RUNNER_TEMP "tests"
+          New-Item -ItemType Directory -Force $t | Out-Null
+          "TEMP=$t" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "TMP=$t" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Run full test suite on Windows
         run: python -m unittest discover -s tests -v
 
