@@ -59,7 +59,8 @@ AutoTuner-origineel met apart gehouden, deskundig beoordeelde referentie.
 | Ongeldige/onbekende checksum | geen contract | export geblokkeerd, geen bestand | `integrity_unknown`, geen bestand | GESLAAGD |
 | Onderbrekingen | netwerkfout (retry + `retry_pending` + herstel), batchlimiet + hervatten, stop-signaal, bron onbereikbaar, volle schijf, twee gelijktijdige exports, paden met spaties/Unicode | geen verlies, geen dubbele records, geen halve BIN, origineel ongewijzigd | zoals verwacht | GESLAAGD (gesimuleerd) |
 | GUI | lege installatie + volledig pad onder Xvfb (Linux) | eerste-startmelding, BIN, afwijzing | zoals verwacht; schermafbeeldingen gemaakt | GESLAAGD |
-| Windows-release | ZIP uit CI uitgepakt op Windows-runner zonder Python op PATH | selftest, GUI-rooktest, echte BMW-reproductie via EXE, afwijzing Audi | zie CI-run van de gepushte commit | zie eindrapport |
+| Windows-release | `OLSTuner-win64-3dd137d.zip` (SHA-256 `1a04ea95ac1a466d4b2048395d1206d02b4b2137e8204e6d816da65a7471f9d8`) uitgepakt in een map met spatie en ü op de GitHub Windows-runner, Python verwijderd van PATH, lege installatie | selftest, GUI-rooktest, lege installatie, echte BMW-reproductie via EXE, blokkade zonder contract, afwijzing Audi | alles geslaagd in run 43493379410; EXE-uitvoer SHA-identiek aan WinOLS Stage 1-export; teruggedownload artefact heeft dezelfde ZIP-hash | GESLAAGD (CI-runner, geen schone eigen pc) |
+| Volledige suite op Windows | `python -m unittest discover -s tests -v` op windows-latest | alles groen | 173 tests geslaagd met lange TEMP-map; met de standaard 8.3-TEMP (`RUNNER~1`) falen 13 bestaande index-/inventarisatietests door padnormalisatie | GESLAAGD met kanttekening |
 | AutoTuner-herkenning / voertuig | – | – | geen AutoTuner, geen voertuig, geen testbank beschikbaar | NIET UITGEVOERD |
 
 ## Ondersteunde combinaties (bewijsniveau REPRODUCTION_ONLY)
@@ -96,6 +97,13 @@ controleren; het is niet door deze software bewezen.
 | reproteq/winols_damos_translator | ab5cd9d, geen licentie | Vertaalt via googletrans (online) | Niet gebruikt: stuurt namen naar externe dienst |
 | infinitehexsearcher/Ghidra-WinOLS-CSV-Importer | e6dada5, GPL | Ghidra-plugin | Niet gebruikt |
 | liushengjia-AAL/shengjia | cdcbe28, geen licentie | Achtergrond (o.a. md1-platform, checksum-crc-engine) | Alleen achtergrond; niets overgenomen |
+
+## Bekend Windows-probleem (bestaande code)
+
+Bestaande index-, inventaris- en workbenchcode vergelijkt soms `Path.resolve()`-paden met
+onopgeloste paden. Bij een 8.3-kortpad (bijv. `C:\Users\RUNNER~1\…`) mislukken daardoor
+13 bestaande tests. De tuningketen heeft hier geen last van. CI gebruikt een lange TEMP-map;
+een echte padnormalisatie staat open.
 
 ## Wat nodig is voor de beslissende proef
 
