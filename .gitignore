@@ -7,3 +7,12 @@ data/
 *.bin
 *.ori
 *.ols
+
+# OLS Tuner: local packages, libraries, builds and customer exports stay local.
+*.olstune
+*.DTF
+*.dtf
+*.pair.gz
+build/
+dist/
+*.rapport.json
