@@ -12,7 +12,7 @@ import struct
 from dataclasses import dataclass, field
 from typing import Any
 
-from .identity import classify_input
+from .identity import _useful, classify_input
 from .ols_versions import profile_label
 
 
@@ -68,16 +68,18 @@ def _select_variant(package, data: bytes) -> tuple[dict, dict, dict]:
         return cache[token]
 
     def check(identity: dict[str, list[str]]) -> dict[str, dict[str, list[str]]]:
-        return {
-            field: {"found": [t for t in tokens if has(t)], "missing": [t for t in tokens if not has(t)]}
-            for field, tokens in identity.items()
-        }
+        result = {}
+        for name, tokens in identity.items():
+            tokens = [t for t in tokens if _useful(t)]  # drop junk such as '!!!!!!' from older libraries
+            if tokens:
+                result[name] = {"found": [t for t in tokens if has(t)], "missing": [t for t in tokens if not has(t)]}
+        return result
 
     full = []
     recognized: dict[str, dict] = {}
     partial = []
     for family, variant in package.variants():
-        ecu_tokens = family["family_identity"].get("ecu_type", [])
+        ecu_tokens = [t for t in family["family_identity"].get("ecu_type", []) if _useful(t)]
         ecu_found = bool(ecu_tokens) and all(has(t) for t in ecu_tokens)
         result = check(variant["identity"])
         missing = [t for v in result.values() for t in v["missing"]]
@@ -86,6 +88,8 @@ def _select_variant(package, data: bytes) -> tuple[dict, dict, dict]:
             recognized[family["family_key"]] = family
         if variant["size"] != len(data):
             continue
+        if not result:
+            continue  # no usable identification: only reachable through similarity transfer
         if not missing:
             full.append((-found, variant["variant_id"], family, variant, result))
         elif ecu_found or found:
@@ -136,6 +140,8 @@ def _check_zones(blob: dict[str, Any], data: bytes, profile_name: str) -> None:
     zone_hits = sorted({
         zone["label"] for zone in blob.get("modification_zones", [])
         if zone.get("profile") != profile_name
+        and len(zone["tuned"]) >= 16  # >= 8 bytes: shorter zones match by coincidence
+        and len(set(bytes.fromhex(zone["tuned"]))) >= 3
         and data[zone["start"]:zone["end"]].hex() == zone["tuned"]
         and zone["tuned"] != zone["original"]
     })
@@ -284,17 +290,38 @@ def _apply_region(region: dict[str, Any], data: bytes, settings: dict[str, Any])
     return bytes(out), "+".join(sorted(methods)) or "exact", []
 
 
-def available_profiles(data: bytes, package) -> tuple[dict, dict, list[str]]:
-    """Recognise the variant and list the profiles it supports (best first)."""
+def available_profiles(data: bytes, package, hint: str = "",
+                       min_similarity: float | None = None) -> tuple[dict | None, dict | None, list[str]]:
+    """Profiles for this file: those of its exact software variant plus those
+    of similar originals in the library (best first)."""
 
     from .ols_versions import profile_sort_key
+    from .transfer import DEFAULT_MIN_SIMILARITY, transfer_profiles
 
     classification = classify_input(data)
     if classification.kind != "raw_image":
         raise GenerationRejected(f"input_{classification.kind}", classification.message)
-    family, variant, _identity = _select_variant(package, data)
-    profiles = sorted(variant["profiles"], key=profile_sort_key)
-    return family, variant, profiles
+    family = variant = None
+    profiles: list[str] = []
+    error = None
+    try:
+        family, variant, _identity = _select_variant(package, data)
+        profiles = list(variant["profiles"])
+    except GenerationRejected as exc:
+        error = exc
+    similar, donors = transfer_profiles(package, data, hint, min_similarity or DEFAULT_MIN_SIMILARITY)
+    for profile in similar:
+        if profile not in profiles:
+            profiles.append(profile)
+    if not profiles:
+        if error is not None:
+            raise GenerationRejected(error.code, error.message + " Er is ook geen vergelijkbaar origineel "
+                                     "(zelfde grootte, voldoende gelijk) in de bibliotheek.")
+        raise GenerationRejected("profile_not_available", "Geen tunings beschikbaar voor dit bestand.")
+    if family is None and donors:
+        family = next((f for f in package["families"] for v in f["variants"]
+                       if v["variant_id"] == donors[0]["variant_id"]), None)
+    return family, variant, sorted(profiles, key=profile_sort_key)
 
 
 def _integrity(family: dict[str, Any], contracts: dict | None) -> dict[str, Any]:
@@ -313,10 +340,7 @@ def _integrity(family: dict[str, Any], contracts: dict | None) -> dict[str, Any]
     }
 
 
-def generate(data: bytes, profile_name: str, package, contracts: dict | None = None) -> GenerationResult:
-    classification = classify_input(data)
-    if classification.kind != "raw_image":
-        raise GenerationRejected(f"input_{classification.kind}", classification.message)
+def _generate_exact(data: bytes, profile_name: str, package, contracts: dict | None = None) -> GenerationResult:
     family, variant, identity = _select_variant(package, data)
     blob = package.load_variant(variant["variant_id"])
     profile = blob["profiles"].get(profile_name)
@@ -334,7 +358,8 @@ def generate(data: bytes, profile_name: str, package, contracts: dict | None = N
     if pair is not None:
         output = bytearray(data)
         changes = []
-        for start, orig_hex, tuned_hex in pair["edits"]:
+        for edit in pair["edits"]:
+            start, orig_hex, tuned_hex = edit[0], edit[1], edit[2]
             new = bytes.fromhex(tuned_hex)
             output[start:start + len(new)] = new
             changes.append({
@@ -430,3 +455,91 @@ def generate(data: bytes, profile_name: str, package, contracts: dict | None = N
         evidence_level=variant.get("evidence_level", "REPRODUCTION_ONLY"),
         integrity=integrity,
     )
+
+
+def _family_of(package, variant_id: str) -> tuple[dict, dict]:
+    for family, variant in package.variants():
+        if variant["variant_id"] == variant_id:
+            return family, variant
+    raise KeyError(variant_id)
+
+
+def _by_transfer(data: bytes, profile_name: str, package, contracts: dict | None, hint: str,
+                 min_similarity: float | None, min_coverage: float | None,
+                 earlier: GenerationRejected | None) -> GenerationResult:
+    from .transfer import DEFAULT_MIN_COVERAGE, DEFAULT_MIN_SIMILARITY, transfer
+
+    outcome = transfer(data, profile_name, package, hint=hint,
+                       min_similarity=min_similarity or DEFAULT_MIN_SIMILARITY,
+                       min_coverage=DEFAULT_MIN_COVERAGE if min_coverage is None else min_coverage)
+    if outcome["status"] != "ok":
+        if outcome["code"] in ("already_tuned", "partially_tuned"):
+            raise GenerationRejected(outcome["code"], outcome["reason"])
+        prefix = (earlier.message + " ") if earlier is not None else ""
+        code = outcome["code"]
+        if earlier is not None and (code == "no_similar_original" or earlier.code in (
+                "cell_out_of_range", "layout_mismatch", "patch_region_mismatch")):
+            code = earlier.code  # the recognised variant's own finding stays the headline
+        raise GenerationRejected(code, prefix + "Overzetten: " + outcome["reason"], outcome)
+    donor = outcome["donor"]
+    family, variant = _family_of(package, donor["variant_id"])
+    blob = package.load_variant(donor["variant_id"])
+    _check_zones(blob, data, profile_name)
+    how_counts: dict[str, int] = {}
+    for item in outcome["placed"]:
+        how_counts[item["how"]] = how_counts.get(item["how"], 0) + 1
+    pair = outcome["pair"]
+    notes = [
+        f"Overgezet van {donor.get('vehicle') or 'project'} ({donor.get('project', '')}): "
+        f"{donor['similarity']:.1%} gelijk aan uw bestand"
+        + (f" (op dezelfde positie {donor['same_offset_similarity']:.0%}, rest verschoven)"
+           if donor.get("same_offset_similarity", donor["similarity"]) + 0.01 < donor["similarity"] else "")
+        + f"; versie '{pair.get('tuned_version_name') or profile_label(profile_name)}'.",
+        f"{len(outcome['placed'])} van {len(pair['edits'])} wijzigingen geplaatst ("
+        + ", ".join(f"{n} {how}" for how, n in sorted(how_counts.items())) + ").",
+    ]
+    if outcome["missing"]:
+        notes.append(f"Let op: {len(outcome['missing'])} wijzigingen niet geplaatst "
+                     f"({outcome['coverage']:.1%} overgezet) – volgens uw ingestelde minimum toegestaan.")
+    if how_counts.get("omgerekend"):
+        notes.append("Omgerekende kaarten: waarden van uw bestand met dezelfde verhouding aangepast als in het voorbeeld.")
+    changes = [{
+        "start": item["start"], "end": item["end"], "kind": "transfer", "method": item["how"],
+        "changed_bytes": item["changed_bytes"], "changed_cells": None, "map": None,
+        "label": f"Wijziging 0x{item['start']:X}" + (f" (voorbeeld 0x{item['donor_start']:X})"
+                                                     if item["start"] != item["donor_start"] else ""),
+    } for item in outcome["placed"]]
+    output = outcome["output"]
+    return GenerationResult(
+        output=output, family_key=family["family_key"], variant_key=variant["variant_key"],
+        profile=profile_name, package_id=package["package_id"],
+        input_sha256=hashlib.sha256(data).hexdigest(), output_sha256=outcome["output_sha256"],
+        changes=changes, allowed_ranges=[(c["start"], c["end"]) for c in changes],
+        identity={"family": family["ecu_type"], "variant": variant["variant_key"],
+                  "donor_project": donor.get("project"), "donor_vehicle": donor.get("vehicle"),
+                  "similarity": round(donor["similarity"], 4), "coverage": round(outcome["coverage"], 4)},
+        evidence_level="DONOR_TRANSFER", integrity=_integrity(family, contracts), notes=notes,
+    )
+
+
+def generate(data: bytes, profile_name: str, package, contracts: dict | None = None, *,
+             hint: str = "", min_similarity: float | None = None,
+             min_coverage: float | None = None) -> GenerationResult:
+    """Exact software variant first; otherwise transfer from the most similar original."""
+
+    classification = classify_input(data)
+    if classification.kind != "raw_image":
+        raise GenerationRejected(f"input_{classification.kind}", classification.message)
+    try:
+        return _generate_exact(data, profile_name, package, contracts)
+    except GenerationRejected as exc:
+        # Byte-exact proof that the file is already tuned is final. Everything
+        # else (other software, moved maps, value heuristics) gets a transfer try.
+        if exc.code == "already_tuned" or exc.code.startswith("input_"):
+            raise
+        try:
+            return _by_transfer(data, profile_name, package, contracts, hint, min_similarity, min_coverage, exc)
+        except GenerationRejected:
+            if exc.code in ("partially_tuned", "other_modification_present"):
+                raise exc  # the exact-variant finding is the more specific reason
+            raise

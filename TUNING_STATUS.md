@@ -124,6 +124,23 @@ controleren; het is niet door deze software bewezen.
 | Modelpakketten | Heten nu “Versies”, worden automatisch gemaakt; alleen terugzetten en back-up | GUI-doorloop |
 | Export op USB/exFAT | Zonder hardlinks: exclusief aanmaken + vervangen, nog steeds nooit overschrijven | Test `test_filesystem_without_hard_links_still_never_overwrites` |
 
+## Ronde 4: “95% match → 100%” (overzetten van een vergelijkbaar bestand)
+
+Aanleiding: de diagnose van de gebruiker (Windows 11, 3.700 projecten, 5.656 voorbeelden) liet zien dat
+bestanden met een andere software- of hardwareversie werden geweigerd, ook als WinOLS ~95% overeenkomst gaf.
+
+| Onderdeel | Werking | Bewijs |
+| --- | --- | --- |
+| Donor zoeken | Per trainingsorigineel een vingerafdruk (1024 posities) + 64 ankerfragmenten; gelijkenis = max(zelfde positie, ankers ergens gevonden). Bestandsnaam (auto/ECU/jaar) breekt gelijke standen. | Verschoven BMW: 40% zelfde positie, 100% met ankers |
+| Plaatsen | Per wijziging: zelfde plek → verschoven (met omliggende bytes als anker) → omrekenen per 16-bit cel met de verhouding van het voorbeeld → tweede ronde via de verschuiving van de buren. 1–3-byte schakelaars worden nooit omgerekend. | BMW 1 en 3 verschuivingen, VW 512 bytes verschoven: byte-identiek aan de verwachte Stage 1; synthetisch: andere waarden + verschoven kaarten binnen 1 eenheid |
+| Veiligheid | Al getuned (ook verschoven of met iets andere waarden) of half getuned → geweigerd, nooit dubbel verhogen. Onvolledig overzetten → geweigerd tenzij de gebruiker het minimum verlaagt. | Tests `test_tuning_transfer.py`, half-getuned case |
+| Herkenningsfouten | Tokens als `!!!!!!` en algemene namen (MEDC17) tellen niet meer; varianten zonder bruikbare identificatie alleen via overzetten. | Diagnose: Citroën “MED 9.1 !!!!!!”, VW Golf “MEDC17” |
+| Meer voorbeelden | Projecten zonder identificatie in de bytes worden bewaard (via overzetten bruikbaar); eerder geweigerde bestanden worden één keer opnieuw bekeken; oude labels (“combined”) worden opnieuw ingedeeld. | Test `LibraryUpgradeTests` |
+
+Nog open: 1.623 projecten zonder RevisionTag (ander OLS-formaat). De namen in het versierecord zijn in nieuwe
+formaten onbetrouwbaar (slot 3 heet daar “Original” terwijl het “Stage 1 + P&B” is); zonder voorbeeldbestanden
+wordt dit bewust niet geraden.
+
 ## Bekend Windows-probleem (bestaande code)
 
 Bestaande index-, inventaris- en workbenchcode vergelijkt soms `Path.resolve()`-paden met

@@ -63,6 +63,9 @@ CREATE TABLE IF NOT EXISTS runs (
 """
 
 DONE_STATES = ("parsed_no_pairs", "parsed_with_pairs", "rejected", "too_large")
+# Bump when extraction rules change: rejected / no-pair files from older scans
+# are then looked at again (unchanged files with pairs are still skipped).
+SCAN_VERSION = 2
 STATUS_TEXT = {
     "parsed_with_pairs": "gelezen, voorbeelden gevonden",
     "parsed_no_pairs": "gelezen, geen bruikbare versies",
@@ -173,6 +176,17 @@ def save_pair(root: Path, pair: TrainingPair) -> None:
     os.replace(tmp, path)
 
 
+def load_pair_meta(root: Path, pair_id: str) -> dict[str, Any]:
+    """Metadata of a stored pair without loading the original image."""
+
+    new_path = root / "pairs" / f"{pair_id}.json.gz"
+    if new_path.exists():
+        return json.loads(gzip.decompress(new_path.read_bytes()))
+    payload = json.loads(gzip.decompress((root / "pairs" / f"{pair_id}.pair.gz").read_bytes()))
+    payload.pop("original_hex_gz", None)
+    return payload
+
+
 def load_pair(root: Path, pair_id: str, originals_cache: dict[str, bytes] | None = None) -> TrainingPair:
     new_path = root / "pairs" / f"{pair_id}.json.gz"
     if new_path.exists():
@@ -216,19 +230,20 @@ def extract_pairs(path: Path, reader: Any, project_sha: str, export_hashes: set[
     slots = sorted(versions.slots, key=lambda s: s["slot_index"])
     original = read_slot(path, slots[0])
     identity = learn_identity(versions.metadata, original)
-    if not identity:
-        rejected.append({"project": name, "reason": "Geen enkele ECU/HW/SW-identificatie uit de "
-                         "projectgegevens komt letterlijk voor in de bytes."})
-        return [], rejected
-    hint = _read_form_hint(path)
     meta = versions.metadata
+    hint = _read_form_hint(path)
     family_label = identity["ecu_type"][0] if "ecu_type" in identity else (
         meta.get("ecu_type")
         or " ".join(x for x in (meta.get("ecu_manufacturer", ""), meta.get("hw_code") or meta.get("hw_number", "")) if x)
         or "onbekend")
     family_key = f"{family_label}|{len(original)}"
-    variant_key = "|".join(f"{k}={'+'.join(v)}" for k, v in sorted(identity.items()) if k != "ecu_type") or "ecu_only"
     original_sha = hashlib.sha256(original).hexdigest()
+    if identity:
+        variant_key = "|".join(f"{k}={'+'.join(v)}" for k, v in sorted(identity.items()) if k != "ecu_type") or "ecu_only"
+    else:
+        # No identification in the bytes: still a valid example, reachable
+        # only through similarity (transfer), keyed by its own original.
+        variant_key = "zonder-id|" + (meta.get("sw_number") or meta.get("hw_number") or "")[:40] + "|" + original_sha[:12]
     pairs: list[TrainingPair] = []
     for tag_version, slot in zip(versions.tag.versions[1:], slots[1:]):
         tuned = read_slot(path, slot)
@@ -363,6 +378,7 @@ def process_project(task: dict[str, Any], reader: Any = None) -> dict[str, Any]:
                     "original_sha256": p.record["original_sha256"], "tuned_sha256": p.record["tuned_sha256"],
                     "profile": p.profile, "family_key": p.family_key, "variant_key": p.variant_key,
                     "project_name": p.record["project_name"],
+                    "tuned_version_name": p.record.get("tuned_version_name", ""),
                 } for p in pairs],
             )
             return result
@@ -411,9 +427,12 @@ class Library:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
         columns = {row[1] for row in self.db.execute("PRAGMA table_info(pairs)")}
-        for column in ("variant_key", "project_name"):
+        for column in ("variant_key", "project_name", "tuned_version_name"):
             if column not in columns:
                 self.db.execute(f"ALTER TABLE pairs ADD COLUMN {column} TEXT")
+        file_columns = {row[1] for row in self.db.execute("PRAGMA table_info(files)")}
+        if "scan_version" not in file_columns:
+            self.db.execute("ALTER TABLE files ADD COLUMN scan_version INTEGER NOT NULL DEFAULT 1")
         self.db.commit()
 
     def close(self) -> None:
@@ -428,10 +447,11 @@ class Library:
         for meta in result.get("pairs", []):
             new += self.db.execute(
                 "INSERT OR IGNORE INTO pairs(pair_id,source,project_sha256,original_sha256,tuned_sha256,"
-                "profile,family_key,first_seen,variant_key,project_name) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "profile,family_key,first_seen,variant_key,project_name,tuned_version_name) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (meta["pair_id"], source_key, meta["project_sha256"], meta["original_sha256"],
                  meta["tuned_sha256"], meta["profile"], meta["family_key"], _now(),
-                 meta["variant_key"], meta["project_name"]),
+                 meta["variant_key"], meta["project_name"], meta.get("tuned_version_name", "")),
             ).rowcount
             stats["profiles"][meta["profile"]] = stats["profiles"].get(meta["profile"], 0) + 1
         stats["new_pairs"] += new
@@ -447,14 +467,14 @@ class Library:
             stats["retry_pending"] += 1
             stats["errors"].append(f"{Path(result['path']).name}: {result.get('message')}")
         self.db.execute(
-            "INSERT INTO files(path,source,size,mtime_ns,sha256,status,message,attempts,pair_ids,updated_at)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET "
+            "INSERT INTO files(path,source,size,mtime_ns,sha256,status,message,attempts,pair_ids,updated_at,"
+            "scan_version) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET "
             "size=excluded.size,mtime_ns=excluded.mtime_ns,sha256=COALESCE(excluded.sha256,files.sha256),"
             "status=excluded.status,message=excluded.message,attempts=files.attempts+1,"
-            "pair_ids=excluded.pair_ids,updated_at=excluded.updated_at",
+            "pair_ids=excluded.pair_ids,updated_at=excluded.updated_at,scan_version=excluded.scan_version",
             (result["path"], source_key, result.get("size"), result.get("mtime_ns"), result.get("sha256"),
              status, result.get("message", ""), 1, json.dumps([m["pair_id"] for m in result.get("pairs", [])]),
-             _now()),
+             _now(), SCAN_VERSION),
         )
         self.db.commit()  # checkpoint per project
 
@@ -516,8 +536,9 @@ class Library:
                     on_file(source_key, 0, len(walker))
                 known = {
                     row[0]: (row[1], row[2], row[3])
-                    for row in self.db.execute("SELECT path,size,mtime_ns,status FROM files WHERE source=?",
-                                               (source_key,))
+                    for row in self.db.execute(
+                        "SELECT path,size,mtime_ns,status FROM files WHERE source=? AND "
+                        "(status='parsed_with_pairs' OR scan_version>=?)", (source_key, SCAN_VERSION))
                 } if walker else {}
                 done = 0
                 pending: dict[Any, str] = {}
@@ -626,18 +647,30 @@ class Library:
         cfg = {**DEFAULT_SETTINGS, **(settings or {})}
         rows = [
             {"pair_id": r[0], "project_sha256": r[1], "original_sha256": r[2], "tuned_sha256": r[3],
-             "profile": r[4], "family_key": r[5], "variant_key": r[6], "project_name": r[7] or ""}
+             "profile": r[4], "family_key": r[5], "variant_key": r[6], "project_name": r[7] or "",
+             "tuned_version_name": r[8]}
             for r in self.db.execute(
                 "SELECT pair_id,project_sha256,original_sha256,tuned_sha256,profile,family_key,"
-                "variant_key,project_name FROM pairs ORDER BY pair_id")
+                "variant_key,project_name,tuned_version_name FROM pairs ORDER BY pair_id")
         ]
-        for row in rows:  # rows from before the variant column existed
-            if row["variant_key"] is None:
-                pair = self.load_pair(row["pair_id"])
-                row["variant_key"] = pair.variant_key
-                self.db.execute("UPDATE pairs SET variant_key=?,project_name=? WHERE pair_id=?",
-                                (pair.variant_key, pair.record.get("project_name", ""), row["pair_id"]))
+        reclassified = 0
+        for row in rows:
+            if row["variant_key"] is None or row["tuned_version_name"] is None:
+                meta = load_pair_meta(self.root, row["pair_id"])
+                row["variant_key"] = row["variant_key"] or meta["variant_key"]
+                row["tuned_version_name"] = meta["record"].get("tuned_version_name", "")
+                self.db.execute("UPDATE pairs SET variant_key=?,project_name=?,tuned_version_name=? WHERE pair_id=?",
+                                (row["variant_key"], meta["record"].get("project_name", ""),
+                                 row["tuned_version_name"], row["pair_id"]))
+            # Labels from older versions (e.g. 'combined') follow the current rules.
+            profile = classify_profile(row["tuned_version_name"]) if row["tuned_version_name"] else row["profile"]
+            if profile != row["profile"] and profile != "original":
+                row["profile"] = profile
+                reclassified += 1
+                self.db.execute("UPDATE pairs SET profile=? WHERE pair_id=?", (profile, row["pair_id"]))
         self.db.commit()
+        if reclassified:
+            say(f"{reclassified} voorbeelden opnieuw ingedeeld volgens de huidige tuningsoorten.")
         holdout = holdout_closure(rows, holdout_projects or [])
         groups: dict[tuple[str, str], dict[str, list[str]]] = {}
         zones: dict[tuple[str, str], list[str]] = {}
@@ -668,7 +701,7 @@ class Library:
             by_profile = {p: sorted(ids) for p, ids in groups[key].items()}
             zone_ids = sorted(zones.get(key, []))[:MAX_LEARNING_PAIRS]
             cache_key = hashlib.sha256(json.dumps(
-                {"p": by_profile, "z": zone_ids, "s": cfg, "v": SOFTWARE_VERSION, "f": 3},
+                {"p": by_profile, "z": zone_ids, "s": cfg, "v": SOFTWARE_VERSION, "f": 4},
                 sort_keys=True).encode()).hexdigest()[:32]
             cache_file = cache_dir / f"{cache_key}.json"
             used_cache.add(cache_file.name)
@@ -682,8 +715,14 @@ class Library:
             total = sum(len(v) for v in by_profile.values())
             say(f"Leren variant {index}/{len(groups)}: {key[0]} ({total} voorbeelden, {len(by_profile)} profielen)")
             cache: dict[str, bytes] = {}
-            learning = {p: [self.load_pair(i, cache) for i in ids[:MAX_LEARNING_PAIRS]] for p, ids in by_profile.items()}
-            extra = {p: (self.load_pair(i, cache) for i in ids[MAX_LEARNING_PAIRS:]) for p, ids in by_profile.items()}
+
+            def loaded(pair_id: str, profile: str, cache: dict[str, bytes] = cache) -> TrainingPair:
+                pair = self.load_pair(pair_id, cache)
+                pair.profile = profile  # current classification
+                return pair
+
+            learning = {p: [loaded(i, p) for i in ids[:MAX_LEARNING_PAIRS]] for p, ids in by_profile.items()}
+            extra = {p: (loaded(i, p) for i in ids[MAX_LEARNING_PAIRS:]) for p, ids in by_profile.items()}
             zone_pairs = [self.load_pair(i, cache) for i in zone_ids]
             unit = prepare_variant(learning, extra, zone_pairs, cfg)
             builder.add_prepared(unit)

@@ -16,6 +16,7 @@ library holds thousands of projects.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import json
@@ -31,7 +32,7 @@ from . import SOFTWARE_VERSION
 from .learn import DEFAULT_SETTINGS, TrainingPair, diff_regions, learn_modification_zones, learn_profile
 
 PACKAGE_FORMAT = "ols-tuner-package"
-PACKAGE_SCHEMA = 2
+PACKAGE_SCHEMA = 3
 PACKAGE_SUFFIX = ".olstune"
 MAX_LEARNING_PAIRS = 32  # per variant; all pairs stay available as known pairs
 _ZIP_DATE = (2020, 1, 1, 0, 0, 0)
@@ -54,22 +55,77 @@ def variant_id_for(family_key: str, variant_key: str) -> str:
     return hashlib.sha256(f"{family_key}\n{variant_key}".encode()).hexdigest()[:12]
 
 
+EDIT_CONTEXT = 24
+FP_SAMPLES = 1024
+
+
 def known_pair_edits(pair: TrainingPair, gap: int = 4) -> list[list[Any]]:
-    return [
-        [s, pair.original[s:e].hex(), pair.tuned[s:e].hex()]
-        for s, e in diff_regions(pair.original, pair.tuned, gap)
-    ]
+    """[start, original, tuned, context_before, context_after] (hex) per edit.
+    The context bytes let the generator find a map again when it has moved."""
+
+    out = []
+    for s, e in diff_regions(pair.original, pair.tuned, gap):
+        out.append([s, pair.original[s:e].hex(), pair.tuned[s:e].hex(),
+                    pair.original[max(0, s - EDIT_CONTEXT):s].hex(), pair.original[e:e + EDIT_CONTEXT].hex()])
+    return out
+
+
+ANCHOR_COUNT = 64
+ANCHOR_SIZE = 16
+
+
+def anchors(image: bytes) -> bytes:
+    """ANCHOR_COUNT informative 16-byte snippets spread over the image; finding
+    them anywhere in another file gives a shift-tolerant similarity."""
+
+    out = []
+    n = len(image)
+    for i in range(ANCHOR_COUNT):
+        pos = (i * max(1, n - 4096)) // ANCHOR_COUNT
+        limit = min(n - ANCHOR_SIZE, pos + 4096)
+        while pos < limit and len(set(image[pos:pos + ANCHOR_SIZE])) < 6:
+            pos += 64
+        snippet = image[pos:pos + ANCHOR_SIZE]
+        if len(snippet) == ANCHOR_SIZE and len(set(snippet)) >= 6:
+            out.append(snippet)
+    return b"".join(out)
+
+
+def fingerprint(image: bytes) -> bytes:
+    """4 bytes at FP_SAMPLES evenly spread offsets: a cheap same-offset
+    similarity measure (comparable to WinOLS' match percentage)."""
+
+    n = max(4, len(image))
+    return b"".join(image[(i * (n - 4)) // FP_SAMPLES:(i * (n - 4)) // FP_SAMPLES + 4].ljust(4, b"\0")
+                    for i in range(FP_SAMPLES))
 
 
 class Package:
     """A loaded package: manifest in memory, variant files on demand."""
 
     def __init__(self, manifest: dict[str, Any], variant_blobs: dict[str, bytes] | None = None,
-                 path: Path | None = None) -> None:
+                 path: Path | None = None, fingerprints: list[dict[str, Any]] | None = None) -> None:
         self.manifest = manifest
         self._blobs = variant_blobs or {}
         self.path = path
         self._cache: dict[str, dict[str, Any]] = {}
+        self._fingerprints = fingerprints
+
+    def fingerprints(self) -> list[dict[str, Any]]:
+        """Fingerprints of every training original (loaded on first use)."""
+
+        if self._fingerprints is None:
+            raw = b"[]"
+            if self.path is not None:
+                with zipfile.ZipFile(self.path) as archive:
+                    if "fingerprints.json" in archive.namelist():
+                        raw = archive.read("fingerprints.json")
+            data = json.loads(raw)
+            expected = self.manifest.get("fingerprints_sha256")
+            if expected and hashlib.sha256(_canonical(data)).hexdigest() != expected:
+                raise ValueError("Vingerafdrukken in het modelpakket zijn beschadigd.")
+            self._fingerprints = data
+        return self._fingerprints
 
     # dict-style access to the manifest keeps call sites simple
     def __getitem__(self, key: str) -> Any:
@@ -182,6 +238,21 @@ def prepare_variant(pairs_by_profile: dict[str, list[TrainingPair]],
         }
         for p in all_known
     ]
+    fingerprints = []
+    seen: set[str] = set()
+    for p in all_known:
+        sha = p.record.get("original_sha256")
+        if sha in seen:
+            continue
+        seen.add(sha)
+        fingerprints.append({
+            "variant_id": variant_id, "original_sha256": sha, "size": len(p.original),
+            "fp": base64.b64encode(fingerprint(p.original)).decode(),
+            "anchors": base64.b64encode(anchors(p.original)).decode(),
+            "vehicle": p.record.get("vehicle", ""), "project": p.record.get("project_name", ""),
+            "ecu": p.record.get("ecu_type", "") or first.family_key.rsplit("|", 1)[0],
+            "profiles": sorted({q.profile for q in all_known if q.record.get("original_sha256") == sha}),
+        })
     family = {
         "family_key": first.family_key,
         "ecu_type": first.record.get("ecu_type") or first.family_key.rsplit("|", 1)[0],
@@ -190,7 +261,7 @@ def prepare_variant(pairs_by_profile: dict[str, list[TrainingPair]],
         "family_identity": {"ecu_type": first.identity.get("ecu_type", [])},
         "states": states,
     }
-    return {"family": family, "entry": entry, "blob": raw, "selection": selection}
+    return {"family": family, "entry": entry, "blob": raw, "selection": selection, "fingerprints": fingerprints}
 
 
 class PackageBuilder:
@@ -200,6 +271,7 @@ class PackageBuilder:
         self.families: dict[str, dict[str, Any]] = {}
         self.blobs: dict[str, bytes] = {}
         self.selection: list[dict[str, Any]] = []
+        self.fingerprints: list[dict[str, Any]] = []
 
     def add_prepared(self, unit: dict[str, Any]) -> None:
         info = unit["family"]
@@ -212,6 +284,7 @@ class PackageBuilder:
         family["variants"].append(unit["entry"])
         self.blobs[unit["entry"]["variant_id"]] = unit["blob"].encode()
         self.selection.extend(unit["selection"])
+        self.fingerprints.extend(unit.get("fingerprints", []))
 
     def add_variant(self, pairs_by_profile: dict[str, list[TrainingPair]],
                     extra_known: dict[str, Iterable[TrainingPair]] | None = None,
@@ -250,9 +323,10 @@ class PackageBuilder:
             "families": families,
             "test_results": test_results or {},
         }
+        manifest["fingerprints_sha256"] = hashlib.sha256(_canonical(self.fingerprints)).hexdigest()
         manifest["package_id"] = hashlib.sha256(_canonical(manifest)).hexdigest()[:16]
         manifest["created_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        return Package(manifest, dict(self.blobs))
+        return Package(manifest, dict(self.blobs), fingerprints=list(self.fingerprints))
 
 
 def build_package(pairs: list[TrainingPair], *, other_pairs: list[TrainingPair] | None = None,
@@ -297,6 +371,9 @@ def write_package(package: Package, path: Path) -> Path:
             info = zipfile.ZipInfo(f"variants/{vid}.json", _ZIP_DATE)
             info.compress_type = zipfile.ZIP_DEFLATED
             archive.writestr(info, package._blobs.get(vid) or _read_blob(package, vid))
+        info = zipfile.ZipInfo("fingerprints.json", _ZIP_DATE)
+        info.compress_type = zipfile.ZIP_DEFLATED
+        archive.writestr(info, _canonical(package.fingerprints()))
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".pkg-", suffix=".tmp")
     try:
         with os.fdopen(fd, "wb") as handle:

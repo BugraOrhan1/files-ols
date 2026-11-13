@@ -14,6 +14,10 @@ Bibliotheek
   Pop & Bang, Vmax, DTC, ... en combinaties). Na "Open origineel" toont de lijst bij
   stap 2 wat uw database voor die software heeft.
 - Een origineel dat in de database voorkomt, krijgt exact die tuning terug.
+- Andere software/hardware maar vergelijkbaar bestand (zoals 95% match in WinOLS): de app
+  zoekt het meest gelijkende bestand en zet elke wijziging over (ook verschoven kaarten,
+  andere waarden worden omgerekend). Bij "Instellingen" staan de grenzen (standaard 70% /
+  100%). Een al (half) getuned bestand wordt nooit nog eens getuned.
 - Versies: elke bijwerking maakt automatisch een nieuwe versie; "Terug naar vorige
   versie" en "Back-up maken/terugzetten" (om naar een andere pc te verhuizen).
 - Gegevens staan in %LOCALAPPDATA%\OLS Tuner\ en bevatten klantgegevens: lokaal houden.

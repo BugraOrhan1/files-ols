@@ -101,3 +101,41 @@ class BackgroundWorkerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LibraryUpgradeTests(unittest.TestCase):
+    def test_projects_without_identity_old_labels_and_rescans(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / "Database 1"
+            folder.mkdir()
+            variant = Variant(sw="SWNOID-0001")
+            original = make_original(5, variant)
+            meta = dict(metadata(variant), sw_number="NOT-IN-BYTES-123", hw_number="ALSO-NOT-456",
+                        ecu_type="NOPE-789")
+            write_native_project(folder / "zonder id.ols", [original, make_stage1(original)],
+                                 [("Stage 1", "NOCS")], meta)
+            store = PackageStore(root / "store")
+            library = Library(store)
+            # Simulate a library from an older version: this file was rejected before.
+            library.db.execute("INSERT INTO files(path,source,size,mtime_ns,status,message,attempts,updated_at,"
+                               "scan_version) VALUES(?,?,?,?,?,?,?,?,1)",
+                               (str(folder / "zonder id.ols"), "Database 1",
+                                (folder / "zonder id.ols").stat().st_size,
+                                (folder / "zonder id.ols").stat().st_mtime_ns, "rejected", "oud", 1, "x"))
+            library.db.commit()
+            summary = library.scan({"Database 1": folder}, NativeOlsReader(), workers=1)
+            self.assertEqual(summary["sources"]["Database 1"]["skipped_unchanged"], 0)  # looked at again
+            self.assertEqual(summary["sources"]["Database 1"]["confirmed_pairs"], 1)
+            # An old label is reclassified on training.
+            library.db.execute("UPDATE pairs SET profile='combined'")
+            library.db.commit()
+            result = library.train()
+            self.assertEqual(result["profiles"], {"stage1": 1})
+            library.close()
+            package = store.load_active()
+            similar = bytearray(original)
+            similar[0x2000:0x2010] = bytes(range(16))  # a slightly different file
+            out = generate(bytes(similar), "stage1", package)
+            self.assertEqual(out.evidence_level, "DONOR_TRANSFER")
+            self.assertEqual(out.output, make_stage1(bytes(similar)))

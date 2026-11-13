@@ -74,6 +74,8 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--name")
     gen.add_argument("--package", type=Path, help="Pakketbestand i.p.v. het actieve pakket.")
     gen.add_argument("--dry-run", action="store_true", help="Alleen genereren en controleren.")
+    gen.add_argument("--min-similarity", type=float, default=70.0, help="Minimale gelijkenis bij overzetten (%%).")
+    gen.add_argument("--min-coverage", type=float, default=100.0, help="Minimaal overgezet deel (%%).")
 
     upd = sub.add_parser("update-library", help="Bibliotheek bijwerken met de mappen uit de app-instellingen "
                          "(zo start de app het achtergrondproces).")
@@ -119,7 +121,8 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         data = args.original.read_bytes()
         try:
-            result = generate(data, args.profile, package, store.contracts())
+            result = generate(data, args.profile, package, store.contracts(), hint=args.original.name,
+                              min_similarity=args.min_similarity / 100, min_coverage=args.min_coverage / 100)
         except GenerationRejected as exc:
             print(json.dumps({"status": "AFGEWEZEN", "code": exc.code, "reden": exc.message},
                              indent=2, ensure_ascii=False))

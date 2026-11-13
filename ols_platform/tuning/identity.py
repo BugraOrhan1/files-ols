@@ -70,11 +70,25 @@ def classify_input(data: bytes) -> InputClassification:
     return InputClassification("raw_image", "Binaire uitlezing.", entropy)
 
 
+_GENERIC = {"MEDC17", "EDC17C", "EDC16C", "SIMOS1", "DELPHI", "BOSCH", "SIEMENS", "CONTINENTAL",
+            "MARELLI", "DENSO", "VISTEON", "ORIGINAL", "UNKNOWN", "EPROM", "FLASH"}
+
+
+def _useful(token: str) -> bool:
+    """Identification tokens must look like part/software numbers: enough
+    letters/digits, at least one digit, not one repeated character and not a
+    generic family name that occurs in many unrelated files."""
+
+    alnum = sum(ch.isalnum() for ch in token)
+    return (alnum >= _MIN_TOKEN and alnum / len(token) >= 0.7 and any(ch.isdigit() for ch in token)
+            and len(set(token)) >= 3 and token.upper() not in _GENERIC)
+
+
 def tokens_for(value: str) -> list[str]:
     tokens = []
     for token in _TOKEN_SPLIT.split(value):
-        token = token.strip("-_.")
-        if len(token) >= _MIN_TOKEN and token not in tokens:
+        token = token.strip("-_.!?*")
+        if _useful(token) and token not in tokens:
             tokens.append(token)
     return tokens
 

@@ -41,6 +41,7 @@ EVIDENCE_LABELS = {
     "KNOWN_PAIR": "Bekend origineel – exact de tuning uit uw database",
     "MULTI_PROJECT": "Geleerde tuning (meerdere projecten van deze software)",
     "REPRODUCTION_ONLY": "Geleerde tuning (slechts één project van deze software – extra controle aanbevolen)",
+    "DONOR_TRANSFER": "Overgezet van het meest gelijkende bestand uit uw database – controleer het resultaat",
 }
 
 
@@ -60,6 +61,8 @@ class Settings:
             "py_ols": "",
             "exports": "",
             "source_stats": {},
+            "min_similarity": 70,
+            "min_coverage": 100,
         }
         try:
             self.data.update(json.loads(self.path.read_text(encoding="utf-8")))
@@ -215,8 +218,14 @@ class TunerApp:
             self.package = self.store.load_active()
         except (OSError, ValueError) as exc:
             self.package = None
-            self.message.show("error", "Modelpakket kon niet worden geladen", str(exc))
-            self.package_var.set("Geen bruikbaar modelpakket")
+            if "verouderd" in str(exc):
+                self.message.show("warn", "Bibliotheek omzetten naar de nieuwe versie",
+                                  "Deze versie van de app gebruikt een verbeterd bibliotheekformaat. Open "
+                                  "'Bibliotheek…' en klik op 'Bibliotheek bijwerken'. Al gescande bestanden worden "
+                                  "niet opnieuw gelezen; het omzetten gaat daardoor snel.")
+            else:
+                self.message.show("error", "Bibliotheek kon niet worden geladen", str(exc))
+            self.package_var.set("Bibliotheek moet worden bijgewerkt")
             return
         if self.package is None:
             self.package_var.set("Nog geen bibliotheek opgebouwd")
@@ -242,6 +251,16 @@ class TunerApp:
 
     def _profile_key(self) -> str:
         return self.profile_map.get(self.profile_var.get(), "")
+
+    def _transfer_options(self) -> dict:
+        def pct(key, default):
+            try:
+                return max(1, min(100, float(self.settings.data.get(key, default)))) / 100
+            except (TypeError, ValueError):
+                return default / 100
+
+        return {"hint": self.original.name if self.original else "",
+                "min_similarity": pct("min_similarity", 70), "min_coverage": pct("min_coverage", 100)}
 
     def poll_background(self) -> None:
         """Show background library progress and load new versions automatically."""
@@ -295,7 +314,9 @@ class TunerApp:
             self.message.show("warn", "Nog geen bibliotheek", "Bouw eerst de bibliotheek op via 'Bibliotheek…'.")
             return
         try:
-            _family, _variant, profiles = available_profiles(self.original.read_bytes(), self.package)
+            options = self._transfer_options()
+            _family, _variant, profiles = available_profiles(
+                self.original.read_bytes(), self.package, options["hint"], options["min_similarity"])
         except GenerationRejected as exc:
             self.profile_map = {}
             self.profile_box.configure(values=[])
@@ -307,8 +328,9 @@ class TunerApp:
             self.message.show("error", "Bestand kon niet gelezen worden", str(exc))
             return
         previous = self._profile_key()
-        self.log.info("Herkend: familie %s, variant %s, tunings: %s", _family["family_key"],
-                      _variant["variant_key"], ", ".join(profiles))
+        self.log.info("Herkend: familie %s, variant %s, tunings: %s",
+                      _family["family_key"] if _family else "-",
+                      _variant["variant_key"] if _variant else "geen exacte variant (overzetten)", ", ".join(profiles))
         self.profile_map = {profile_label(p): p for p in profiles}
         self.profile_box.configure(values=list(self.profile_map))
         choice = previous if previous in profiles else ("stage1" if "stage1" in profiles else profiles[0])
@@ -332,7 +354,8 @@ class TunerApp:
         self.root.update_idletasks()
         try:
             data = self.original.read_bytes()
-            result = generate(data, self._profile_key(), self.package, self.store.contracts())
+            result = generate(data, self._profile_key(), self.package, self.store.contracts(),
+                              **self._transfer_options())
         except GenerationRejected as exc:
             self.log.warning("Tuning %s geweigerd [%s]: %s", self._profile_key(), exc.code, exc.message)
             self.message.show("error", "Dit bestand kan niet getuned worden", exc.message)
@@ -360,7 +383,10 @@ class TunerApp:
             return
         self.checksum_button.pack_forget()
         self.make_button.configure(state="normal")
-        self.message.show("ok", "Herkend – klaar om te maken", "\n".join(lines))
+        if result.evidence_level == "DONOR_TRANSFER":
+            self.message.show("ok", "Overgezet – klaar om te maken", "\n".join(lines))
+        else:
+            self.message.show("ok", "Herkend – klaar om te maken", "\n".join(lines))
 
     def make_bin(self, ask_path: bool = True) -> Path | None:
         if self.result is None or self.original is None:
@@ -878,6 +904,16 @@ class LibraryWindow:
         ttk.Entry(out, textvariable=self.output_var, width=60).grid(row=0, column=1, sticky="we", padx=6)
         ttk.Button(out, text="Kies…", command=lambda: self._browse_into(self.output_var)).grid(row=0, column=2)
         out.columnconfigure(1, weight=1)
+        match = ttk.LabelFrame(tab, text="  Overzetten van een vergelijkbaar bestand  ", padding=8)
+        match.pack(fill="x", pady=(12, 0))
+        self.sim_var = tk.StringVar(value=str(self.app.settings.data.get("min_similarity", 70)))
+        self.cov_var = tk.StringVar(value=str(self.app.settings.data.get("min_coverage", 100)))
+        ttk.Label(match, text="Minimale gelijkenis met een bestand uit de database (%):").grid(row=0, column=0, sticky="w")
+        ttk.Spinbox(match, from_=30, to=100, textvariable=self.sim_var, width=6).grid(row=0, column=1, sticky="w", padx=6)
+        ttk.Label(match, text="Minimaal deel van de wijzigingen dat geplaatst moet worden (%):").grid(row=1, column=0, sticky="w")
+        ttk.Spinbox(match, from_=50, to=100, textvariable=self.cov_var, width=6).grid(row=1, column=1, sticky="w", padx=6)
+        ttk.Label(match, text="Standaard 70% en 100%. Lager zetten maakt meer mogelijk, maar controleer het resultaat dan zelf "
+                  "in WinOLS.", style="Muted.TLabel", wraplength=780).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
         adv = ttk.LabelFrame(tab, text="  Geavanceerd (optioneel)  ", padding=8)
         adv.pack(fill="x", pady=(12, 0))
         self.exports_var = tk.StringVar(value=self.app.settings.data.get("exports", ""))
@@ -900,7 +936,8 @@ class LibraryWindow:
 
     def save_settings(self) -> None:
         self.app.settings.data.update({"output_dir": self.output_var.get(), "exports": self.exports_var.get(),
-                                       "py_ols": self.py_ols_var.get()})
+                                       "py_ols": self.py_ols_var.get(), "min_similarity": self.sim_var.get(),
+                                       "min_coverage": self.cov_var.get()})
         self.app.settings.save()
         self.write("Instellingen opgeslagen.")
 

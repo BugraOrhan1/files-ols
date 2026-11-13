@@ -140,7 +140,14 @@ class LearnAndGenerateTests(unittest.TestCase):
     def test_rejections_name_the_cause(self):
         base = make_original(42)
         self.assertRejected(make_original(7, Variant(sw="SWBETA-0002")), "software_variant_not_validated")
-        self.assertRejected(make_original(7, Variant(hw="HW9999-0001")), "other_hardware")
+        # Other hardware with otherwise identical bytes: transferred, clearly marked.
+        other_hw = make_original(7, Variant(hw="HW9999-0001"))
+        transferred = generate(other_hw, "stage1", self.package)
+        self.assertEqual(transferred.evidence_level, "DONOR_TRANSFER")
+        expected = make_stage1(other_hw)
+        self.assertLessEqual(max(abs(struct.unpack_from("<H", transferred.output, i)[0]
+                                     - struct.unpack_from("<H", expected, i)[0])
+                                 for i in range(0, len(expected) - 1, 2)), 1)
         self.assertRejected(make_original(7, Variant(ecu="OTHERECU-1", hw="HWX-123456", sw="SWX-999999")),
                             "ecu_not_recognized")
         self.assertRejected(make_stage1(base), "already_tuned")
@@ -153,7 +160,14 @@ class LearnAndGenerateTests(unittest.TestCase):
         self.assertRejected(b"", "input_empty")
         self.assertRejected(os.urandom(SIZE), "input_encrypted")
         self.assertRejected(b"PK\x03\x04" + base[4:], "input_archive")
-        self.assertRejected(make_original(42, map_shift=2), "layout_mismatch")
+        # Maps moved by 2 bytes: found again and transferred.
+        moved = make_original(42, map_shift=2)
+        moved_result = generate(moved, "stage1", self.package)
+        self.assertEqual(moved_result.evidence_level, "DONOR_TRANSFER")
+        expected_moved = make_stage1(moved, map_shift=2)
+        self.assertLessEqual(max(abs(struct.unpack_from("<H", moved_result.output, i)[0]
+                                     - struct.unpack_from("<H", expected_moved, i)[0])
+                                 for i in range(0, len(moved) - 1, 2)), 1)
         hot = bytearray(base)
         struct.pack_into("<H", hot, first, 60000)
         self.assertRejected(bytes(hot), "cell_out_of_range")
@@ -164,13 +178,13 @@ class LearnAndGenerateTests(unittest.TestCase):
     def test_other_modification_zone_blocks_mixed_input(self):
         base = make_original(1)
         other = bytearray(base)
-        other[0x7800:0x7804] = b"\xde\xad\xbe\xef"
+        other[0x7800:0x7810] = bytes(range(0xA0, 0xB0))
         mod = make_pair(1, profile="other")
         mod.tuned = bytes(other)
         mod.record = dict(mod.record, tuned_version_name="P&B")
         package = build_package(self.pairs, other_pairs=[mod])
         mixed = bytearray(make_original(42))
-        mixed[0x7800:0x7804] = b"\xde\xad\xbe\xef"
+        mixed[0x7800:0x7810] = bytes(range(0xA0, 0xB0))
         error = self.assertRejected(bytes(mixed), "other_modification_present", package)
         self.assertIn("P&B", error.message)
 
