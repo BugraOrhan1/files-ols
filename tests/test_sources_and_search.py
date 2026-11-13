@@ -461,31 +461,34 @@ class SourceAndSearchTests(unittest.TestCase):
             ):
                 thread=threading.Thread(target=run)
                 thread.start()
-                self.assertTrue(started.wait(5))
-                control=IndexDatabase(database_path)
                 try:
-                    with self.assertRaises(RuntimeError):
-                        control.acquire_hash_worker(
-                            owner_token="second",process_id=os.getpid(),workers=1,
-                            batch_size=1,chunk_size=1024*1024,
-                            batch_delay_seconds=0,retry_limit=2,
-                            retry_delay_seconds=0,
+                    self.assertTrue(started.wait(5))
+                    control=IndexDatabase(database_path)
+                    try:
+                        with self.assertRaises(RuntimeError):
+                            control.acquire_hash_worker(
+                                owner_token="second",process_id=os.getpid(),workers=1,
+                                batch_size=1,chunk_size=1024*1024,
+                                batch_delay_seconds=0,retry_limit=2,
+                                retry_delay_seconds=0,
+                            )
+                        control.set_hash_control("paused")
+                        release.set()
+                        deadline=time.monotonic()+5
+                        while time.monotonic()<deadline:
+                            if control.hash_worker_status()["status"]=="paused":
+                                break
+                            time.sleep(0.02)
+                        self.assertEqual(
+                            control.hash_worker_status()["status"],"paused"
                         )
-                    control.set_hash_control("paused")
-                    release.set()
-                    deadline=time.monotonic()+5
-                    while time.monotonic()<deadline:
-                        if control.hash_worker_status()["status"]=="paused":
-                            break
-                        time.sleep(0.02)
-                    self.assertEqual(
-                        control.hash_worker_status()["status"],"paused"
-                    )
-                    control.set_hash_control("running")
+                    finally:
+                        control.set_hash_control("running")
+                        control.close()
                 finally:
-                    control.close()
-                thread.join(5)
-                self.assertFalse(thread.is_alive())
+                    release.set()
+                    thread.join(10)
+                    self.assertFalse(thread.is_alive())
             self.assertEqual(failure,[])
             self.assertEqual(result[0]["status"],"complete")
             self.assertEqual(result[0]["batches_completed"],1)
@@ -1588,6 +1591,130 @@ class SourceAndSearchTests(unittest.TestCase):
             database.close()
             with self.assertRaises(sqlite3.ProgrammingError):
                 search_projects(database)
+
+    def test_file_hash_search_uses_latest_live_location(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            child = root / "child"
+            child.mkdir()
+            source = child / "overlap.ols"
+            source.write_bytes(b"synthetic project")
+            database = IndexDatabase(root / "index.sqlite3")
+            try:
+                next(import_sources(
+                    sources=[source], reader=FixtureReader(), database=database,
+                    max_file_bytes=1024, progress=False,
+                ))
+                registered = [register_source(database, path) for path in (root, child)]
+                for item in registered:
+                    scan_registered_source(database, item["id"], benchmark_bytes=0)
+                with database.connection:
+                    for item, digest in zip(registered, ("a" * 64, "b" * 64)):
+                        database.connection.execute(
+                            "UPDATE file_locations SET sha256=? "
+                            "WHERE source_id=? AND path=?",
+                            (digest, item["id"], str(source.resolve())),
+                        )
+                self.assertEqual(
+                    search_projects(database, file_hash="a" * 64)["result_count"], 0
+                )
+                latest = search_projects(database, file_hash="b" * 64)
+                self.assertEqual(latest["result_count"], 1)
+                self.assertEqual(latest["results"][0]["match_status"], "CONFIRMED")
+            finally:
+                database.close()
+
+    def test_partial_metadata_search_reports_only_actual_matches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "example.ols"
+            source.write_bytes(b"synthetic project")
+            database = IndexDatabase(root / "index.sqlite3")
+            try:
+                next(import_sources(
+                    sources=[source], reader=FixtureReader(), database=database,
+                    max_file_bytes=1024, progress=False,
+                ))
+                criteria = {
+                    "ecu_type": "ECU-A",
+                    "sw_number": "different",
+                    "hw_number": "missing",
+                }
+                first = search_projects(
+                    database, metadata=criteria, metadata_match_mode="any"
+                )["results"][0]
+                second = search_projects(
+                    database, metadata=criteria, metadata_match_mode="any"
+                )["results"][0]
+                self.assertEqual(
+                    first["matched_features"],
+                    [{"field": "ecu_type", "matched_value": "ECU-A"}],
+                )
+                self.assertIn("At least one", first["match_reason"])
+                self.assertIn("Differing metadata filters: sw_number.", first["match_reason"])
+                self.assertIn("Missing metadata filters: hw_number.", first["match_reason"])
+                self.assertIn("hw_number", first["missing_information"])
+                self.assertTrue(first["parser_warnings"])
+                self.assertEqual(first["rank_score"], second["rank_score"])
+                self.assertEqual(first["rank_reasons"], second["rank_reasons"])
+                all_matched = search_projects(
+                    database,
+                    metadata={"ecu_type": "ECU-A", "sw_number": "SW-123"},
+                    metadata_match_mode="any",
+                )["results"][0]
+                self.assertIn("All supplied metadata filters matched.", all_matched["match_reason"])
+                with database.connection:
+                    database.connection.execute(
+                        "INSERT OR REPLACE INTO project_metadata "
+                        "(project_id,field,value,status) VALUES (1,'hw_number','HW-1','direct')"
+                    )
+                conflicting = search_projects(
+                    database,
+                    metadata={
+                        "ecu_type": "ECU-A",
+                        "sw_number": "SW-123",
+                        "hw_number": "HW-OTHER",
+                    },
+                    metadata_match_mode="any",
+                )["results"][0]
+                self.assertEqual(conflicting["match_status"], "INCONCLUSIVE")
+                self.assertIn("Differing metadata filters: hw_number.", conflicting["match_reason"])
+                self.assertEqual(
+                    search_projects(database, metadata=criteria)["result_count"], 0
+                )
+            finally:
+                database.close()
+
+    def test_partial_metadata_ranking_is_stable_across_pages(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = IndexDatabase(root / "index.sqlite3")
+            try:
+                for name in ("best.ols", "weaker.ols", "tied.ols"):
+                    source = root / name
+                    source.write_bytes(name.encode())
+                    next(import_sources(
+                        sources=[source], reader=FixtureReader(), database=database,
+                        max_file_bytes=1024, progress=False,
+                    ))
+                with database.connection:
+                    database.connection.execute(
+                        "UPDATE project_metadata SET value='other' "
+                        "WHERE project_id=2 AND field='sw_number'"
+                    )
+                criteria = {"ecu_type": "ECU-A", "sw_number": "SW-123"}
+                pages = [
+                    search_projects(
+                        database, metadata=criteria, metadata_match_mode="any",
+                        limit=1, offset=offset,
+                    )["results"][0]
+                    for offset in range(3)
+                ]
+                self.assertEqual([item["project_id"] for item in pages], [1, 3, 2])
+                self.assertGreater(pages[1]["rank_score"], pages[2]["rank_score"])
+                self.assertEqual(pages[0]["rank_score"], pages[1]["rank_score"])
+            finally:
+                database.close()
 
     def test_project_search_aborts_interrupted_sqlite_statement(self):
         class InterruptedConnection:

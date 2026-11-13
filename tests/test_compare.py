@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from ols_platform.cli import main
-from ols_platform.compare import compare_binary_files
+from ols_platform.compare import byte_similarity, compare_binary_files
 from ols_platform.compare import store_comparison
 from ols_platform.database import IndexDatabase
 
@@ -53,6 +53,19 @@ class BinaryComparisonTests(unittest.TestCase):
                     ]
                 )
             self.assertEqual(original.read_bytes(), b"abcd")
+            with self.assertRaisesRegex(ValueError, "Refusing to overwrite"):
+                main(
+                    [
+                        "--database",
+                        str(database),
+                        "compare",
+                        str(original),
+                        str(tuned),
+                        "--no-store",
+                        "--output",
+                        str(database),
+                    ]
+                )
             self.assertFalse(database.exists())
 
     def test_reports_changed_ranges_and_size_difference(self):
@@ -221,6 +234,51 @@ class BinaryComparisonTests(unittest.TestCase):
                 self.assertEqual(count, 1)
             finally:
                 database.close()
+
+    def test_byte_similarity_threshold_and_incomparable_inputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.dat"
+            second = root / "second.dat"
+            first.write_bytes(b"A" * 1000)
+            for matches, expected in ((949, False), (950, True), (951, True)):
+                second.write_bytes(b"A" * matches + b"B" * (1000 - matches))
+                comparison = compare_binary_files(first, second)
+                result = byte_similarity(comparison)
+                self.assertEqual(result["matching_bytes"], matches)
+                self.assertEqual(result["compared_bytes"], 1000)
+                self.assertEqual(result["similarity_percent"], matches / 10)
+                self.assertEqual(result["meets_threshold"], expected)
+                self.assertFalse(byte_similarity(comparison, 96)["meets_threshold"])
+            second.write_bytes(b"A" * 999)
+            self.assertIsNone(byte_similarity(compare_binary_files(first, second))["meets_threshold"])
+            first.write_bytes(b"")
+            second.write_bytes(b"")
+            self.assertEqual(byte_similarity(compare_binary_files(first, second))["status"], "NOT_COMPARABLE")
+            for invalid in (-1, 101, float("nan"), True, "95"):
+                with self.assertRaises(ValueError):
+                    byte_similarity(compare_binary_files(first, second), invalid)
+
+    def test_cli_byte_threshold_does_not_create_database_on_invalid_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.dat"
+            second = root / "second.dat"
+            first.write_bytes(b"A" * 100)
+            second.write_bytes(b"A" * 95 + b"B" * 5)
+            database = root / "index.sqlite3"
+            output = root / "result.json"
+            self.assertEqual(main([
+                "--database", str(database), "compare", str(first), str(second),
+                "--no-store", "--byte-threshold", "95", "--output", str(output),
+            ]), 0)
+            similarity = json.loads(output.read_text(encoding="utf-8"))["byte_similarity"]
+            self.assertTrue(similarity["meets_threshold"])
+            self.assertEqual(similarity["similarity_percent"], 95)
+            with self.assertRaises(ValueError):
+                main(["--database", str(database), "compare", str(first), str(second),
+                      "--byte-threshold", "nan"])
+            self.assertFalse(database.exists())
 
 
 if __name__ == "__main__":

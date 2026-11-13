@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 from dataclasses import asdict, dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import BinaryIO
 
@@ -25,6 +26,53 @@ class BinaryComparison:
     differing_bytes: int
     changed_ranges: tuple[ChangedRange, ...]
     exact_match: bool
+
+
+def validate_byte_threshold(threshold_percent: float) -> None:
+    if (
+        isinstance(threshold_percent, bool)
+        or not isinstance(threshold_percent, (int, float))
+        or not 0 <= threshold_percent <= 100
+    ):
+        raise ValueError("Byte similarity threshold must be between 0 and 100.")
+
+
+def byte_similarity(
+    comparison: BinaryComparison, threshold_percent: float = 95.0
+) -> dict:
+    validate_byte_threshold(threshold_percent)
+    size = comparison.original_size
+    result = {
+        "metric": "equal_bytes_at_same_offsets",
+        "threshold_percent": threshold_percent,
+        "similarity_percent": None,
+        "matching_bytes": None,
+        "compared_bytes": None,
+        "meets_threshold": None,
+        "status": "NOT_COMPARABLE",
+        "reason": "",
+        "limitation": (
+            "Byte similarity is not ECU compatibility, a probability, or a "
+            "validated project or version relationship."
+        ),
+    }
+    if size != comparison.tuned_size:
+        result["reason"] = "Files have different sizes; no byte percentage is assigned."
+        return result
+    if size == 0:
+        result["reason"] = "Empty files provide no byte similarity evidence."
+        return result
+    matching = size - comparison.differing_bytes
+    percentage = Decimal(matching) * 100 / Decimal(size)
+    result.update(
+        similarity_percent=float(percentage),
+        matching_bytes=matching,
+        compared_bytes=size,
+        meets_threshold=percentage >= Decimal(str(threshold_percent)),
+        status="COMPARED",
+        reason="Equal bytes at identical offsets divided by the equal file size.",
+    )
+    return result
 
 
 def compare_binary_files(

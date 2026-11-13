@@ -1,13 +1,20 @@
 import hashlib
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
+from ols_platform.compare import compare_binary_files
+from ols_platform.cli import main
 from ols_platform.database import IndexDatabase
 from ols_platform.ecu_workbench import (
     compare_analyses,
+    export_candidates,
+    export_preview,
+    export_selected_binary,
     get_analysis,
     history,
     import_binary_stream,
@@ -16,15 +23,16 @@ from ols_platform.ecu_workbench import (
     reanalyze,
 )
 from ols_platform.importer import import_sources
-from ols_platform.reader import ParsedVersion, ParsedVersionSlot, ProjectSnapshot
+from ols_platform.reader import ParsedVersion, ParsedVersionSlot, ProjectSnapshot, ReadIssue
 
 
 class WorkbenchReader:
     parser_name = "test-parser"
     parser_version = "1"
 
-    def __init__(self, slot_payload: bytes = b""):
+    def __init__(self, slot_payload: bytes = b"", issues=()):
         self.slot_payload = slot_payload
+        self.issues = issues
 
     def inspect(self, source):
         digest = hashlib.sha256(self.slot_payload).hexdigest()
@@ -39,6 +47,7 @@ class WorkbenchReader:
             },
             versions=(ParsedVersion("Original", "", 0, 1, 0, 8, "", 0),),
             maps=(),
+            issues=self.issues,
             version_slots=(
                 ParsedVersionSlot(
                     0, 0, len(self.slot_payload), "Original", "", "",
@@ -71,12 +80,12 @@ class EcuWorkbenchTests(unittest.TestCase):
             identifications=metadata,
         )
 
-    def _import_project(self, source_name, source_content, slot_payload=b""):
+    def _import_project(self, source_name, source_content, slot_payload=b"", issues=()):
         source = self.root / source_name
         source.write_bytes(source_content)
         return next(import_sources(
             sources=[source],
-            reader=WorkbenchReader(slot_payload),
+            reader=WorkbenchReader(slot_payload, issues),
             database=self.index,
             max_file_bytes=1024 * 1024,
             progress=False,
@@ -98,6 +107,230 @@ class EcuWorkbenchTests(unittest.TestCase):
             sha256=outcome.sha256,
             state="hashed",
         )
+
+    def _add_export_artifact(self, project_id, name, content, representation="full_binary"):
+        source = self.root / name
+        source.write_bytes(content)
+        with self.index.connection:
+            cursor = self.index.connection.execute(
+                """
+                INSERT INTO reference_artifacts(
+                    project_id,manifest_path,manifest_sha256,artifact_index,kind,path,
+                    sha256,size_bytes,version_name,source_slot_index,relation_status,
+                    representation,metadata_json
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    project_id, str(self.root / "manifest.json"),
+                    hashlib.sha256(name.encode()).hexdigest(), 0,
+                    "binary_version", str(source), hashlib.sha256(content).hexdigest(),
+                    len(content), "", None, "unknown", representation, "{}",
+                ),
+            )
+        return cursor.lastrowid, source
+
+    def test_interactive_export_copies_exact_selected_candidate_and_manifest(self):
+        self._import_project(
+            "candidate.ols", b"project data",
+            issues=(ReadIssue("missing_axis", "Axis information is missing."),),
+        )
+        first_id, first = self._add_export_artifact(1, "first.bin", b"A" * 100)
+        second_id, second = self._add_export_artifact(1, "second.bin", b"B" * 100)
+        original = self.root / "original.bin"
+        original.write_bytes(b"O" * 100)
+        output = self.root / "output"
+        output.mkdir()
+        index_before = list(self.index.connection.iterdump())
+        with patch("builtins.input", side_effect=["2", "EXPORT"]), patch("builtins.print"):
+            result = main([
+                "--database", str(self.index_path), "ecu-bin-export", str(original),
+                "--output-dir", str(output), "--ecu-type", "ECU-A",
+                "--hw-number", "CONFLICT", "--label", "research",
+            ])
+        self.assertEqual(result, 0)
+        exported = output / "second.bin"
+        self.assertEqual(exported.read_bytes(), second.read_bytes())
+        self.assertNotEqual(exported.read_bytes(), first.read_bytes())
+        manifest = json.loads((output / "second.bin.manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["source_artifact_id"], second_id)
+        self.assertNotEqual(first_id, second_id)
+        self.assertEqual(manifest["original"]["sha256"], hashlib.sha256(original.read_bytes()).hexdigest())
+        self.assertEqual(manifest["candidate"]["sha256"], hashlib.sha256(second.read_bytes()).hexdigest())
+        self.assertEqual(manifest["output"]["sha256"], manifest["candidate"]["sha256"])
+        self.assertTrue(manifest["source_output_sha256_equal"])
+        self.assertEqual(manifest["compatibility"], "COMPATIBILITY_NOT_VALIDATED")
+        self.assertEqual(manifest["user_label"], "research")
+        self.assertEqual(manifest["candidate"]["differing_features"][0]["field"], "hw_number")
+        self.assertTrue(manifest["candidate"]["parser_warnings"])
+        self.assertEqual(manifest["candidate"]["tuning_type"], "UNKNOWN")
+        self.assertEqual(original.read_bytes(), b"O" * 100)
+        self.assertEqual(first.read_bytes(), b"A" * 100)
+        self.assertEqual(second.read_bytes(), b"B" * 100)
+        self.assertEqual(list(self.index.connection.iterdump()), index_before)
+
+    def test_export_requires_confirmation_and_never_overwrites_or_uses_changed_source(self):
+        self._import_project("project.ols", b"project")
+        artifact_id, source = self._add_export_artifact(1, "candidate.bin", b"source data")
+        analysis = self._import_bin("original.bin", b"original", {"ecu_type": "ECU-A"})
+        index = SimpleNamespace(connection=self.index.connection)
+        preview = export_preview(self.storage, analysis["analysis_id"], artifact_id, index)
+        kwargs = dict(
+            output_directory=self.root, output_name="candidate.bin",
+            confirmation_token=preview["confirmation_token"], confirmed=True,
+        )
+        with self.assertRaises(FileExistsError):
+            export_selected_binary(self.storage, analysis["analysis_id"], artifact_id, index, **kwargs)
+        self.assertEqual(source.read_bytes(), b"source data")
+        kwargs["output_name"] = "output.bin"
+        with self.assertRaisesRegex(ValueError, "confirmation"):
+            export_selected_binary(
+                self.storage, analysis["analysis_id"], artifact_id, index,
+                **{**kwargs, "confirmed": False},
+            )
+        source.write_bytes(b"changed data")
+        with self.assertRaisesRegex(ValueError, "no longer matches"):
+            export_selected_binary(self.storage, analysis["analysis_id"], artifact_id, index, **kwargs)
+        self.assertFalse((self.root / "output.bin").exists())
+
+    def test_export_candidates_require_evidence_or_explicit_other_project_browse(self):
+        self._import_project("project.ols", b"project")
+        artifact_id, source = self._add_export_artifact(1, "research.bin", b"candidate", "unknown")
+        analysis = self._import_bin("original.bin", b"original")
+        index = SimpleNamespace(connection=self.index.connection)
+        self.assertEqual(export_candidates(self.storage, analysis["analysis_id"], index)["candidates"], [])
+        candidates = export_candidates(
+            self.storage, analysis["analysis_id"], index, include_other_projects=True
+        )["candidates"]
+        self.assertEqual([item["artifact_id"] for item in candidates], [artifact_id])
+        self.assertEqual(candidates[0]["match_methods"], ["manual_browse"])
+        self.assertEqual(candidates[0]["compatibility"], "COMPATIBILITY_NOT_VALIDATED")
+        self.assertEqual(candidates[0]["identifications"]["ecu_type"], "ECU-A")
+        self.assertEqual(candidates[0]["matched_features"], [])
+        source.unlink()
+        with self.assertRaises(FileNotFoundError):
+            export_preview(self.storage, analysis["analysis_id"], artifact_id, index)
+
+    def test_cli_no_candidates_empty_input_and_cancel_do_not_export(self):
+        original = self.root / "original.bin"
+        output = self.root / "output"
+        output.mkdir()
+        original.write_bytes(b"")
+        with self.assertRaisesRegex(ValueError, "BIN upload"):
+            main(["--database", str(self.index_path), "ecu-bin-export", str(original),
+                  "--output-dir", str(output)])
+        original.write_bytes(b"original")
+        with patch("builtins.input", side_effect=["A", "Q"]), patch("builtins.print"):
+            self.assertEqual(main(["--database", str(self.index_path), "ecu-bin-export",
+                                   str(original), "--output-dir", str(output)]), 0)
+        self.assertEqual(list(output.iterdir()), [])
+
+    def test_existing_manifest_prompts_for_new_name_and_preserves_files(self):
+        self._import_project("project.ols", b"project")
+        _, source = self._add_export_artifact(1, "candidate.bin", b"candidate")
+        original = self.root / "original.bin"
+        original.write_bytes(b"original")
+        output = self.root / "output"
+        output.mkdir()
+        existing = output / "candidate.bin.manifest.json"
+        existing.write_text("untouched", encoding="utf-8")
+        with patch("builtins.input", side_effect=["1", "renamed.bin", "EXPORT"]), patch("builtins.print"):
+            self.assertEqual(main([
+                "--database", str(self.index_path), "ecu-bin-export", str(original),
+                "--output-dir", str(output), "--ecu-type", "ECU-A",
+            ]), 0)
+        self.assertEqual(existing.read_text(encoding="utf-8"), "untouched")
+        self.assertEqual((output / "renamed.bin").read_bytes(), source.read_bytes())
+        self.assertEqual(original.read_bytes(), b"original")
+
+    def test_export_rejects_changed_evidence_and_archived_original(self):
+        self._import_project("project.ols", b"project")
+        artifact_id, _ = self._add_export_artifact(1, "candidate.bin", b"candidate")
+        analysis = self._import_bin("original.bin", b"original", {"ecu_type": "ECU-A"})
+        index = SimpleNamespace(connection=self.index.connection)
+        preview = export_preview(self.storage, analysis["analysis_id"], artifact_id, index)
+        with self.index.connection:
+            self.index.connection.execute(
+                "UPDATE reference_artifacts SET version_name=? WHERE id=?",
+                ("changed evidence", artifact_id),
+            )
+        kwargs = dict(output_directory=self.root, output_name="result.bin",
+                      confirmation_token=preview["confirmation_token"], confirmed=True)
+        with self.assertRaisesRegex(ValueError, "evidence changed"):
+            export_selected_binary(self.storage, analysis["analysis_id"], artifact_id, index, **kwargs)
+        Path(analysis["source"]["stored_copy"]).write_bytes(b"modified")
+        with self.assertRaisesRegex(ValueError, "original copy"):
+            export_preview(self.storage, analysis["analysis_id"], artifact_id, index)
+        self.assertFalse((self.root / "result.bin").exists())
+
+    def test_failed_manifest_write_removes_only_created_output(self):
+        self._import_project("project.ols", b"project")
+        artifact_id, source = self._add_export_artifact(1, "candidate.bin", b"candidate")
+        analysis = self._import_bin("original.bin", b"original", {"ecu_type": "ECU-A"})
+        index = SimpleNamespace(connection=self.index.connection)
+        preview = export_preview(self.storage, analysis["analysis_id"], artifact_id, index)
+        with patch("ols_platform.ecu_workbench.json.dump", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                export_selected_binary(
+                    self.storage, analysis["analysis_id"], artifact_id, index,
+                    output_directory=self.root, output_name="result.bin",
+                    confirmation_token=preview["confirmation_token"], confirmed=True,
+                )
+        self.assertFalse((self.root / "result.bin").exists())
+        self.assertFalse((self.root / "result.bin.manifest.json").exists())
+        self.assertEqual(source.read_bytes(), b"candidate")
+
+    def test_exact_original_reference_does_not_claim_sibling_byte_match(self):
+        self._import_project("project.ols", b"project")
+        exact_id, _ = self._add_export_artifact(1, "original-reference.bin", b"original")
+        other_id, _ = self._add_export_artifact(1, "other.bin", b"different")
+        analysis = self._import_bin("original.bin", b"original")
+        candidates = export_candidates(
+            self.storage, analysis["analysis_id"],
+            SimpleNamespace(connection=self.index.connection),
+        )["candidates"]
+        methods = {item["artifact_id"]: item["match_methods"] for item in candidates}
+        self.assertIn("indexed_candidate_sha256_matches_original", methods[exact_id])
+        self.assertNotIn("indexed_candidate_sha256_matches_original", methods[other_id])
+
+    def test_empty_candidate_is_not_exported(self):
+        self._import_project("project.ols", b"project")
+        artifact_id, source = self._add_export_artifact(1, "empty.bin", b"")
+        analysis = self._import_bin("original.bin", b"original", {"ecu_type": "ECU-A"})
+        with self.assertRaisesRegex(ValueError, "candidate is empty"):
+            export_preview(self.storage, analysis["analysis_id"], artifact_id,
+                           SimpleNamespace(connection=self.index.connection))
+        self.assertEqual(source.read_bytes(), b"")
+
+    def test_candidate_pagination_and_preview_after_first_page(self):
+        self._import_project("project.ols", b"project")
+        artifact_id, source = self._add_export_artifact(1, "candidate.bin", b"candidate")
+        with self.index.connection:
+            for number in range(500):
+                self.index.connection.execute(
+                    """
+                    INSERT INTO reference_artifacts(
+                        project_id,manifest_path,manifest_sha256,artifact_index,kind,path,
+                        sha256,size_bytes,version_name,relation_status,representation,metadata_json
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (1, str(self.root / "manifest.json"), "z" * 64, number,
+                     "binary_version", str(source), hashlib.sha256(b"candidate").hexdigest(),
+                     9, "", "unknown", "full_binary", "{}"),
+                )
+            last_id = self.index.connection.execute(
+                "SELECT MAX(id) FROM reference_artifacts"
+            ).fetchone()[0]
+        analysis = self._import_bin("original.bin", b"original", {"ecu_type": "ECU-A"})
+        index = SimpleNamespace(connection=self.index.connection)
+        first = export_candidates(self.storage, analysis["analysis_id"], index)
+        second = export_candidates(self.storage, analysis["analysis_id"], index, offset=500)
+        self.assertEqual(len(first["candidates"]), 500)
+        self.assertTrue(first["truncated"])
+        self.assertEqual([item["artifact_id"] for item in second["candidates"]], [last_id])
+        self.assertFalse(second["truncated"])
+        self.assertEqual(export_preview(self.storage, analysis["analysis_id"], last_id, index)
+                         ["candidate"]["artifact_id"], last_id)
+        self.assertNotEqual(artifact_id, last_id)
 
     def test_streaming_bin_import_persists_hash_and_never_invents_identifiers(self):
         content = bytes(range(256)) * 1024
@@ -323,6 +556,12 @@ class EcuWorkbenchTests(unittest.TestCase):
         self.assertEqual(identity["status"], "DERIVED")
         self.assertEqual(identity["fields"]["ecu_type"]["status"], "DERIVED")
         self.assertEqual(identity["fields"]["ecu_type"]["value"], "ECU-A")
+        candidates = export_candidates(
+            self.storage, analysis["analysis_id"], SimpleNamespace(connection=self.index.connection)
+        )["candidates"]
+        self.assertIn("ecu_type", candidates[0]["matched_features"])
+        self.assertEqual(candidates[0]["original_identification_sources"]["ecu_type"],
+                         "DERIVED_FROM_INDEXED_REFERENCE")
         self.assertEqual(
             identity["candidates"][0]["parser"]["name"], "test-parser"
         )
@@ -445,6 +684,41 @@ class EcuWorkbenchTests(unittest.TestCase):
                 SimpleNamespace(connection=self.index.connection),
             )
 
+    def test_partial_candidate_keeps_evidence_and_warnings_on_reanalysis(self):
+        original = b"A" * 100
+        candidate_bytes = b"A" * 95 + b"B" * 5
+        original_path = self.root / "original.dat"
+        candidate_path = self.root / "candidate.dat"
+        original_path.write_bytes(original)
+        candidate_path.write_bytes(candidate_bytes)
+        self.assertEqual(compare_binary_files(original_path, candidate_path).differing_bytes, 5)
+        outcome = self._import_project(
+            "candidate.ols", b"synthetic project", original,
+            (ReadIssue("missing_axis", "Axis information is missing."),),
+        )
+        self._record_live_ols_hash(outcome)
+        analysis = self._import_bin(
+            "candidate.bin", candidate_bytes,
+            {"ecu_type": "ECU-A", "hw_number": "HW-1", "calibration_id": "unknown"},
+        )
+        candidates = analysis["report"]["references"]["metadata_candidates"]
+        self.assertEqual(len(candidates), 1)
+        result = candidates[0]
+        self.assertEqual(result["status"], "LIKELY")
+        self.assertEqual(result["matched_identifications"], ["ecu_type", "hw_number"])
+        self.assertEqual(result["missing_identifications"], ["calibration_id"])
+        self.assertTrue(result["parser_warnings"])
+        self.assertFalse(result["parser_errors"])
+        self.assertTrue(result["rank_reasons"])
+        self.assertIn("not probability", result["evidence"])
+        self.assertEqual(analysis["report"]["references"]["slot_candidates"], [])
+        repeated = reanalyze(
+            self.storage, analysis["analysis_id"],
+            SimpleNamespace(connection=self.index.connection),
+        )["report"]["references"]["metadata_candidates"][0]
+        self.assertEqual(result["rank_score"], repeated["rank_score"])
+        self.assertEqual(result["rank_reasons"], repeated["rank_reasons"])
+
     def test_parser_slot_match_stays_inconclusive_and_stale_metadata_is_not_likely(self):
         payload = b"candidate payload"
         outcome = self._import_project("candidate.ols", b"OLS source", payload)
@@ -501,6 +775,32 @@ class EcuWorkbenchTests(unittest.TestCase):
             stale["report"]["references"]["metadata_candidates"][0]["status"],
             "INCONCLUSIVE",
         )
+
+    def test_byte_similarity_keeps_user_identity_conflict_visible(self):
+        first = self._import_bin("first.bin", b"A" * 100, {"ecu_type": "ECU-A"})
+        second = self._import_bin(
+            "second.bin", b"A" * 95 + b"B" * 5, {"ecu_type": "ECU-B"},
+        )
+        comparison = compare_analyses(
+            self.storage, first["analysis_id"], second["analysis_id"],
+            threshold_percent=95,
+        )
+        self.assertTrue(comparison["byte_similarity"]["meets_threshold"])
+        self.assertEqual(comparison["byte_similarity"]["similarity_percent"], 95)
+        self.assertEqual(comparison["user_identification_conflicts"], [
+            {"field": "ecu_type", "left": "ECU-A", "right": "ECU-B"},
+        ])
+        self.assertEqual(comparison["semantic_status"], "INCONCLUSIVE")
+        below_threshold = compare_analyses(
+            self.storage, first["analysis_id"], second["analysis_id"],
+            threshold_percent=96,
+        )
+        self.assertFalse(below_threshold["byte_similarity"]["meets_threshold"])
+        with self.assertRaises(ValueError):
+            compare_analyses(
+                self.storage, first["analysis_id"], second["analysis_id"],
+                threshold_percent=True,
+            )
 
     def test_reanalysis_appends_history_and_comparison_reports_ranges(self):
         first = self._import_bin("original.bin", b"012345")
