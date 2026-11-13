@@ -5,9 +5,21 @@ from collections import Counter
 import json
 from pathlib import Path
 
-from .compare import compare_binary_files, store_comparison
+from .compare import (
+    byte_similarity,
+    compare_binary_files,
+    store_comparison,
+    validate_byte_threshold,
+)
 from .database import IndexDatabase
 from .dashboard import serve
+from .ecu_workbench import (
+    _hash_file,
+    export_candidates,
+    export_preview,
+    export_selected_binary,
+    import_binary_stream,
+)
 from .importer import import_sources
 from .inventory import scan_inventory
 from .export_queue import plan_export_tasks, write_manual_export_batch
@@ -82,6 +94,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     initialize = commands.add_parser("init-db", help="Create or validate the local index.")
     initialize.set_defaults(action="init")
+
+    ecu_export = commands.add_parser(
+        "ecu-bin-export",
+        help="Interactively select and copy an indexed BIN research candidate.",
+    )
+    ecu_export.add_argument("original", type=Path, help="Original BIN to import read-only.")
+    ecu_export.add_argument("--output-dir", type=Path, required=True)
+    ecu_export.add_argument("--output-name", default="")
+    ecu_export.add_argument("--label", default="", help="Optional user-supplied label.")
+    for field in ("ecu_type", "ecu_manufacturer", "hw_number", "hw_code", "sw_number", "calibration_id"):
+        ecu_export.add_argument("--" + field.replace("_", "-"), default="")
+    ecu_export.set_defaults(action="ecu-bin-export")
 
     importing = commands.add_parser(
         "import", help="Incrementally index .ols files or source directories."
@@ -366,6 +390,10 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("--chunk-bytes", type=int, default=1024 * 1024)
     compare.add_argument("--max-ranges", type=int, default=100_000)
     compare.add_argument(
+        "--byte-threshold", type=float, default=95.0,
+        help="Byte similarity threshold for the selected pair, 0-100 (default: 95).",
+    )
+    compare.add_argument(
         "--no-store",
         action="store_true",
         help="Do not create or write to the SQLite index.",
@@ -579,14 +607,133 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _interactive_ecu_export(args: argparse.Namespace) -> int:
+    original = args.original.resolve(strict=True)
+    if not original.is_file() or original.suffix.lower() != ".bin":
+        raise ValueError("Select an existing .bin file as the original.")
+    output_directory = args.output_dir.resolve(strict=True)
+    if not output_directory.is_dir():
+        raise ValueError("The chosen output directory must already exist.")
+    index = IndexDatabase(args.database, read_only=True)
+    storage = args.database.resolve().parent / "ecu-workbench"
+    try:
+        identifiers = {
+            field: getattr(args, field)
+            for field in ("ecu_type", "ecu_manufacturer", "hw_number", "hw_code", "sw_number", "calibration_id")
+            if getattr(args, field)
+        }
+        with original.open("rb") as stream:
+            analysis = import_binary_stream(
+                stream, filename=original.name, expected_size=original.stat().st_size,
+                storage_root=storage, index_database=index, identifications=identifiers,
+            )
+        if _hash_file(original) != (
+            analysis["source"]["sha256"], analysis["source"]["size_bytes"]
+        ):
+            raise ValueError("Het originele bestand is tijdens het importeren gewijzigd; export geannuleerd.")
+        print(json.dumps({
+            "status": "ORIGINAL_IMPORTED",
+            "input_path": str(original),
+            "original": analysis["source"],
+            "identifications": analysis["identifications"],
+            "limitations": analysis["report"]["limitations"],
+        }, ensure_ascii=False, indent=2))
+        include_others = False
+        offset = 0
+        while True:
+            report = export_candidates(
+                storage, analysis["analysis_id"], index,
+                include_other_projects=include_others, offset=offset,
+            )
+            candidates = report["candidates"]
+            if not candidates:
+                print("Geen geschikte geregistreerde BIN-kandidaat vastgesteld.")
+            else:
+                print(
+                    "Nr | Bestand | ECU/hardware/software | Type | Bytes/grootteverschil | SHA-256 | "
+                    "Overeenkomsten | Verschillen | Ontbrekend | Waarschuwingen | "
+                    "Validatie | Opzoekscore | Bytegelijkenis"
+                )
+                for number, item in enumerate(candidates, 1):
+                    print(
+                        f"{number} | {item['filename']} | "
+                        f"{json.dumps(item['identifications'], ensure_ascii=False)} | "
+                        f"{item['original_or_tuned']}/{item['tuning_type']} | "
+                        f"{item['size_bytes']}/{item['size_comparison']} | {item['sha256']} | "
+                        f"{item['matched_features']} | {item['differing_features']} | "
+                        f"{item['missing_features']} | "
+                        f"{item['parser_warnings']} / {item['parser_errors']} | {item['compatibility']} / "
+                        f"{item['reference_validation']} | {item['retrieval_score']} "
+                        "(opzoekpunten, geen kans) | NOT_COMPUTED"
+                        + ("" if item["available"] else " | BESTAND ONTBREEKT")
+                    )
+            if report["truncated"]:
+                print("Meer resultaten beschikbaar: N voor de volgende pagina.")
+            if offset:
+                print("V voor de vorige pagina.")
+            choice = input("Kies nummer, A voor andere kandidaten, N/V voor pagina, of Q om te stoppen: ").strip()
+            if choice.lower() == "q":
+                print("Geen bestand geëxporteerd.")
+                return 0
+            if choice.lower() == "a":
+                include_others = True
+                offset = 0
+                continue
+            if choice.lower() == "n" and report["truncated"]:
+                offset += 500
+                continue
+            if choice.lower() == "v" and offset:
+                offset = max(0, offset - 500)
+                continue
+            try:
+                number = int(choice)
+            except ValueError as exc:
+                raise ValueError("Kies een weergegeven kandidaatnummer, A of Q.") from exc
+            if not 1 <= number <= len(candidates):
+                raise ValueError("Het gekozen kandidaatnummer staat niet in de lijst.")
+            selected = candidates[number - 1]
+            preview = export_preview(storage, analysis["analysis_id"], selected["artifact_id"], index)
+            output_name = args.output_name or Path(selected["filename"]).stem + ".bin"
+            while (output_directory / output_name).exists() or (
+                output_directory / (output_name + ".manifest.json")
+            ).exists():
+                output_name = input(
+                    "BIN of manifest bestaat al. Kies een andere bestandsnaam of Q om te stoppen: "
+                ).strip()
+                if output_name.lower() == "q":
+                    print("Geen bestand geëxporteerd.")
+                    return 0
+            print("Controleer de exacte kandidaat en uitvoerlocatie:")
+            print(json.dumps({
+                **preview, "output_directory": str(output_directory),
+                "output_name": output_name, "user_label": args.label or "UNKNOWN",
+            }, ensure_ascii=False, indent=2))
+            if input("Typ EXPORT om deze specifieke kopie te bevestigen: ").strip() != "EXPORT":
+                print("Geen bestand geëxporteerd.")
+                return 0
+            result = export_selected_binary(
+                storage, analysis["analysis_id"], selected["artifact_id"], index,
+                output_directory=output_directory, output_name=output_name,
+                confirmation_token=preview["confirmation_token"], confirmed=True,
+                user_label=args.label,
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
+    finally:
+        index.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.action == "ecu-bin-export":
+        return _interactive_ecu_export(args)
     if args.action == "serve":
         if not 1 <= args.port <= 65535:
             raise ValueError("--port must be between 1 and 65535.")
         serve(args.database, args.port)
         return 0
     if args.action == "compare":
+        validate_byte_threshold(args.byte_threshold)
         result = compare_binary_files(
             args.original,
             args.tuned,
@@ -608,6 +755,7 @@ def main(argv: list[str] | None = None) -> int:
             "tuned_size": result.tuned_size,
             "differing_bytes": result.differing_bytes,
             "exact_match": result.exact_match,
+            "byte_similarity": byte_similarity(result, args.byte_threshold),
             "changed_ranges": [
                 {"start": item.start, "end_exclusive": item.end_exclusive}
                 for item in result.changed_ranges

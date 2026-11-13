@@ -58,11 +58,13 @@ class EvidenceRanker:
         score = 0
         reasons: list[str] = []
         metadata = criteria.get("metadata", {})
-        result_metadata = result.get("metadata", {})
+        matched_fields = {
+            item["field"] for item in result.get("matched_features", [])
+        }
         exact_identifiers = [
             field for field, value in metadata.items()
             if field in _IDENTIFIER_FIELDS
-            and result_metadata.get(field) == value
+            and value and field in matched_fields
         ]
         if exact_identifiers:
             score += len(exact_identifiers) * 10
@@ -276,10 +278,10 @@ def search_projects(
         matched_features.append(("binary_hash", binary_hash.strip().lower()))
     if file_hash:
         clauses.append(
-            "EXISTS (SELECT 1 FROM file_locations fl "
+            "(SELECT fl.sha256 FROM file_locations fl "
             "WHERE fl.path=s.path AND fl.file_kind='ols' "
-            "AND fl.is_present=1 AND fl.sha256=? "
-            "ORDER BY fl.id DESC LIMIT 1)"
+            "AND fl.is_present=1 AND fl.sha256 IS NOT NULL "
+            "ORDER BY fl.id DESC LIMIT 1)=?"
         )
         parameters.append(file_hash.strip().lower())
         matched_features.append(("file_hash", file_hash.strip().lower()))
@@ -308,7 +310,6 @@ def search_projects(
         parameters.append(parser_status)
         matched_features.append(("parser_status", parser_status))
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    parameters.extend((limit + 1, offset))
     search_connection = database.connection
     deadline = started + _SEARCH_QUERY_TIMEOUT_SECONDS
     search_connection.set_progress_handler(
@@ -316,17 +317,32 @@ def search_projects(
     )
     try:
         uses_default_ranker = ranker is None or type(ranker) is EvidenceRanker
+        rank_expressions = []
+        rank_parameters: list[object] = []
+        if uses_default_ranker:
+            for field, value in filters.items():
+                if field in _IDENTIFIER_FIELDS and value:
+                    rank_expressions.append(
+                        "CASE WHEN EXISTS (SELECT 1 FROM project_metadata pm "
+                        "WHERE pm.project_id=p.id AND pm.field=? "
+                        "AND pm.value=?) THEN 10 ELSE 0 END"
+                    )
+                    rank_parameters.extend((field, value))
+        identifier_score = " + ".join(rank_expressions) or "0"
         order_clause = (
-            """
+            f"""
             ORDER BY (
                 CASE WHEN d.reference_status='validated' THEN 5 ELSE 0 END
                 + CASE WHEN map_count>0 AND axis_count>0 THEN 2 ELSE 0 END
                 + CASE WHEN d.processing_status='fully_processed' THEN 1 ELSE 0 END
-            ) DESC,p.id DESC
+                + {identifier_score}
+            ) DESC,p.id ASC
             """
             if uses_default_ranker
             else "ORDER BY p.id DESC"
         )
+        parameters.extend(rank_parameters)
+        parameters.extend((limit + 1, offset))
         rows_found = search_connection.execute(
             f"""
         SELECT p.id,p.format_version,p.parser_name,p.parser_version,p.is_complete,
@@ -456,7 +472,7 @@ def search_projects(
             1 for field, value in filters.items()
             if field in _IDENTIFIER_FIELDS
             and value.strip()
-            and metadata_values.get(field) == value.strip()
+            and metadata_rows.get(field, {}).get("value") == value
         )
         source_hash_match = bool(
             file_hash and row["live_sha256"]
@@ -470,15 +486,39 @@ def search_projects(
             missing.append("parser_snapshot_matches_current_source_hash")
         if not row["live_sha256"]:
             missing.append("live_full_file_hash")
+        differing_filters = [
+            field for field, value in filters.items()
+            if value and metadata_values.get(field)
+            and metadata_rows[field]["value"] != value
+        ]
+        missing_filters = [
+            field for field, value in filters.items()
+            if value and not metadata_values.get(field)
+        ]
         confidence = (
-            "LIKELY" if exact_ecu_filters >= 2 else "INCONCLUSIVE"
+            "LIKELY"
+            if exact_ecu_filters >= 2
+            and not any(field in _IDENTIFIER_FIELDS for field in differing_filters)
+            else "INCONCLUSIVE"
         )
         match_status = (
             "CONFIRMED" if source_hash_match else confidence
         )
         reasons = [
-            {"field": key, "matched_value": value} for key, value in matched_features
+            {"field": key, "matched_value": value}
+            for key, value in matched_features
+            if key not in filters or metadata_rows.get(key, {}).get("value") == value
         ]
+        if metadata_match_mode == "any" and metadata_clauses:
+            match_reason = "At least one supplied metadata filter matched."
+            if differing_filters:
+                match_reason += f" Differing metadata filters: {', '.join(differing_filters)}."
+            if missing_filters:
+                match_reason += f" Missing metadata filters: {', '.join(missing_filters)}."
+            if not differing_filters and not missing_filters:
+                match_reason += " All supplied metadata filters matched."
+        else:
+            match_reason = "All supplied filters matched."
         map_limit = 25
         diagnostics_errors = json.loads(row["errors_json"] or "[]")
         diagnostics_warnings = json.loads(row["warnings_json"] or "[]")
@@ -524,8 +564,8 @@ def search_projects(
                 },
                 "matched_features": reasons,
                 "match_reason": (
-                    "All supplied filters matched; this ranks retrieval candidates, "
-                    "not a technical tune or version relationship."
+                    match_reason + " This ranks retrieval candidates, not a "
+                    "technical tune or version relationship."
                 ),
                 "confidence": confidence,
                 "match_status": match_status,

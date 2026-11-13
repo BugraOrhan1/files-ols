@@ -971,17 +971,23 @@ document.getElementById("ecu-workbench-form").addEventListener("submit", async (
 document.getElementById("ecu-compare-button").addEventListener("click", async () => {
   const analysisAId = document.getElementById("ecu-compare-a").value;
   const analysisBId = document.getElementById("ecu-compare-b").value;
+  const threshold = document.getElementById("ecu-byte-threshold");
   const button = document.getElementById("ecu-compare-button");
   if (!analysisAId || !analysisBId) {
     document.getElementById("ecu-import-state").textContent =
       "Importeer eerst twee bestanden om te vergelijken.";
     return;
   }
+  if (!threshold.checkValidity()) {
+    threshold.reportValidity();
+    return;
+  }
   button.disabled = true;
   try {
     const report = await postJson("/api/workbench/compare", {
       analysis_a_id: analysisAId,
-      analysis_b_id: analysisBId
+      analysis_b_id: analysisBId,
+      threshold_percent: Number(threshold.value)
     });
     showWorkbenchComparison(report);
     await loadWorkbenchHistory();

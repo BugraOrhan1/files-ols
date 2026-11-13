@@ -14,6 +14,24 @@ from ols_platform.database import IndexDatabase
 
 
 class DashboardTests(unittest.TestCase):
+    def test_get_status_does_not_create_missing_index(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "missing.sqlite3"
+            server = ThreadingHTTPServer(
+                ("127.0.0.1", 0), create_handler(database_path)
+            )
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+            try:
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(f"http://127.0.0.1:{server.server_port}/api/status")
+                self.assertEqual(error.exception.code, 500)
+                self.assertFalse(database_path.exists())
+            finally:
+                server.shutdown()
+                server.server_close()
+                server_thread.join(timeout=3)
+
     def test_ori_upload_keeps_index_read_only_and_workbench_storage_separate(self):
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "index.sqlite3"
@@ -165,6 +183,7 @@ class DashboardTests(unittest.TestCase):
                     data=json.dumps({
                         "analysis_a_id": first["analysis_id"],
                         "analysis_b_id": second["analysis_id"],
+                        "threshold_percent": 90,
                     }).encode(),
                     headers={
                         "Content-Type": "application/json",
@@ -177,6 +196,23 @@ class DashboardTests(unittest.TestCase):
                     self.assertEqual(response.status, 201)
                     self.assertEqual(comparison["differing_bytes"], 2)
                     self.assertEqual(comparison["semantic_status"], "INCONCLUSIVE")
+                    self.assertEqual(comparison["byte_similarity"]["status"], "NOT_COMPARABLE")
+                    self.assertIsNone(comparison["byte_similarity"]["meets_threshold"])
+                    self.assertEqual(comparison["byte_similarity"]["threshold_percent"], 90)
+
+                invalid_threshold = Request(
+                    f"{base_url}/api/workbench/compare",
+                    data=json.dumps({
+                        "analysis_a_id": first["analysis_id"],
+                        "analysis_b_id": second["analysis_id"],
+                        "threshold_percent": 101,
+                    }).encode(),
+                    headers={"Content-Type": "application/json", "Origin": base_url},
+                    method="POST",
+                )
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(invalid_threshold)
+                self.assertEqual(error.exception.code, 400)
 
                 rerun_request = Request(
                     f"{base_url}/api/workbench/analyses/{first['analysis_id']}/reanalyze",

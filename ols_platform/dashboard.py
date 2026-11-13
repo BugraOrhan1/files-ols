@@ -149,7 +149,8 @@ def create_handler(database_path: Path):
                         if not isinstance(analysis_a_id, str) or not isinstance(analysis_b_id, str):
                             raise ValueError("Two analysis IDs are required.")
                         result = compare_analyses(
-                            workbench_root, analysis_a_id, analysis_b_id
+                            workbench_root, analysis_a_id, analysis_b_id,
+                            threshold_percent=payload.get("threshold_percent", 95.0),
                         )
                     elif request.path == "/api/workbench/reference":
                         artifact_id = payload.get("artifact_id")
@@ -307,7 +308,7 @@ def create_handler(database_path: Path):
                 return
 
             try:
-                database = IndexDatabase(database_path)
+                database = IndexDatabase(database_path, read_only=True)
                 try:
                     if request.path == "/api/status":
                         self._send_json(200, database.summary())

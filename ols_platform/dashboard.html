@@ -190,6 +190,8 @@
       <p class="muted">
         Selecteer bijvoorbeeld een originele en een getunede BIN. Alleen byteverschillen
         worden vastgesteld; technische betekenis blijft INCONCLUSIVE.
+        Het percentage vergelijkt alleen bytes op dezelfde positie in even grote,
+        niet-lege bestanden en bewijst geen ECU-compatibiliteit.
       </p>
       <div class="source-form">
         <label for="ecu-reference-select">Geïndexeerde binaire referentie</label>
@@ -203,6 +205,8 @@
         <select id="ecu-compare-a"></select>
         <label for="ecu-compare-b">Bestand B</label>
         <select id="ecu-compare-b"></select>
+        <label for="ecu-byte-threshold">Bytedrempel (%)</label>
+        <input id="ecu-byte-threshold" type="number" min="0" max="100" step="any" value="95" required>
         <button id="ecu-compare-button" type="button">Vergelijk bytes</button>
       </div>
       <pre id="ecu-comparison-report" class="detail" hidden></pre>

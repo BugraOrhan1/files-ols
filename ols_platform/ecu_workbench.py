@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Protocol
 
 from . import __version__
-from .compare import compare_binary_files
+from .compare import byte_similarity, compare_binary_files, validate_byte_threshold
 from .project_search import search_projects
 
 
@@ -455,6 +455,8 @@ def _lookup_references(
                     "path": result["source"]["path"],
                     "status": candidate_status,
                     "parser": result["parser"],
+                    "parser_warnings": result["parser_warnings"],
+                    "parser_errors": result["parser_errors"],
                     "metadata_status": result["metadata_status"],
                     "rank_score": result["rank_score"],
                     "rank_reasons": result["rank_reasons"],
@@ -1002,7 +1004,10 @@ def compare_analyses(
     storage_root: Path,
     analysis_a_id: str,
     analysis_b_id: str,
+    *,
+    threshold_percent: float = 95.0,
 ) -> dict[str, Any]:
+    validate_byte_threshold(threshold_percent)
     analysis_a = _get_analysis(storage_root, analysis_a_id)
     analysis_b = _get_analysis(storage_root, analysis_b_id)
     path_a = Path(analysis_a["source"]["stored_copy"]).resolve(strict=True)
@@ -1048,6 +1053,13 @@ def compare_analyses(
             ],
         }
 
+    identifiers_a = analysis_a["identifications"]["user_provided"]
+    identifiers_b = analysis_b["identifications"]["user_provided"]
+    identity_conflicts = [
+        {"field": field, "left": value, "right": identifiers_b[field]}
+        for field, value in identifiers_a.items()
+        if value and identifiers_b.get(field) and value != identifiers_b[field]
+    ]
     report = {
         "comparison_id": uuid.uuid4().hex,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -1078,6 +1090,8 @@ def compare_analyses(
             for item in comparison.changed_ranges
         ],
         "exact_content_match": comparison.exact_match,
+        "byte_similarity": byte_similarity(comparison, threshold_percent),
+        "user_identification_conflicts": identity_conflicts,
         "semantic_status": "INCONCLUSIVE",
         "reference_selection_reason": (
             "The user explicitly selected these two archived analyses."
@@ -1086,6 +1100,7 @@ def compare_analyses(
             "Byte differences do not establish technical meaning, map identity, or tuning intent.",
             "No checksum correction, address normalization, or format conversion was applied.",
             "Changed ranges are half-open byte offsets in the compared raw files.",
+            "User-provided identification fields and their conflicts are not independently validated.",
         ],
     }
     connection = _connect_store(storage_root)
@@ -1166,3 +1181,274 @@ def get_comparison(storage_root: Path, comparison_id: str) -> dict[str, Any]:
         return json.loads(row["report_json"])
     finally:
         connection.close()
+
+
+def export_candidates(
+    storage_root: Path,
+    analysis_id: str,
+    index_database: Any,
+    *,
+    include_other_projects: bool = False,
+    artifact_id: int | None = None,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List indexed binary artifacts without asserting their ECU compatibility."""
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise ValueError("Candidate offset must be a nonnegative integer.")
+    analysis = _get_analysis(storage_root, analysis_id)
+    references = analysis["report"]["references"]
+    project_methods: dict[int, list[str]] = {}
+    for key, method in (
+        ("exact_references", "project_associated_with_exact_original_reference"),
+        ("slot_candidates", "project_associated_with_parser_slot_hash"),
+        ("metadata_candidates", "project_metadata_match"),
+    ):
+        for item in references.get(key, []):
+            project_methods.setdefault(item["project_id"], []).append(method)
+    project_ids = sorted(project_methods)
+    if not include_other_projects and not project_ids:
+        return {"candidates": [], "truncated": False, "offset": offset}
+    where = ""
+    parameters: list[Any] = []
+    if not include_other_projects:
+        where = " AND a.project_id IN ({})".format(",".join("?" for _ in project_ids))
+        parameters.extend(project_ids)
+    if artifact_id is not None:
+        where += " AND a.id=?"
+        parameters.append(artifact_id)
+    rows = index_database.connection.execute(
+        """
+        SELECT a.id AS artifact_id,a.project_id,a.path,a.sha256,a.size_bytes,
+               a.version_name,a.source_slot_index,a.relation_status,a.representation,
+               COALESCE(d.warnings_json,'[]') AS warnings_json,
+               COALESCE(d.errors_json,'[]') AS errors_json,
+               COALESCE((SELECT r.status FROM reference_checks r
+                         WHERE r.artifact_id=a.id ORDER BY r.id DESC LIMIT 1),
+                        'NOT_TESTED') AS validation_status
+        FROM reference_artifacts a
+        LEFT JOIN project_diagnostics d ON d.project_id=a.project_id
+        WHERE a.kind='binary_version'
+          AND a.representation IN ('full_binary','unknown')
+          AND (lower(a.path) LIKE '%.bin' OR lower(a.path) LIKE '%.ori')
+        """ + where + " ORDER BY a.project_id,a.id LIMIT 501 OFFSET ?",
+        [*parameters, offset],
+    ).fetchall()
+    candidates = []
+    supplied = dict(analysis["identifications"]["user_provided"])
+    identification_sources = {field: "USER_PROVIDED_UNVERIFIED" for field in supplied}
+    for field, evidence in analysis["identifications"]["evidence"].get("fields", {}).items():
+        if field not in supplied and evidence.get("status") == "DERIVED" and evidence.get("value"):
+            supplied[field] = evidence["value"]
+            identification_sources[field] = "DERIVED_FROM_INDEXED_REFERENCE"
+    for row in rows[:500]:
+        item = dict(row)
+        path = Path(item["path"])
+        identity = _project_identity_evidence(
+            index_database.connection, item["project_id"], item["source_slot_index"]
+        )
+        metadata = {key: value["value"] for key, value in identity["metadata"].items()}
+        matched = [
+            key for key, value in supplied.items()
+            if metadata.get(key) and metadata[key].casefold() == value.casefold()
+        ]
+        differing = [
+            {"field": key, "provided": value, "project_value": metadata[key]}
+            for key, value in supplied.items()
+            if metadata.get(key) and metadata[key].casefold() != value.casefold()
+        ]
+        missing = [
+            key for key in _IDENTIFICATION_FIELDS
+            if not supplied.get(key) or not metadata.get(key)
+        ]
+        metadata_candidate = next(
+            (entry for entry in references.get("metadata_candidates", [])
+             if entry["project_id"] == item["project_id"]),
+            None,
+        )
+        exact_candidate = any(
+            entry["artifact_id"] == item["artifact_id"]
+            for entry in references.get("exact_references", [])
+        )
+        candidates.append({
+            "artifact_id": item["artifact_id"],
+            "project_id": item["project_id"],
+            "path": item["path"],
+            "filename": path.name,
+            "sha256": item["sha256"],
+            "size_bytes": item["size_bytes"],
+            "size_comparison": (
+                "MATCH" if item["size_bytes"] == analysis["source"]["size_bytes"]
+                else "DIFFERENT"
+            ),
+            "available": path.is_file(),
+            "representation": item["representation"],
+            "version_name": item["version_name"] or "UNKNOWN",
+            "relation_status": item["relation_status"],
+            "original_or_tuned": "UNKNOWN",
+            "tuning_type": "UNKNOWN",
+            "identifications": metadata,
+            "identification_evidence": identity["metadata"],
+            "original_identification_sources": identification_sources,
+            "matched_features": matched,
+            "differing_features": differing,
+            "missing_features": missing,
+            "parser_warnings": json.loads(item["warnings_json"]),
+            "parser_errors": json.loads(item["errors_json"]),
+            "reference_validation": item["validation_status"],
+            "compatibility": "COMPATIBILITY_NOT_VALIDATED",
+            "match_methods": (
+                project_methods.get(item["project_id"], ["manual_browse"])
+                + (["indexed_candidate_sha256_matches_original"] if exact_candidate else [])
+            ),
+            "retrieval_score": metadata_candidate["rank_score"] if metadata_candidate else None,
+            "retrieval_score_meaning": (
+                "Project metadata retrieval points, not a byte similarity percentage or "
+                "ECU compatibility score."
+            ),
+            "similarity": {
+                "status": "NOT_COMPUTED",
+                "percent": None,
+                "meaning": "No byte similarity score was calculated for this candidate.",
+            },
+            "risk": (
+                "Project metadata and reference labels do not establish ECU compatibility "
+                "or prove that this artifact is a complete tuning file."
+            ),
+        })
+    return {"candidates": candidates, "truncated": len(rows) > 500, "offset": offset}
+
+
+def export_preview(
+    storage_root: Path,
+    analysis_id: str,
+    artifact_id: int,
+    index_database: Any,
+) -> dict[str, Any]:
+    if isinstance(artifact_id, bool) or not isinstance(artifact_id, int) or artifact_id <= 0:
+        raise ValueError("A positive candidate artifact ID is required.")
+    analysis = _get_analysis(storage_root, analysis_id)
+    candidates = export_candidates(
+        storage_root, analysis_id, index_database,
+        include_other_projects=True, artifact_id=artifact_id,
+    )["candidates"]
+    candidate = next((item for item in candidates if item["artifact_id"] == artifact_id), None)
+    if candidate is None:
+        raise ValueError("The selected indexed BIN candidate is not available in the candidate list.")
+    if not candidate["available"]:
+        raise FileNotFoundError(f"Selected candidate does not exist: {candidate['path']}")
+    if candidate["size_bytes"] <= 0:
+        raise ValueError("The selected candidate is empty; refusing export.")
+    original_path = Path(analysis["source"]["stored_copy"]).resolve(strict=True)
+    files_root = (storage_root / "files").resolve()
+    if files_root not in original_path.parents:
+        raise ValueError("Original analysis copy is outside the Workbench data directory.")
+    if _hash_file(original_path) != (
+        analysis["source"]["sha256"], analysis["source"]["size_bytes"]
+    ):
+        raise ValueError("The imported original copy no longer matches its recorded hash.")
+    candidate_path = Path(candidate["path"]).resolve(strict=True)
+    actual_hash, actual_size = _hash_file(candidate_path)
+    if actual_hash.lower() != candidate["sha256"].lower() or actual_size != candidate["size_bytes"]:
+        raise ValueError("The selected candidate no longer matches its indexed hash and size.")
+    preview = {
+        "analysis_id": analysis_id,
+        "original": {
+            "sha256": analysis["source"]["sha256"],
+            "size_bytes": analysis["source"]["size_bytes"],
+            "identifications": analysis["identifications"]["user_provided"],
+            "identification_evidence": analysis["identifications"]["evidence"],
+        },
+        "candidate": candidate,
+        "compatibility": "COMPATIBILITY_NOT_VALIDATED",
+    }
+    preview["confirmation_token"] = hashlib.sha256(
+        json.dumps(preview, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    return preview
+
+
+def export_selected_binary(
+    storage_root: Path,
+    analysis_id: str,
+    artifact_id: int,
+    index_database: Any,
+    *,
+    output_directory: Path,
+    output_name: str,
+    confirmation_token: str,
+    confirmed: bool,
+    user_label: str = "",
+) -> dict[str, Any]:
+    if confirmed is not True:
+        raise ValueError("Explicit user confirmation is required.")
+    if not isinstance(output_name, str) or not output_name or Path(output_name).name != output_name:
+        raise ValueError("Output name must be a filename without a directory.")
+    if Path(output_name).suffix.lower() != ".bin":
+        raise ValueError("Output filename must end in .bin.")
+    if not isinstance(user_label, str) or len(user_label) > 200:
+        raise ValueError("User label must be text of at most 200 characters.")
+    directory = Path(output_directory).resolve(strict=True)
+    if not directory.is_dir():
+        raise ValueError("The selected output directory is not a directory.")
+    preview = export_preview(storage_root, analysis_id, artifact_id, index_database)
+    if preview["confirmation_token"] != confirmation_token:
+        raise ValueError("The candidate or its evidence changed after confirmation; review again.")
+    candidate = preview["candidate"]
+    source_path = Path(candidate["path"]).resolve(strict=True)
+    output_path = directory / output_name
+    manifest_path = directory / (output_name + ".manifest.json")
+    if output_path.exists() or manifest_path.exists():
+        raise FileExistsError("Output BIN or manifest already exists; choose another name or directory.")
+    created: list[tuple[Path, os.stat_result]] = []
+    try:
+        before = source_path.stat()
+        digest = hashlib.sha256()
+        size = 0
+        with source_path.open("rb") as source, output_path.open("xb") as target:
+            created.append((output_path, os.fstat(target.fileno())))
+            while chunk := source.read(_CHUNK_SIZE):
+                target.write(chunk)
+                digest.update(chunk)
+                size += len(chunk)
+            target.flush()
+            os.fsync(target.fileno())
+        after = source_path.stat()
+        if (
+            before.st_size != after.st_size
+            or before.st_mtime_ns != after.st_mtime_ns
+            or size != candidate["size_bytes"]
+            or digest.hexdigest().lower() != candidate["sha256"].lower()
+        ):
+            raise ValueError("The selected source changed or did not match its indexed hash.")
+        output_hash, output_size = _hash_file(output_path)
+        if output_hash != digest.hexdigest() or output_size != size:
+            raise RuntimeError("Export verification failed: output differs from selected source.")
+        manifest = {
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "original": preview["original"],
+            "candidate": {
+                key: value for key, value in candidate.items() if key != "path"
+            },
+            "source_artifact_id": artifact_id,
+            "user_label": user_label or "UNKNOWN",
+            "output": {"filename": output_name, "sha256": output_hash, "size_bytes": output_size},
+            "source_output_sha256_equal": True,
+            "compatibility": "COMPATIBILITY_NOT_VALIDATED",
+            "status": "FILE_EXPORTED",
+        }
+        with manifest_path.open("x", encoding="utf-8") as target:
+            created.append((manifest_path, os.fstat(target.fileno())))
+            json.dump(manifest, target, ensure_ascii=False, indent=2)
+            target.write("\n")
+            target.flush()
+            os.fsync(target.fileno())
+        return {"output_path": str(output_path), "manifest_path": str(manifest_path), **manifest}
+    except Exception:
+        for path, identity in reversed(created):
+            try:
+                current = path.stat()
+                if (current.st_dev, current.st_ino) == (identity.st_dev, identity.st_ino):
+                    path.unlink()
+            except FileNotFoundError:
+                pass
+        raise

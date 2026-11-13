@@ -21,7 +21,79 @@ and small; PostgreSQL, DuckDB/Parquet, and a WPF shell remain future
 scaling/UI work, not current capabilities. Re-indexing is invalidated when the
 source content, parser fingerprint or application version changes.
 
+## Isolated local test setup
+
+The default database is this checkout's `data\ols-index.sqlite3`. Commands
+including `status` and `hashing status` open it with write-capable
+initialization; they are **not** safe read-only production status checks.
+Do not run them against a production index merely to test the application.
+Dashboard GET requests open the index read-only, but the dashboard also has
+write-capable actions; use a separate test database
+until its configured paths and intended operation have been reviewed.
+
+For a disposable local run from the project directory:
+
+The full test suite starts simulated hash workers against temporary test
+databases, including a two-thread test. Do not run that suite when worker
+execution itself is prohibited.
+
+```powershell
+$source = (Get-Location).Path
+$testRoot = Join-Path $env:TEMP ("files-ols-test-" + [guid]::NewGuid())
+New-Item -ItemType Directory -Path $testRoot | Out-Null
+foreach ($name in @("ols_platform", "deployment", "tests", "reports", "ols files als ols")) {
+  Copy-Item -LiteralPath (Join-Path $source $name) -Destination (Join-Path $testRoot $name) -Recurse
+}
+Set-Location $testRoot
+$env:PY_OLS_PATH = "D:\werkmap\py-ols-study" # Set to the local parser checkout.
+py -3 -m unittest discover -s tests -v
+py -3 -m ols_platform.cli --database (Join-Path $testRoot "test.sqlite3") init-db
+py -3 -m ols_platform.cli --database (Join-Path $testRoot "test.sqlite3") import --py-ols-path $env:PY_OLS_PATH (Join-Path $testRoot "ols files als ols\100009.ols")
+py -3 -m ols_platform.cli --database (Join-Path $testRoot "test.sqlite3") serve
+```
+
+Open `http://127.0.0.1:8765/` for the temporary index. The test copy is
+separate from the production data; delete it only after confirming its path.
+For independent WinOLS checks, use the reference-package procedure below with
+reviewed exports from temporary OLS copies. A parser result or match score is
+not proof of ECU compatibility.
+
 ## Commands
+
+### Import a BIN and export a selected indexed research file
+
+Create the output directory first, then run the interactive command with the
+existing index (the global `--database` option precedes the command):
+
+```powershell
+py -3 -m ols_platform.cli --database "D:\werkmap\files ols\data\ols-index.sqlite3" `
+  ecu-bin-export "C:\path\to\original.bin" `
+  --output-dir "C:\path\to\existing-output-folder" `
+  --ecu-type "known ECU type" --hw-number "known hardware number" `
+  --sw-number "known software number" --label "research"
+```
+
+Identification options and the label are optional, user-provided and
+unverified; omit unknown values. `--help` lists the other options, including
+`--output-name`. The original is read without modification and archived in the
+separate `ecu-workbench` directory beside the index. The index is opened
+read-only; this command neither scans the corpus nor starts a hash worker.
+
+Review the candidate table and warnings, choose its number, and inspect the
+exact source and destination in the confirmation screen. Enter `EXPORT` only
+to copy that candidate; `Q` cancels. Enter `A` to browse other registered
+binary references when no relevant candidate is found. If the destination BIN
+or manifest already exists, choose another name. The output folder receives the
+selected unchanged `.bin` and a `.bin.manifest.json` containing the source,
+original and output hashes and the available evidence.
+
+Only registered BIN/ORI reference artifacts are offered; use `N`/`V` to page
+through lists longer than 500 records. A listed path can be missing or stale. Raw BIN
+identifiers, original/tuned status and tuning type are not inferred from a
+filename. Project retrieval points are not a percentage; candidate byte
+similarity is not computed by this command. Neither selection nor byte
+identity proves ECU compatibility: exports remain
+`COMPATIBILITY_NOT_VALIDATED` and must not be interpreted as ready to flash.
 
 Initialize the database:
 
@@ -147,6 +219,17 @@ or establish that two files are compatible tune/original pairs.
 ```powershell
 python -m ols_platform.cli compare original.bin tuned.bin
 ```
+
+For two selected nonempty files of equal size, `byte_similarity` reports the
+percentage of identical bytes at identical offsets. Its threshold is 95% by
+default; `--byte-threshold 90` changes it for a CLI comparison, and the
+Workbench comparison form provides the same setting. Unequal sizes and empty
+files are `NOT_COMPARABLE` for this metric. The Workbench also reports
+conflicting user-supplied identification fields; those fields are unverified.
+This is a pairwise byte measurement, not corpus-wide candidate retrieval,
+structure matching, a confidence probability, or ECU compatibility evidence.
+Small files and long equal padding can have misleadingly high percentages.
+`rank_score` remains a separate retrieval tally and is not a percentage.
 
 For WinOLS reference manifests, first review the generated per-project
 manifest, then import it and run validation. Binary exports without an explicit
@@ -462,7 +545,9 @@ bounded to 100 per page by the dashboard; the service and CLI support
 `--limit` (maximum 1000) and `--offset`. Complete SHA-256 values found by the
 live file-location hasher are visible to search without a parser re-import.
 When both exist, search and project matching prefer that complete live content
-hash over the parser-import snapshot and report the hash provenance. If the
+hash over the parser-import snapshot and report the hash provenance. When
+registered roots overlap, full-hash search uses the same highest-ID present
+location with a recorded hash that is displayed in the result. If the
 hashes differ, parser-derived metadata and binary-slot evidence are flagged as
 potentially stale and cannot raise a project comparison to `LIKELY`; missing
 live hashes remain explicitly unverified rather than being treated as current.
@@ -484,6 +569,11 @@ python -m ols_platform.cli search-projects `
 
 Results carry matched fields, parser warnings/errors, missing-information
 flags, available versions and binary slots, and bounded map/axis summaries.
+For partial metadata searches, matched fields include only filters that
+actually matched, and the explanation identifies different or missing
+filters. Metadata confidence remains `INCONCLUSIVE` for conflicting ECU
+identifiers even if other identifiers match; Workbench metadata candidates
+also expose parser warnings and errors.
 Project detail also shows the current evidence and differences for comparable
 projects. A `CONFIRMED` exact full-file hash means only that OLS file contents
 are identical; it does not independently validate metadata, versions or tune
