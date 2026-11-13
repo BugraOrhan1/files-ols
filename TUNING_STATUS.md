@@ -60,7 +60,7 @@ AutoTuner-origineel met apart gehouden, deskundig beoordeelde referentie.
 | Onderbrekingen | netwerkfout (retry + `retry_pending` + herstel), batchlimiet + hervatten, stop-signaal, bron onbereikbaar, volle schijf, twee gelijktijdige exports, paden met spaties/Unicode | geen verlies, geen dubbele records, geen halve BIN, origineel ongewijzigd | zoals verwacht | GESLAAGD (gesimuleerd) |
 | GUI | lege installatie + volledig pad onder Xvfb (Linux) | eerste-startmelding, BIN, afwijzing | zoals verwacht; schermafbeeldingen gemaakt | GESLAAGD |
 | Windows-release | `OLSTuner-win64-3dd137d.zip` (SHA-256 `1a04ea95ac1a466d4b2048395d1206d02b4b2137e8204e6d816da65a7471f9d8`) uitgepakt in een map met spatie en ü op de GitHub Windows-runner, Python verwijderd van PATH, lege installatie | selftest, GUI-rooktest, lege installatie, echte BMW-reproductie via EXE, blokkade zonder contract, afwijzing Audi | alles geslaagd in run 43493379410; EXE-uitvoer SHA-identiek aan WinOLS Stage 1-export; teruggedownload artefact heeft dezelfde ZIP-hash | GESLAAGD (CI-runner, geen schone eigen pc) |
-| Volledige suite op Windows | `python -m unittest discover -s tests -v` op windows-latest | alles groen | 173 tests geslaagd met lange TEMP-map; met de standaard 8.3-TEMP (`RUNNER~1`) falen 13 bestaande index-/inventarisatietests door padnormalisatie | GESLAAGD met kanttekening |
+| Volledige suite op Windows | `python -m unittest discover -s tests -v` op windows-latest | alles groen | 173 tests geslaagd met lange TEMP-map; met de standaard 8.3-TEMP (`RUNNER~1`) faalden 13 bestaande index-/inventarisatietests door padnormalisatie — inmiddels opgelost (zie "Windows 8.3-padnormalisatie"), CI draait weer met de standaard TEMP | GESLAAGD met kanttekening |
 | AutoTuner-herkenning / voertuig | – | – | geen AutoTuner, geen voertuig, geen testbank beschikbaar | NIET UITGEVOERD |
 
 ## Ondersteunde combinaties (bewijsniveau REPRODUCTION_ONLY)
@@ -98,12 +98,22 @@ controleren; het is niet door deze software bewezen.
 | infinitehexsearcher/Ghidra-WinOLS-CSV-Importer | e6dada5, GPL | Ghidra-plugin | Niet gebruikt |
 | liushengjia-AAL/shengjia | cdcbe28, geen licentie | Achtergrond (o.a. md1-platform, checksum-crc-engine) | Alleen achtergrond; niets overgenomen |
 
-## Bekend Windows-probleem (bestaande code)
+## Windows 8.3-padnormalisatie (opgelost)
 
-Bestaande index-, inventaris- en workbenchcode vergelijkt soms `Path.resolve()`-paden met
-onopgeloste paden. Bij een 8.3-kortpad (bijv. `C:\Users\RUNNER~1\…`) mislukken daardoor
-13 bestaande tests. De tuningketen heeft hier geen last van. CI gebruikt een lange TEMP-map;
-een echte padnormalisatie staat open.
+Bestaande index-, inventaris- en workbenchcode vergeleek `Path.resolve()`-paden met
+onopgeloste (`os.path.abspath`) paden. Bij een 8.3-kortpad (bijv. `C:\Users\RUNNER~1\…`)
+mislukten daardoor 13 bestaande tests. Opgelost door één normalisatiegrens,
+`ols_platform/paths.py::canonical_path`, toegepast bij het registreren/verplaatsen van
+bronnen, bij inventarisatie- en importwortels en in `IndexDatabase.record_file_location`.
+Bestanden onder een al canonieke wortel krijgen goedkoop `abspath` (scanner slaat symlinks
+over), dus geen extra `resolve()` per bestand. Gecontroleerd met een TEMP die via een
+symlink loopt (zelfde mismatch als 8.3): zonder fix exact dezelfde 13 fouten, met fix alle
+173 tests groen (inclusief py-ols-tests). De stap "lange TEMP-map" is uit de Windows-CI
+verwijderd.
+
+Kanttekening: een index die vóór deze wijziging is aangemaakt met een bronwortel die zelf
+een alias/symlink/junction is, behoudt die oude wortel; gebruik `move_source` (of
+opnieuw registreren) om hem canoniek te maken.
 
 ## Wat nodig is voor de beslissende proef
 

@@ -10,6 +10,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from .paths import canonical_path
+
 
 _HASH_CHUNK_BYTES = 1024 * 1024
 _MAX_REPORTED_ERRORS = 1000
@@ -70,7 +72,7 @@ def scan_inventory(
     if not roots:
         raise ValueError("At least one inventory root is required.")
 
-    normalized_roots = [Path(os.path.abspath(root)) for root in roots]
+    normalized_roots = [Path(canonical_path(root)) for root in roots]
     for output_path in (file_list_path, report_path):
         if output_path is None:
             continue

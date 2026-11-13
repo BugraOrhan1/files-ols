@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 from . import __version__ as APPLICATION_VERSION
+from .paths import canonical_path
 from .reader import ProjectSnapshot, ReadIssue
 
 
@@ -1223,6 +1224,7 @@ class IndexDatabase:
         filename: str = "", extension: str = "",
         last_seen_state: str = "known",
     ) -> int:
+        path = canonical_path(path)
         with self.connection:
             self.connection.execute(
                 """

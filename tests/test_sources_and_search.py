@@ -1201,7 +1201,9 @@ class SourceAndSearchTests(unittest.TestCase):
                 moved = move_source(database, source["id"], new_path)
                 self.assertEqual(
                     os.path.normcase(moved["path"]),
-                    os.path.normcase(os.path.abspath(new_path)),
+                    # Stored source roots are canonical (symlinks and Windows
+                    # 8.3 short names expanded), matching Path.resolve().
+                    os.path.normcase(str(new_path.resolve())),
                 )
                 self.assertEqual(test_source(database, source["id"])["status"], "available")
                 new_path.rmdir()

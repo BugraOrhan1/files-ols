@@ -8,6 +8,7 @@ from typing import Iterator
 
 from .database import IndexDatabase
 from .reader import OlsProjectReader, ReadIssue
+from .paths import canonical_path
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,9 @@ def stream_sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
 
 def iter_ols_files(sources: list[Path]) -> Iterator[Path]:
     for source in sources:
+        # Resolve each top-level input once (symlinks, junctions, Windows 8.3
+        # aliases) so every path recorded beneath it is in canonical form.
+        source = Path(canonical_path(source))
         if source.is_file():
             candidates = (source,) if source.suffix.lower() == ".ols" else ()
         elif source.is_dir():

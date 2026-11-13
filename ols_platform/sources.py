@@ -13,16 +13,21 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import __version__ as APPLICATION_VERSION
+from .paths import canonical_path
 from .importer import ImportOutcome, import_sources, stream_sha256
 from .reader import OlsProjectReader
 
 
 def _normalized(path: Path) -> str:
+    # Cheap per-entry normalisation. Entries are enumerated beneath a root that
+    # was already passed through canonical_path() at registration, and the
+    # scanner skips symlinks, so abspath() yields the canonical form here
+    # without a resolve() system call per file.
     return os.path.abspath(path)
 
 
 def register_source(database: Any, path: Path) -> dict[str, Any]:
-    normalized = _normalized(path)
+    normalized = canonical_path(path)
     if path.exists() and not path.is_dir():
         raise ValueError(f"Data source must be a directory: {path}")
     if path.is_dir() and not os.access(path, os.R_OK):
@@ -67,7 +72,7 @@ def move_source(database: Any, source_id: int, new_path: Path) -> dict[str, Any]
     source = database.get_source(source_id)
     if source is None:
         raise ValueError(f"Unknown registered source ID {source_id}.")
-    normalized = _normalized(new_path)
+    normalized = canonical_path(new_path)
     if new_path.exists() and not new_path.is_dir():
         raise ValueError(f"Data source must be a directory: {new_path}")
     status = "available" if new_path.is_dir() and os.access(new_path, os.R_OK) else "unavailable"
