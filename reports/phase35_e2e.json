@@ -1,0 +1,20 @@
+{
+  "import": "partial",
+  "resume": "skipped_unchanged",
+  "search_results": 1,
+  "parser_warnings": 7,
+  "source_hash": "matches",
+  "sqlite_integrity": "ok",
+  "byte_similarity": {
+    "metric": "equal_bytes_at_same_offsets",
+    "threshold_percent": 95.0,
+    "similarity_percent": 95.0,
+    "matching_bytes": 95,
+    "compared_bytes": 100,
+    "meets_threshold": true,
+    "status": "COMPARED",
+    "reason": "Equal bytes at identical offsets divided by the equal file size.",
+    "limitation": "Byte similarity is not ECU compatibility, a probability, or a validated project or version relationship."
+  },
+  "production_worker_started": false
+}

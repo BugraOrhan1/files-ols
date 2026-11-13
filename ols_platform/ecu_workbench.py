@@ -1271,6 +1271,7 @@ def export_candidates(
         )
         candidates.append({
             "artifact_id": item["artifact_id"],
+            "source_kind": "reference",
             "project_id": item["project_id"],
             "path": item["path"],
             "filename": path.name,
@@ -1283,6 +1284,8 @@ def export_candidates(
             "available": path.is_file(),
             "representation": item["representation"],
             "version_name": item["version_name"] or "UNKNOWN",
+            "tuning_label": item["version_name"] or "UNKNOWN",
+            "tuning_label_status": "UNCONFIRMED_INDEXED_VERSION" if item["version_name"] else "UNKNOWN",
             "relation_status": item["relation_status"],
             "original_or_tuned": "UNKNOWN",
             "tuning_type": "UNKNOWN",
@@ -1318,19 +1321,133 @@ def export_candidates(
     return {"candidates": candidates, "truncated": len(rows) > 500, "offset": offset}
 
 
+def _indexed_location_candidate(row: Any) -> dict[str, Any]:
+    return {
+        "source_kind": "location", "artifact_id": row["id"],
+        "path": row["path"], "filename": Path(row["path"]).name,
+        "sha256": row["sha256"], "size_bytes": row["size_bytes"],
+        "modified_ns": row["modified_ns"], "available": Path(row["path"]).is_file(),
+        "tuning_label": "UNKNOWN", "tuning_label_status": "UNKNOWN",
+        "identifications": {}, "matched_features": [], "differing_features": [],
+        "missing_features": list(_IDENTIFICATION_FIELDS),
+        "parser_warnings": [], "parser_errors": [],
+        "reference_validation": "NOT_TESTED",
+        "compatibility": "COMPATIBILITY_NOT_VALIDATED",
+        "match_methods": ["manual_indexed_directory_browse"],
+        "retrieval_score": None,
+        "retrieval_score_meaning": "No relevance score is available for a directory listing.",
+        "similarity": {"status": "NOT_COMPUTED", "percent": None,
+                       "meaning": "Comparison requires explicit selection."},
+        "risk": "An indexed file location does not establish a tuning relationship or ECU compatibility.",
+    }
+
+
+def indexed_binary_locations(index_database: Any, directory: str, *, offset: int = 0) -> dict[str, Any]:
+    if not isinstance(directory, str) or not directory.strip():
+        raise ValueError("An indexed directory path is required.")
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise ValueError("Candidate offset must be a nonnegative integer.")
+    root = Path(directory).resolve()
+    prefix = str(root).rstrip("\\/") + os.sep
+    rows = index_database.connection.execute(
+        """
+        SELECT id,path,sha256,size_bytes,modified_ns
+        FROM file_locations
+        WHERE path >= ? AND path < ? AND is_present=1
+          AND lower(extension) IN ('bin','ori')
+        ORDER BY path,id LIMIT 101 OFFSET ?
+        """,
+        (prefix, prefix + chr(0x10ffff), offset),
+    ).fetchall()
+    return {
+        "candidates": [_indexed_location_candidate(row) for row in rows[:100]],
+        "truncated": len(rows) > 100, "offset": offset,
+    }
+
+
+def unexportable_project_slots(storage_root: Path, analysis_id: str, index_database: Any) -> list[dict[str, Any]]:
+    references = _get_analysis(storage_root, analysis_id)["report"]["references"]
+    project_ids = sorted({
+        item["project_id"]
+        for key in ("exact_references", "slot_candidates", "metadata_candidates")
+        for item in references.get(key, [])
+    })
+    if not project_ids:
+        return []
+    rows = index_database.connection.execute(
+        """
+        SELECT s.id,s.project_id,s.slot_index,s.payload_size,s.payload_sha256,
+               COALESCE(v.name,'') AS version_name
+        FROM project_version_slots s
+        LEFT JOIN project_versions v ON v.id=s.version_id
+        WHERE s.project_id IN ({}) AND s.payload_size>0
+        ORDER BY s.project_id,s.slot_index LIMIT 101
+        """.format(",".join("?" for _ in project_ids)),
+        project_ids,
+    ).fetchall()
+    return [
+        {
+            "project_id": row["project_id"], "slot_index": row["slot_index"],
+            "version_name": row["version_name"] or "UNKNOWN",
+            "size_bytes": row["payload_size"], "sha256": row["payload_sha256"],
+            "exportable": False,
+            "reason": "Parser-slotgrenzen en volledige BIN-extractie zijn niet onafhankelijk vastgesteld.",
+        }
+        for row in rows[:100]
+    ]
+
+
+def _selected_byte_similarity(original_path: Path, candidate_path: Path,
+                              original: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
+    if original["size_bytes"] != candidate["size_bytes"]:
+        return {"status": "NOT_COMPARABLE", "percent": None,
+                "meaning": "Different file sizes; byte percentage is not comparable."}
+    original_digest = hashlib.sha256()
+    candidate_digest = hashlib.sha256()
+    equal = 0
+    size = 0
+    with original_path.open("rb") as left, candidate_path.open("rb") as right:
+        while True:
+            a, b = left.read(_CHUNK_SIZE), right.read(_CHUNK_SIZE)
+            if not a and not b:
+                break
+            original_digest.update(a)
+            candidate_digest.update(b)
+            size += len(a)
+            equal += sum(x == y for x, y in zip(a, b))
+    if (size != original["size_bytes"] or original_digest.hexdigest() != original["sha256"]
+            or candidate_digest.hexdigest() != candidate["sha256"]):
+        raise ValueError("A file changed during byte comparison.")
+    return {"status": "COMPARED", "percent": 100 * equal / size,
+            "matching_bytes": equal, "compared_bytes": size,
+            "meaning": "Equal bytes at identical offsets; not ECU compatibility."}
+
+
 def export_preview(
     storage_root: Path,
     analysis_id: str,
     artifact_id: int,
     index_database: Any,
+    *,
+    source_kind: str = "reference",
 ) -> dict[str, Any]:
     if isinstance(artifact_id, bool) or not isinstance(artifact_id, int) or artifact_id <= 0:
         raise ValueError("A positive candidate artifact ID is required.")
     analysis = _get_analysis(storage_root, analysis_id)
-    candidates = export_candidates(
-        storage_root, analysis_id, index_database,
-        include_other_projects=True, artifact_id=artifact_id,
-    )["candidates"]
+    if source_kind == "reference":
+        candidates = export_candidates(
+            storage_root, analysis_id, index_database,
+            include_other_projects=True, artifact_id=artifact_id,
+        )["candidates"]
+    elif source_kind == "location":
+        row = index_database.connection.execute(
+            "SELECT id,path,sha256,size_bytes,modified_ns FROM file_locations "
+            "WHERE id=? AND is_present=1 AND lower(extension) IN ('bin','ori')",
+            (artifact_id,),
+        ).fetchone()
+        candidates = [_indexed_location_candidate(row)] if row is not None else []
+    else:
+        raise ValueError("Unknown candidate source kind.")
     candidate = next((item for item in candidates if item["artifact_id"] == artifact_id), None)
     if candidate is None:
         raise ValueError("The selected indexed BIN candidate is not available in the candidate list.")
@@ -1348,8 +1465,15 @@ def export_preview(
         raise ValueError("The imported original copy no longer matches its recorded hash.")
     candidate_path = Path(candidate["path"]).resolve(strict=True)
     actual_hash, actual_size = _hash_file(candidate_path)
-    if actual_hash.lower() != candidate["sha256"].lower() or actual_size != candidate["size_bytes"]:
+    if ((candidate["sha256"] and actual_hash.lower() != candidate["sha256"].lower())
+            or actual_size != candidate["size_bytes"]):
         raise ValueError("The selected candidate no longer matches its indexed hash and size.")
+    if source_kind == "location" and candidate_path.stat().st_mtime_ns != candidate["modified_ns"]:
+        raise ValueError("The selected indexed file changed since inventory.")
+    candidate["sha256"] = actual_hash
+    candidate["similarity"] = _selected_byte_similarity(
+        original_path, candidate_path, analysis["source"], candidate
+    )
     preview = {
         "analysis_id": analysis_id,
         "original": {
@@ -1378,6 +1502,7 @@ def export_selected_binary(
     confirmation_token: str,
     confirmed: bool,
     user_label: str = "",
+    source_kind: str = "reference",
 ) -> dict[str, Any]:
     if confirmed is not True:
         raise ValueError("Explicit user confirmation is required.")
@@ -1390,7 +1515,9 @@ def export_selected_binary(
     directory = Path(output_directory).resolve(strict=True)
     if not directory.is_dir():
         raise ValueError("The selected output directory is not a directory.")
-    preview = export_preview(storage_root, analysis_id, artifact_id, index_database)
+    preview = export_preview(
+        storage_root, analysis_id, artifact_id, index_database, source_kind=source_kind
+    )
     if preview["confirmation_token"] != confirmation_token:
         raise ValueError("The candidate or its evidence changed after confirmation; review again.")
     candidate = preview["candidate"]
@@ -1430,6 +1557,7 @@ def export_selected_binary(
                 key: value for key, value in candidate.items() if key != "path"
             },
             "source_artifact_id": artifact_id,
+            "source_kind": source_kind,
             "user_label": user_label or "UNKNOWN",
             "output": {"filename": output_name, "sha256": output_hash, "size_bytes": output_size},
             "source_output_sha256_equal": True,

@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "status": "BLOCKED_EXTERNAL_REFERENCE",
+  "installed_executable": "C:\\Program Files\\EVC\\WinOLS\\ols.64Bit.exe",
+  "installed_version": "5.96.00",
+  "requested_version": "5.80",
+  "requested_version_verified_available": false,
+  "application_launched": false,
+  "gui_control_available": false,
+  "independent_reference_obtained": false,
+  "fields_independently_compared": 0,
+  "reason": "No controllable native GUI or independent WinOLS export was available; no uncontrolled GUI automation was attempted.",
+  "axis_audit": "phase35_parser_axis_audit.json",
+  "axis_count": 31,
+  "axis_parser_observation_reproduced": 31,
+  "axis_independently_validated": 0,
+  "unit": "The py-ols sequential axis reader returns an empty unit unconditionally; source presence is unknown.",
+  "identifier": "Empty parser output; source presence and correct decoding remain unresolved.",
+  "required_next_step": "A human must open hash-verified temporary copies in WinOLS and provide a provenance-recorded export or review of comparable project, software, map, dimension and axis fields."
+}

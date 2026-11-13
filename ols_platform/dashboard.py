@@ -11,13 +11,18 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from .database import IndexDatabase
 from .ecu_workbench import (
     compare_analyses,
+    export_candidates,
+    export_preview,
+    export_selected_binary,
     get_analysis,
     get_comparison,
     history as workbench_history,
     import_reference_artifact,
     import_binary_stream,
+    indexed_binary_locations,
     list_reference_artifacts,
     reanalyze,
+    unexportable_project_slots,
 )
 from .sources import build_hashing_report
 from .reference_package import build_package_report
@@ -129,6 +134,8 @@ def create_handler(database_path: Path):
                 if request.path in {
                     "/api/workbench/compare",
                     "/api/workbench/reference",
+                    "/api/workbench/export-preview",
+                    "/api/workbench/export",
                 } or (
                     request.path.startswith("/api/workbench/analyses/")
                     and request.path.endswith("/reanalyze")
@@ -161,6 +168,38 @@ def create_handler(database_path: Path):
                             result = import_reference_artifact(
                                 workbench_root, artifact_id, index_database
                             )
+                        finally:
+                            connection.close()
+                    elif request.path in {"/api/workbench/export-preview", "/api/workbench/export"}:
+                        analysis_id = payload.get("analysis_id")
+                        artifact_id = payload.get("artifact_id")
+                        source_kind = payload.get("source_kind")
+                        if not isinstance(analysis_id, str) or not analysis_id:
+                            raise ValueError("An analysis ID is required.")
+                        if source_kind not in {"reference", "location"}:
+                            raise ValueError("A valid candidate source kind is required.")
+                        if isinstance(artifact_id, bool) or not isinstance(artifact_id, int):
+                            raise ValueError("A numeric candidate ID is required.")
+                        index_database, connection = _readonly_index(database_path)
+                        try:
+                            if request.path.endswith("export-preview"):
+                                result = export_preview(
+                                    workbench_root, analysis_id, artifact_id, index_database,
+                                    source_kind=source_kind,
+                                )
+                            else:
+                                directory = payload.get("output_directory")
+                                if not isinstance(directory, str) or not directory.strip():
+                                    raise ValueError("An output directory is required.")
+                                result = export_selected_binary(
+                                    workbench_root, analysis_id, artifact_id, index_database,
+                                    output_directory=Path(directory),
+                                    output_name=payload.get("output_name"),
+                                    confirmation_token=payload.get("confirmation_token"),
+                                    confirmed=payload.get("confirmed"),
+                                    user_label=payload.get("user_label", ""),
+                                    source_kind=source_kind,
+                                )
                         finally:
                             connection.close()
                     else:
@@ -289,6 +328,34 @@ def create_handler(database_path: Path):
                     self._send_json(400, {"error": str(exc)})
                 finally:
                     connection.close()
+                return
+            if request.path in {"/api/workbench/export-candidates", "/api/workbench/indexed-binaries"}:
+                try:
+                    query = parse_qs(request.query)
+                    offset = int(query.get("offset", ["0"])[0])
+                    index_database, connection = _readonly_index(database_path)
+                    try:
+                        if request.path.endswith("export-candidates"):
+                            analysis_id = query.get("analysis_id", [""])[0]
+                            result = export_candidates(
+                                workbench_root, analysis_id, index_database,
+                                include_other_projects=query.get("all", ["0"])[0] == "1",
+                                offset=offset,
+                            )
+                            result["unexportable_slots"] = unexportable_project_slots(
+                                workbench_root, analysis_id, index_database
+                            )
+                        else:
+                            result = indexed_binary_locations(
+                                index_database, query.get("directory", [""])[0], offset=offset
+                            )
+                    finally:
+                        connection.close()
+                    self._send_json(200, result)
+                except (ValueError, TypeError) as exc:
+                    self._send_json(400, {"error": str(exc)})
+                except OSError as exc:
+                    self._send_json(409, {"error": str(exc)})
                 return
             if request.path.startswith("/api/workbench/analyses/"):
                 try:

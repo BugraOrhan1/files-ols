@@ -791,6 +791,114 @@ async function loadProject(projectId) {
   }
 }
 
+let exportAnalysisId = "";
+let exportCandidates = [];
+let exportPreview = null;
+let candidateMode = "relevant";
+let candidateOffset = 0;
+let candidateHasNext = false;
+let candidateRequest = 0;
+
+function renderExportCandidateTable() {
+  const rows = exportCandidates.map((candidate) => {
+    const row = document.createElement("tr");
+    const cells = [
+      `${candidate.tuning_label} (${candidate.tuning_label_status}) · ${candidate.filename}\n` +
+        `${candidate.source_kind}: ${candidate.path}`,
+      `${JSON.stringify(candidate.identifications)}\n${candidate.size_bytes} bytes · ` +
+        `SHA-256 ${candidate.sha256 || "nog niet berekend"}`,
+      `Gelijk: ${JSON.stringify(candidate.matched_features)}\n` +
+        `Conflicten: ${JSON.stringify(candidate.differing_features)}\n` +
+        `Ontbrekend: ${JSON.stringify(candidate.missing_features)}\n` +
+        `Parser: ${JSON.stringify(candidate.parser_warnings)} ${JSON.stringify(candidate.parser_errors)}`,
+      `Bytegelijkenis: ${candidate.similarity.percent === null
+        ? candidate.similarity.status : candidate.similarity.percent + "%"}\n` +
+        `Opzoekpunten: ${candidate.retrieval_score === null ? "onbekend" : candidate.retrieval_score}\n` +
+        `${candidate.reference_validation} · ${candidate.compatibility}` +
+        (candidate.available ? "" : " · bestand ontbreekt")
+    ];
+    for (const text of cells) {
+      const cell = node("td", "", text);
+      cell.style.whiteSpace = "pre-wrap";
+      cell.style.overflowWrap = "anywhere";
+      row.append(cell);
+    }
+    return row;
+  });
+  document.getElementById("ecu-candidate-table").replaceChildren(...rows);
+}
+
+function resetExportPreview() {
+  exportPreview = null;
+  document.getElementById("ecu-export-confirm").checked = false;
+  document.getElementById("ecu-export-button").disabled = true;
+  document.getElementById("ecu-candidate-details").hidden = true;
+}
+
+async function loadExportCandidates() {
+  const status = document.getElementById("ecu-candidate-status");
+  if (!exportAnalysisId) {
+    status.textContent = "Importeer eerst een origineel bestand.";
+    return;
+  }
+  const requestId = ++candidateRequest;
+  const analysisId = exportAnalysisId;
+  resetExportPreview();
+  document.getElementById("ecu-export-result").hidden = true;
+  const select = document.getElementById("ecu-candidate-select");
+  select.disabled = true;
+  select.replaceChildren(node("option", "", "Kandidaten laden…"));
+  exportCandidates = [];
+  renderExportCandidateTable();
+  document.getElementById("ecu-candidate-prev").disabled = true;
+  document.getElementById("ecu-candidate-next").disabled = true;
+  status.textContent = "Geïndexeerde kandidaten laden; er wordt geen corpus gescand.";
+  try {
+    const query = new URLSearchParams({ offset: String(candidateOffset) });
+    let url;
+    if (candidateMode === "directory") {
+      query.set("directory", document.getElementById("ecu-index-directory").value);
+      url = "/api/workbench/indexed-binaries";
+    } else {
+      query.set("analysis_id", analysisId);
+      query.set("all", candidateMode === "all" ? "1" : "0");
+      url = "/api/workbench/export-candidates";
+    }
+    const report = await getJson(`${url}?${query}`);
+    if (requestId !== candidateRequest || analysisId !== exportAnalysisId) return;
+    exportCandidates = report.candidates;
+    renderExportCandidateTable();
+    candidateHasNext = report.truncated;
+    const placeholder = node("option", "", "Selecteer expliciet een kandidaat");
+    placeholder.value = "";
+    const options = exportCandidates.map((candidate) => {
+      const option = node("option", "", `${candidate.tuning_label} (${candidate.tuning_label_status}) · ` +
+        `${candidate.filename} · ${candidate.source_kind} · ${candidate.compatibility}` +
+        (candidate.available ? "" : " · bestand ontbreekt"));
+      option.value = `${candidate.source_kind}:${candidate.artifact_id}`;
+      option.disabled = !candidate.available;
+      return option;
+    });
+    select.replaceChildren(placeholder, ...options);
+    select.disabled = !options.length;
+    document.getElementById("ecu-candidate-preview").disabled = true;
+    document.getElementById("ecu-candidate-prev").disabled = candidateOffset === 0;
+    document.getElementById("ecu-candidate-next").disabled = !candidateHasNext;
+    status.textContent = options.length
+      ? `${options.length} kandidaten; pagina vanaf ${candidateOffset + 1}. Geen kandidaat is automatisch geselecteerd.`
+      : "Geen geschikte kandidaat vastgesteld. Bekijk andere referenties of zoek in een geïndexeerde map.";
+    const slots = document.getElementById("ecu-unexportable-slots");
+    slots.textContent = (report.unexportable_slots || []).map((slot) =>
+      `Project ${slot.project_id}, slot ${slot.slot_index}, ${slot.version_name}: niet exporteerbaar. ${slot.reason}`
+    ).join("\n");
+    slots.style.whiteSpace = "pre-wrap";
+  } catch (error) {
+    if (requestId !== candidateRequest) return;
+    exportCandidates = [];
+    status.textContent = `Kandidaten laden mislukt: ${error.message}`;
+  }
+}
+
 function showWorkbenchAnalysis(analysis) {
   const result = document.getElementById("ecu-analysis-result");
   const reportElement = document.getElementById("ecu-analysis-report");
@@ -812,7 +920,107 @@ function showWorkbenchAnalysis(analysis) {
   );
   reportElement.hidden = false;
   reportElement.textContent = JSON.stringify(analysis, null, 2);
+  exportAnalysisId = analysis.analysis_id;
+  candidateMode = "relevant";
+  candidateOffset = 0;
+  loadExportCandidates();
 }
+
+document.getElementById("ecu-candidates-relevant").addEventListener("click", () => {
+  candidateMode = "relevant"; candidateOffset = 0; loadExportCandidates();
+});
+document.getElementById("ecu-candidates-all").addEventListener("click", () => {
+  candidateMode = "all"; candidateOffset = 0; loadExportCandidates();
+});
+document.getElementById("ecu-index-search").addEventListener("click", () => {
+  candidateMode = "directory"; candidateOffset = 0; loadExportCandidates();
+});
+document.getElementById("ecu-candidate-prev").addEventListener("click", () => {
+  candidateOffset = Math.max(0, candidateOffset - (candidateMode === "directory" ? 100 : 500));
+  loadExportCandidates();
+});
+document.getElementById("ecu-candidate-next").addEventListener("click", () => {
+  if (!candidateHasNext) return;
+  candidateOffset += candidateMode === "directory" ? 100 : 500;
+  loadExportCandidates();
+});
+document.getElementById("ecu-candidate-select").addEventListener("change", (event) => {
+  resetExportPreview();
+  const candidate = exportCandidates.find((item) =>
+    `${item.source_kind}:${item.artifact_id}` === event.target.value
+  );
+  document.getElementById("ecu-candidate-preview").disabled = !candidate;
+  const details = document.getElementById("ecu-candidate-details");
+  details.hidden = !candidate;
+  if (candidate) {
+    details.textContent = JSON.stringify(candidate, null, 2);
+    document.getElementById("ecu-export-name").value =
+      candidate.filename.replace(/\.(bin|ori)$/i, "") + ".bin";
+    document.getElementById("ecu-export-label").value =
+      candidate.tuning_label === "UNKNOWN" ? "" : candidate.tuning_label;
+  }
+});
+document.getElementById("ecu-candidate-preview").addEventListener("click", async () => {
+  const select = document.getElementById("ecu-candidate-select");
+  const selection = select.value;
+  const candidate = exportCandidates.find((item) =>
+    `${item.source_kind}:${item.artifact_id}` === selection
+  );
+  if (!candidate) return;
+  const analysisId = exportAnalysisId;
+  const requestId = candidateRequest;
+  const button = document.getElementById("ecu-candidate-preview");
+  button.disabled = true;
+  resetExportPreview();
+  const status = document.getElementById("ecu-candidate-status");
+  status.textContent = "Geselecteerde bron hashen en vergelijken…";
+  try {
+    const preview = await postJson("/api/workbench/export-preview", {
+      analysis_id: analysisId, source_kind: candidate.source_kind, artifact_id: candidate.artifact_id
+    });
+    if (analysisId !== exportAnalysisId || requestId !== candidateRequest || select.value !== selection) return;
+    exportPreview = preview;
+    candidate.similarity = preview.candidate.similarity;
+    candidate.sha256 = preview.candidate.sha256;
+    renderExportCandidateTable();
+    const details = document.getElementById("ecu-candidate-details");
+    details.hidden = false;
+    details.textContent = JSON.stringify(preview, null, 2);
+    status.textContent = "Controleer bron, bewijs en bestemming. Compatibiliteit is niet gevalideerd.";
+  } catch (error) {
+    status.textContent = `Kandidaatcontrole mislukt: ${error.message}`;
+  } finally {
+    button.disabled = !select.value;
+  }
+});
+document.getElementById("ecu-export-confirm").addEventListener("change", (event) => {
+  document.getElementById("ecu-export-button").disabled = !event.target.checked || !exportPreview;
+});
+document.getElementById("ecu-export-button").addEventListener("click", async () => {
+  if (!exportPreview || !document.getElementById("ecu-export-confirm").checked) return;
+  const button = document.getElementById("ecu-export-button");
+  const status = document.getElementById("ecu-candidate-status");
+  const candidate = exportPreview.candidate;
+  button.disabled = true;
+  try {
+    const result = await postJson("/api/workbench/export", {
+      analysis_id: exportPreview.analysis_id,
+      source_kind: candidate.source_kind, artifact_id: candidate.artifact_id,
+      confirmation_token: exportPreview.confirmation_token, confirmed: true,
+      output_directory: document.getElementById("ecu-export-directory").value,
+      output_name: document.getElementById("ecu-export-name").value,
+      user_label: document.getElementById("ecu-export-label").value
+    });
+    const target = document.getElementById("ecu-export-result");
+    target.hidden = false;
+    target.textContent = JSON.stringify(result, null, 2);
+    status.textContent = "Bestand geëxporteerd en hash gecontroleerd. ECU-compatibiliteit is niet gevalideerd.";
+    resetExportPreview();
+  } catch (error) {
+    status.textContent = `Export mislukt: ${error.message}`;
+    button.disabled = false;
+  }
+});
 
 function showWorkbenchComparison(report) {
   const target = document.getElementById("ecu-comparison-report");

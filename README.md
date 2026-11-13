@@ -60,7 +60,43 @@ not proof of ECU compatibility.
 
 ## Commands
 
-### Import a BIN and export a selected indexed research file
+### Dashboard: import a BIN and export a selected indexed research file
+
+Start the current dashboard code from the project directory:
+
+```powershell
+py -3 -m ols_platform.cli --database "D:\werkmap\files ols\data\ols-index.sqlite3" serve --port 8765
+```
+
+Open `http://127.0.0.1:8765/#ecu-workbench`. If another instance already uses
+that port, stop only an instance you own or choose a free port, for example
+`--port 8766`, and open that port instead. An already running server must be
+restarted or replaced with a new instance to load the updated Python API.
+
+1. Select the original `.bin`, optionally enter known identifiers and click
+   **Importeer en analyseer**. The browser sends the bytes over loopback to
+   the separate Workbench store; it does not modify the original.
+2. Select a registered binary reference from the candidate menu. Use **Andere
+   geregistreerde referenties** for unrelated records, or enter an already
+   indexed directory and select **Zoek in index** for standalone BIN/ORI
+   locations. Directory search queries recorded paths, not the filesystem;
+   enter the indexed absolute path. It does not scan the corpus.
+3. Click **Controleer geselecteerde kandidaat** and review the source, hashes,
+   missing/conflicting identifiers, warnings, byte comparison and status.
+   The same-size byte percentage is calculated only for the selected pair.
+4. Enter an existing output directory and a `.bin` filename, optionally edit
+   the label, confirm the warning, and click **Exporteer geselecteerde BIN**.
+   The selected bytes and adjacent `.bin.manifest.json` appear at that path.
+   Existing files are never overwritten; changed or missing sources fail.
+
+Indexed version names are shown as **unconfirmed** labels, not inferred from
+filenames or proof of a tuning type. A standalone location without an indexed
+hash is hashed on explicit selection and rechecked during export. OLS parser
+slots without independently established extraction boundaries are shown as
+non-exportable. No candidate or percentage proves ECU compatibility; all
+exports remain `COMPATIBILITY_NOT_VALIDATED`.
+
+### CLI: import a BIN and export a selected indexed research file
 
 Create the output directory first, then run the interactive command with the
 existing index (the global `--database` option precedes the command):
@@ -90,8 +126,8 @@ original and output hashes and the available evidence.
 Only registered BIN/ORI reference artifacts are offered; use `N`/`V` to page
 through lists longer than 500 records. A listed path can be missing or stale. Raw BIN
 identifiers, original/tuned status and tuning type are not inferred from a
-filename. Project retrieval points are not a percentage; candidate byte
-similarity is not computed by this command. Neither selection nor byte
+filename. Project retrieval points are not a percentage; byte similarity is
+calculated only after selecting an equally sized candidate. Neither selection nor byte
 identity proves ECU compatibility: exports remain
 `COMPATIBILITY_NOT_VALIDATED` and must not be interpreted as ready to flash.
 

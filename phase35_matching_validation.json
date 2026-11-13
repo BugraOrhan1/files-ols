@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "status": "MATCHING_PARTIALLY_VALIDATED",
+  "scope": "Synthetic and temporary-file software behavior, not ECU compatibility.",
+  "threshold": {
+    "metric": "equal bytes at identical offsets divided by equal nonzero file size",
+    "default_percent": 95,
+    "configurable_in": ["compare CLI", "Workbench API", "dashboard pair comparison"],
+    "synthetic_cases": [
+      {"similarity_percent": 94.9, "threshold_percent": 95, "meets_threshold": false},
+      {"similarity_percent": 95, "threshold_percent": 95, "meets_threshold": true},
+      {"similarity_percent": 95.1, "threshold_percent": 95, "meets_threshold": true},
+      {"similarity_percent": 95, "threshold_percent": 96, "meets_threshold": false}
+    ],
+    "empty_or_unequal_size": "NOT_COMPARABLE",
+    "invalid_thresholds": "Rejected; invalid CLI input does not create an index.",
+    "limits": "Pairwise explicit file comparison only, not corpus-wide candidate retrieval, rank_score normalization, probability, project identity or ECU compatibility. Padding and short files may inflate similarity."
+  },
+  "metadata": {
+    "conflicting_identifiers": "Reported independently of byte similarity; a 95 percent synthetic pair remains semantically inconclusive.",
+    "parser_warnings": "Exposed separately in project and Workbench candidate results.",
+    "pagination": "Partial metadata candidates are ranked before pagination; deterministic tie breaking is tested.",
+    "coverage": "Existing positive, negative, missing-metadata, inconclusive, repeatability and explanation regressions passed in the isolated subset."
+  },
+  "precision_recall": "NOT_MEASURED: no independently labelled compatibility dataset.",
+  "ecu_compatibility": "ECU_COMPATIBILITY_NOT_VALIDATED",
+  "suite": {"discovered": 116, "passed": 109, "failed": 0, "skipped_worker_tests": 7},
+  "e2e_evidence": "reports\\phase35_e2e.json",
+  "test_log": "reports\\phase35_unittest.log"
+}
