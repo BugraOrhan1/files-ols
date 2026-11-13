@@ -98,8 +98,9 @@ def _select_variant(package, data: bytes) -> tuple[dict, dict, dict]:
         known = ", ".join(sorted({f["ecu_type"] or f["family_key"] for f in package["families"]}))
         raise GenerationRejected(
             "ecu_not_recognized",
-            "De ECU van dit bestand is niet herkend door het actieve modelpakket "
-            f"(bekende families: {known}).",
+            "De ECU van dit bestand komt niet voor in de bibliotheek "
+            f"(bekende families: {known}). Voeg WinOLS-projecten van deze ECU met een Stage 1 toe "
+            "en werk de bibliotheek bij.",
         )
     if not partial:
         family = sorted(recognized.values(), key=lambda f: f["family_key"])[0]
@@ -326,9 +327,10 @@ def generate(data: bytes, profile_name: str, package, contracts: dict | None = N
                 "changed_cells": None, "map": None, "label": f"Wijziging 0x{start:X}",
             })
         out_bytes = bytes(output)
+        version = pair.get("tuned_version_name") or "Stage 1"
         notes = [
-            f"Origineel herkend: zelfde bytes als trainingsproject {pair.get('project_name') or pair['pair_id']} "
-            f"in alle {len(pair['edits'])} Stage 1-gebieden; diens Stage 1 ({pair.get('tuned_version_name', '')}) is toegepast."
+            f"Komt overeen met project {pair.get('project_name') or pair['pair_id']} "
+            f"(alle {len(pair['edits'])} Stage 1-gebieden gelijk); de versie '{version}' uit dat project wordt gebruikt."
         ]
         if pair["alternatives"]:
             notes.append(f"Er bestaan {pair['alternatives']} andere Stage 1-varianten voor dit origineel; "

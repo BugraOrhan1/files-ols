@@ -59,6 +59,13 @@ CREATE TABLE IF NOT EXISTS runs (
 """
 
 DONE_STATES = ("parsed_no_pairs", "parsed_with_pairs", "rejected", "too_large")
+STATUS_TEXT = {
+    "parsed_with_pairs": "gelezen, voorbeelden gevonden",
+    "parsed_no_pairs": "gelezen, geen bruikbare versies",
+    "rejected": "overgeslagen (zie reden in database)",
+    "too_large": "overgeslagen (te groot)",
+    "retry_pending": "niet gelukt, volgende keer opnieuw",
+}
 _IMPORT_LINE = re.compile(rb"Importiert aus Datei:\r\n([^\r\n]{1,400})")
 
 
@@ -314,7 +321,9 @@ class Library:
              export_dirs: list[Path] | None = None, max_file_bytes: int = 1 << 30,
              max_files: int | None = None, retries: int = 3, retry_delay: float = 1.0,
              progress: Callable[[str], None] | None = None,
-             stop: threading.Event | None = None) -> dict[str, Any]:
+             stop: threading.Event | None = None,
+             on_file: Callable[[str, int, int], None] | None = None) -> dict[str, Any]:
+        """``on_file(source, done, found)`` is called after each project."""
         say = progress or (lambda message: None)
         meter = ResourceMeter()
         export_hashes: set[str] = set()
@@ -331,17 +340,19 @@ class Library:
         for source_key, root in sources.items():
             stats = per_source.setdefault(source_key, {
                 "root": str(root), "status": "available", "found": 0, "hashed": 0,
-                "parsed": 0, "confirmed_pairs": 0, "new_pairs": 0, "rejected": 0,
+                "parsed": 0, "confirmed_pairs": 0, "stage1_pairs": 0, "new_pairs": 0, "rejected": 0,
                 "retry_pending": 0, "skipped_unchanged": 0, "errors": [],
             })
             try:
                 walker = list(_walk_ols(root))
             except OSError as exc:
                 stats["status"] = f"unavailable: {exc.strerror or exc}"
-                say(f"Bron {source_key} niet bereikbaar: {exc}")
+                say(f"Bron {source_key} niet bereikbaar ({root}): {exc.strerror or exc}")
                 continue
             stats["found"] = len(walker)
-            for path in walker:
+            if on_file:
+                on_file(source_key, 0, len(walker))
+            for done_index, path in enumerate(walker, 1):
                 if stop is not None and stop.is_set():
                     stats["status"] = "interrupted"
                     break
@@ -391,6 +402,7 @@ class Library:
                             stats["new_pairs"] += inserted
                             pair_ids.append(pair.pair_id)
                         stats["confirmed_pairs"] += len(pairs)
+                        stats["stage1_pairs"] += sum(1 for p in pairs if p.profile == "stage1")
                         status = "parsed_with_pairs" if pairs else (
                             "rejected" if rejected else "parsed_no_pairs")
                         message = json.dumps(rejected, ensure_ascii=False) if rejected else ""
@@ -408,6 +420,8 @@ class Library:
                         stats["rejected"] += 1
                         break
                 if status is None:
+                    if on_file:
+                        on_file(source_key, done_index, len(walker))
                     continue
                 try:
                     st_size, st_mtime = (path.stat().st_size, path.stat().st_mtime_ns)
@@ -425,7 +439,9 @@ class Library:
                 self.db.commit()  # checkpoint per project
                 processed += 1
                 meter.files += 1
-                say(f"{source_key}: {path.name} -> {status}")
+                say(f"{source_key}: {path.name} – {STATUS_TEXT.get(status, status)}")
+                if on_file:
+                    on_file(source_key, done_index, len(walker))
         summary = {"sources": per_source, "resources": meter.summary()}
         self.db.execute(
             "UPDATE runs SET finished_at=?,status=?,stats=? WHERE id=?",
