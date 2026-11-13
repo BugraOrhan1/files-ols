@@ -140,14 +140,23 @@ class FakeReader:
         self.layouts: dict[str, tuple[dict, dict]] = {}
         self.fail_paths: dict[str, int] = {}
 
+    # Keyed by content: the library parses a local copy, not the source path.
+    @staticmethod
+    def _key(path: Path) -> str:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
     def register(self, path: Path, layout: dict, meta: dict) -> None:
-        self.layouts[str(path)] = (layout, meta)
+        self.layouts[self._key(path)] = (layout, meta)
+
+    def fail(self, path: Path, times: int) -> None:
+        self.fail_paths[self._key(path)] = times
 
     def inspect(self, source: Path):
-        remaining = self.fail_paths.get(str(source), 0)
+        key = self._key(source)
+        remaining = self.fail_paths.get(key, 0)
         if remaining:
-            self.fail_paths[str(source)] = remaining - 1
+            self.fail_paths[key] = remaining - 1
             raise OSError("netwerkpad tijdelijk niet beschikbaar")
-        layout, meta = self.layouts[str(source)]
+        layout, meta = self.layouts[key]
         slots = [_Slot(i, layout["base"] + i * layout["size"], layout["size"]) for i in range(layout["count"])]
         return _Snapshot(meta, slots)

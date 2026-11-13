@@ -9,6 +9,7 @@ AutoTuner-origineel met apart gehouden, deskundig beoordeelde referentie.
 
 | Onderdeel | Bestand | Functie |
 | --- | --- | --- |
+| Eigen OLS-lezer | `ols_platform/tuning/ols_native.py` | Leest projectgegevens en versie-images zonder WinOLS of py-ols. |
 | Versies uit OLS | `ols_platform/tuning/ols_versions.py` | Leest de RevisionTag (versienamen + WinOLS-checksumnotitie per versie) en de versie-images. |
 | Identificatie | `ols_platform/tuning/identity.py` | Onderscheidt ruwe uitlezing, OLS-project, ZIP/7z/RAR (ook hernoemd naar .bin), versleuteld (Slave), tekst, leeg; leert ECU/HW/SW-tokens die letterlijk in de bytes staan. |
 | Leren | `ols_platform/tuning/learn.py` | Ontleedt paren in bewerkingsgebieden, leert welke gebieden samen veranderen (support), classificeert kaart (16-bit, bytevolgorde bepaald) vs. patch, leert per cel exact/ratio/delta + grenzen + toepasbaarheid. |
@@ -97,6 +98,19 @@ controleren; het is niet door deze software bewezen.
 | reproteq/winols_damos_translator | ab5cd9d, geen licentie | Vertaalt via googletrans (online) | Niet gebruikt: stuurt namen naar externe dienst |
 | infinitehexsearcher/Ghidra-WinOLS-CSV-Importer | e6dada5, GPL | Ghidra-plugin | Niet gebruikt |
 | liushengjia-AAL/shengjia | cdcbe28, geen licentie | Achtergrond (o.a. md1-platform, checksum-crc-engine) | Alleen achtergrond; niets overgenomen |
+
+## Ronde 2: fouten bij gebruik op de hele database (opgelost)
+
+| Fout | Gevolg bij 6 TB | Oplossing | Bewijs |
+| --- | --- | --- | --- |
+| EXE kon de database niet zelf analyseren (py-ols nodig, GPL, niet gebundeld) | Bibliotheek bijwerken alleen via terminal + losse parser | Eigen OLS-lezer `ols_native.py` (header, versierecord, images op +4) | Identiek aan py-ols op alle 8 projecten (metadata + slots); images = 14 WinOLS-exports; CI traint via de EXE zelf |
+| Leren per ECU-familie i.p.v. per softwarevariant | Verschillende software door elkaar → gebieden vallen weg, alles geweigerd | Profiel per (familie, softwarevariant) | Test: 2 varianten in één familie, elk eigen Stage 1 |
+| Training laadt alle paren tegelijk | Geheugen loopt vol bij duizenden paren | Per variant laden, max. 32 leerparen per variant, rest alleen als bekend paar | 300 projecten/20 varianten: piek 26 MB |
+| Origineel uit de database gaf niet gegarandeerd dezelfde Stage 1 | “Origineel erin → getuned terug” niet zeker | Bekend-paar-pad: zelfde bytes in alle Stage 1-gebieden → exact die Stage 1; meerdere tunes → meest voorkomende | BMW/VW byte-identiek; ook met afwijkende byte buiten de gebieden (VIN/immo) |
+| Pakket als één JSON | Onwerkbaar groot | Pakket v2: ZIP met manifest + één bestand per variant, hash per variant | Manipulatietest manifest én variant |
+| Bronbestand 3× over netwerk gelezen | 3× zo traag | Eén keer kopiëren+hashen naar lokale scratch, daar parsen | — |
+| “Stage 1”-herkenning te streng | Veel bruikbare paren gemist | `Stage1`, `STAGE 1`, `Stufe 1`, `St1`, `Stage 1 (450PS)` = Stage 1; alles met EGR/DPF/Vmax/P&B/+ = gecombineerd | Tests op labels |
+| “Al getuned” werd soms als “andere bewerking” gemeld | Verwarrende reden | Volgorde van controles aangepast | VW Stage 1 → “al getuned” |
 
 ## Bekend Windows-probleem (bestaande code)
 

@@ -25,9 +25,15 @@ def _store(args) -> PackageStore:
 
 
 def _reader(path: str | None):
-    from ..reader import PyOlsReader
+    """Built-in reader by default; py-ols only when explicitly requested."""
 
-    return PyOlsReader(Path(path) if path else None)
+    if path:
+        from ..reader import PyOlsReader
+
+        return PyOlsReader(Path(path))
+    from .ols_native import NativeOlsReader
+
+    return NativeOlsReader()
 
 
 def _sources(values: list[str]) -> dict[str, Path]:
@@ -50,7 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--source", action="append", default=[], help="NAAM=MAP (herhaalbaar).")
     train.add_argument("--exports", action="append", default=[], type=Path,
                        help="Map met onafhankelijke WinOLS-exports (extra bewijs).")
-    train.add_argument("--py-ols", help="Map met py-ols (ols_reader.py).")
+    train.add_argument("--py-ols", help="Optioneel: py-ols i.p.v. de ingebouwde OLS-lezer.")
     train.add_argument("--holdout", action="append", default=[],
                        help="Projectnaam of SHA-256 die buiten training blijft (incl. afstammelingen).")
     train.add_argument("--max-files", type=int)
@@ -89,7 +95,8 @@ def main(argv: list[str] | None = None) -> int:
                 _sources(args.source), _reader(args.py_ols), export_dirs=args.exports,
                 max_files=args.max_files, retry_delay=args.retry_delay, progress=print,
             )
-            training = library.train(holdout_projects=args.holdout, activate=not args.no_activate)
+            training = library.train(holdout_projects=args.holdout, activate=not args.no_activate,
+                                     progress=print)
             summary["training"] = training
             summary["pairs_by_source"] = library.pair_counts_by_source()
         finally:
@@ -112,7 +119,8 @@ def main(argv: list[str] | None = None) -> int:
                              indent=2, ensure_ascii=False))
             return 3
         summary = {
-            "status": "GEGENEREERD", "package_id": result.package_id,
+            "status": "GEGENEREERD", "package_id": result.package_id, "notes": result.notes,
+            "evidence_level": result.evidence_level,
             "input_sha256": result.input_sha256, "output_sha256": result.output_sha256,
             "regions": len(result.changes), "integrity": result.integrity,
         }
@@ -137,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "install-package":
         package = store.install_file(args.file)
-        print(f"Pakket {package['package_id']} geïnstalleerd en actief.")
+        print(f"Pakket {package.package_id} geïnstalleerd en actief.")
         return 0
     if args.command == "export-package":
         package = store.load_active()
@@ -145,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
             print("Geen actief pakket.")
             return 2
         write_package(package, args.file)
-        print(f"Pakket {package['package_id']} geschreven naar {args.file}")
+        print(f"Pakket {package.package_id} geschreven naar {args.file}")
         return 0
     if args.command == "contract":
         store.set_contract(

@@ -75,13 +75,14 @@ class TunerApp:
         self.file_var = tk.StringVar(value="Nog geen origineel gekozen.")
         self.package_var = tk.StringVar()
         root.title(f"OLS Tuner {SOFTWARE_VERSION}")
-        root.geometry("680x420")
-        root.minsize(560, 360)
+        root.geometry("720x500")
+        root.minsize(600, 460)
 
         frame = ttk.Frame(root, padding=16)
         frame.pack(fill="both", expand=True)
         ttk.Label(frame, text="OLS Tuner", font=("Segoe UI", 16, "bold")).pack(anchor="w")
-        ttk.Label(frame, textvariable=self.package_var, foreground="#555").pack(anchor="w", pady=(0, 12))
+        ttk.Label(frame, textvariable=self.package_var, foreground="#555", wraplength=640).pack(
+            anchor="w", pady=(0, 12))
 
         row1 = ttk.Frame(frame)
         row1.pack(fill="x", pady=4)
@@ -131,11 +132,14 @@ class TunerApp:
                 "gevalideerd pakket, of 'Bibliotheek bijwerken' om het vanuit uw WinOLS-projecten op te bouwen."
             )
             return
-        families = ", ".join(f["ecu_type"] or f["family_key"] for f in self.package["families"])
+        families = len(self.package["families"])
+        variants = sum(1 for _ in self.package.variants())
+        pairs = len(self.package["training_selection"])
         self.package_var.set(
-            f"Modelpakket {self.package['package_id']} ({self.package['created_at'][:10]}) – families: {families}"
+            f"Modelpakket {self.package.package_id} ({self.package['created_at'][:10]}) – "
+            f"{families} ECU-families, {variants} softwarevarianten, {pairs} Stage 1-paren"
         )
-        profiles = sorted({PROFILE_LABELS.get(p, p) for f in self.package["families"] for p in f["profiles"]})
+        profiles = sorted({PROFILE_LABELS.get(p, p) for _f, v in self.package.variants() for p in v["profiles"]})
         self.profile_box.configure(values=profiles or ["Stage 1"])
 
     def _profile_key(self) -> str:
@@ -195,12 +199,17 @@ class TunerApp:
         except ExportBlocked as exc:
             self.say(f"Geen BIN opgeslagen.\n\nReden: {exc.message}", error=True)
             return None
-        maps = sum(1 for c in result.changes if c["kind"] == "calibration")
-        patches = len(result.changes) - maps
+        if result.evidence_level == "KNOWN_PAIR":
+            changed = f"{len(result.changes)} gewijzigde gebieden, exact volgens het trainingsproject"
+        else:
+            maps = sum(1 for c in result.changes if c["kind"] == "calibration")
+            changed = f"{maps} kaarten en {len(result.changes) - maps} overige geleerde gebieden"
+        notes = ("\n".join(result.notes) + "\n") if result.notes else ""
         self.say(
+            notes +
             f"Klaar: {final.name}\n"
             f"Modelpakket {result.package_id}, familie {result.identity['family']}.\n"
-            f"Aangepast: {maps} kaarten en {patches} overige geleerde gebieden.\n"
+            f"Aangepast: {changed}.\n"
             f"Controle: uitvoer opnieuw ingelezen, 0 wijzigingen buiten toegestane gebieden.\n"
             f"Bewijsniveau: {result.evidence_level}.\n"
             f"Resterende stap: {result.integrity['remaining_step']}\n"
@@ -239,7 +248,7 @@ class LibraryWindow:
         self.sources.pack(fill="x")
         row = ttk.Frame(frame)
         row.pack(fill="x", pady=4)
-        ttk.Label(row, text="py-ols map:").pack(side="left")
+        ttk.Label(row, text="py-ols (optioneel):").pack(side="left")
         self.py_ols = tk.StringVar(value=app.settings.data["py_ols"])
         ttk.Entry(row, textvariable=self.py_ols, width=40).pack(side="left", padx=4)
         ttk.Label(row, text="WinOLS-exports:").pack(side="left")
@@ -279,22 +288,21 @@ class LibraryWindow:
         if not package:
             self.write("Geen actief pakket.")
             return
-        self.write(f"Actief pakket {package['package_id']} – data {package['data_version'][:12]} – "
+        self.write(f"Actief pakket {package.package_id} – data {package['data_version'][:12]} – "
                    f"software {package['software_version']}")
         contracts = self.app.store.contracts()
-        for family in package["families"]:
-            self.write(f"\nFamilie {family['family_key']}")
-            for variant in family["variants"]:
-                self.write(f"  variant {variant['variant_key']}: {len(variant['projects'])} project(en), "
-                           f"{len(variant['pairs'])} paar/paren, leesvorm {', '.join(variant['read_forms'])}, "
-                           f"bewijs {variant['evidence_level']}")
-            for name, profile in family["profiles"].items():
-                st = profile["statistics"]
-                self.write(f"  {PROFILE_LABELS.get(name, name)}: {st['included_regions']} gebieden "
-                           f"({st['calibration_regions']} kaarten, {st['patch_regions']} overig)")
+        for family in package["families"][:200]:
             c = contracts.get(family["family_key"], {}).get("contract", "UNKNOWN")
-            self.write(f"  integriteit: referentie {', '.join(family['integrity']['reference_checksum_states'])}; "
+            self.write(f"\nFamilie {family['family_key']} – {len(family['variants'])} variant(en); "
+                       f"integriteit: referentie {', '.join(family['integrity']['reference_checksum_states'])}, "
                        f"contract {c}")
+            for variant in family["variants"][:20]:
+                st = variant["profiles"].get("stage1", {})
+                self.write(f"  {variant['variant_key'][:90]}: {len(variant['projects'])} project(en), "
+                           f"{len(variant['pairs'])} paren, {st.get('included_regions', 0)} gebieden, "
+                           f"bewijs {variant['evidence_level']}")
+        if len(package["families"]) > 200:
+            self.write(f"… en nog {len(package['families']) - 200} families")
         self.write("\nPakketten: " + ", ".join(p.get("package_id", "?") for p in self.app.store.list_packages()))
 
     def attach(self) -> None:
@@ -310,7 +318,7 @@ class LibraryWindow:
             self.write(f"Aankoppelen mislukt: {exc}")
             return
         self.app.reload_package()
-        self.write(f"Pakket {package['package_id']} aangekoppeld en actief.")
+        self.write(f"Pakket {package.package_id} aangekoppeld en actief.")
         self.show_info()
 
     def rollback(self) -> None:
@@ -330,7 +338,7 @@ class LibraryWindow:
             self.write("Geen actief pakket.")
             return
         path = filedialog.asksaveasfilename(defaultextension=".olstune",
-                                            initialfile=f"{self.app.package['package_id']}.olstune")
+                                            initialfile=f"{self.app.package.package_id}.olstune")
         if path:
             from .package import write_package
 
@@ -364,9 +372,9 @@ class LibraryWindow:
 
         def work():
             try:
-                from ..reader import PyOlsReader
+                from .__main__ import _reader
 
-                reader = PyOlsReader(Path(self.py_ols.get()) if self.py_ols.get() else None)
+                reader = _reader(self.py_ols.get() or None)
                 library = Library(store)
                 try:
                     summary = library.scan(
@@ -379,7 +387,7 @@ class LibraryWindow:
                             f"{key}: {stats['status']} – gevonden {stats['found']}, gehasht {stats['hashed']}, "
                             f"geparseerd {stats['parsed']}, bevestigde paren {stats['confirmed_pairs']}, "
                             f"opnieuw proberen {stats['retry_pending']}")
-                    training = library.train()
+                    training = library.train(progress=lambda m: self.queue.put(m))
                     self.queue.put(f"Nieuw pakket {training['package_id']} met {training['pairs_used']} paren "
                                    f"(+{len(training['pairs_added_since_previous'])} t.o.v. vorige).")
                 finally:

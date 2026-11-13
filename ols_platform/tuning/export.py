@@ -71,6 +71,7 @@ def _report(result: GenerationResult, original_path: Path, output_path: Path,
         "input": {"file": original_path.name, "sha256": result.input_sha256},
         "output": {"file": output_path.name, "sha256": result.output_sha256},
         "profile": PROFILE_LABELS.get(result.profile, result.profile),
+        "notes": result.notes,
         "package": {
             "package_id": result.package_id,
             "data_version": package.get("data_version"),

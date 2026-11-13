@@ -8,8 +8,14 @@ Gebruik
 Eigen modelpakket
 - Lokale opslag: %LOCALAPPDATA%\OLS Tuner\  (packages\*.olstune, active.json,
   integrity_contracts.json, library.sqlite3, pairs\)
-- Eerste start: "Bibliotheek en diagnose..." > "Pakket aankoppelen..." of
-  "Bibliotheek bijwerken" (vereist een py-ols map en leesrechten op de bronmappen).
+- Eerste start: "Bibliotheek en diagnose..." > "Bibliotheek bijwerken" analyseert
+  alle WinOLS-projecten in de bronmappen (standaard \\Dell\d\Database 1-4 en Default)
+  met de ingebouwde OLS-lezer; WinOLS en py-ols zijn niet nodig. Onderbreken mag:
+  een volgende run gaat verder waar de vorige stopte.
+- Daarna geldt: een origineel dat in de database voorkomt (zelfde bytes in alle
+  Stage 1-gebieden) krijgt exact die Stage 1 terug; een ander origineel van een
+  bekende softwarevariant krijgt de geleerde Stage 1 als de waarden binnen het
+  geleerde bereik vallen; anders volgt een weigering met reden.
 - Pakketten bevatten bytes uit klantbestanden: houd ze lokaal.
 
 Integriteit: zonder vastgelegd checksumcontract per ECU-familie schrijft de app

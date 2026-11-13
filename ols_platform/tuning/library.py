@@ -24,7 +24,7 @@ from typing import Any, Callable
 from .identity import learn_identity
 from .learn import DEFAULT_SETTINGS, TrainingPair, diff_regions
 from .ols_versions import checksum_state, classify_profile, inspect_project, read_slot
-from .package import PackageStore, build_package
+from .package import MAX_LEARNING_PAIRS, PackageBuilder, PackageStore
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
@@ -95,6 +95,20 @@ def _stream_sha256(path: Path, budget: "ResourceMeter") -> str:
     return digest.hexdigest()
 
 
+def _copy_and_hash(source: Path, target: Path, budget: "ResourceMeter") -> str:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256()
+    with source.open("rb") as reader, target.open("wb") as writer:
+        while True:
+            block = reader.read(1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+            writer.write(block)
+            budget.bytes_read += len(block)
+    return digest.hexdigest()
+
+
 @dataclass
 class ResourceMeter:
     started: float = field(default_factory=time.monotonic)
@@ -146,6 +160,10 @@ class Library:
         self.root.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.root / "library.sqlite3")
         self.db.executescript(SCHEMA)
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(pairs)")}
+        for column in ("variant_key", "project_name"):
+            if column not in columns:
+                self.db.execute(f"ALTER TABLE pairs ADD COLUMN {column} TEXT")
         self.db.commit()
 
     def close(self) -> None:
@@ -192,21 +210,23 @@ class Library:
 
     # ----- extraction -------------------------------------------------------
     def pairs_from_project(self, path: Path, reader: Any, project_sha: str,
-                           export_hashes: set[str]) -> tuple[list[TrainingPair], list[dict[str, Any]]]:
+                           export_hashes: set[str], display_name: str | None = None,
+                           ) -> tuple[list[TrainingPair], list[dict[str, Any]]]:
         versions = inspect_project(path, reader, project_sha)
+        name = display_name or path.name
         rejected: list[dict[str, Any]] = []
         if versions.tag is None or not versions.slots:
-            rejected.append({"project": path.name, "reason": "; ".join(versions.issues) or "geen versies"})
+            rejected.append({"project": name, "reason": "; ".join(versions.issues) or "geen versies"})
             return [], rejected
         if versions.issues:
-            rejected.append({"project": path.name, "reason": "; ".join(versions.issues)})
+            rejected.append({"project": name, "reason": "; ".join(versions.issues)})
             return [], rejected
         slots = sorted(versions.slots, key=lambda s: s["slot_index"])
         original = read_slot(path, slots[0])
         identity = learn_identity(versions.metadata, original)
         if not identity:
             rejected.append({
-                "project": path.name,
+                "project": name,
                 "reason": "Geen enkele ECU/HW/SW-identificatie uit de projectgegevens komt "
                           "letterlijk voor in de bytes.",
             })
@@ -226,22 +246,22 @@ class Library:
             tuned = read_slot(path, slot)
             profile = classify_profile(tag_version.name)
             if len(tuned) != len(original):
-                rejected.append({"project": path.name, "version": tag_version.name,
+                rejected.append({"project": name, "version": tag_version.name,
                                  "reason": "Versie heeft een andere lengte dan het origineel."})
                 continue
             differing = sum(1 for s, e in diff_regions(original, tuned, 0) for _ in range(s, e))
             fraction = differing / len(original)
             if differing == 0:
-                rejected.append({"project": path.name, "version": tag_version.name,
+                rejected.append({"project": name, "version": tag_version.name,
                                  "reason": "Versie is identiek aan het origineel."})
                 continue
             if fraction > 0.10:
-                rejected.append({"project": path.name, "version": tag_version.name,
+                rejected.append({"project": name, "version": tag_version.name,
                                  "reason": f"{fraction:.1%} van de bytes verschilt: geen kalibratiebewerking."})
                 continue
             tuned_identity = learn_identity(versions.metadata, tuned)
             if tuned_identity != identity:
-                rejected.append({"project": path.name, "version": tag_version.name,
+                rejected.append({"project": name, "version": tag_version.name,
                                  "reason": "ECU-identificatie verschilt tussen origineel en versie."})
                 continue
             tuned_sha = hashlib.sha256(tuned).hexdigest()
@@ -262,7 +282,7 @@ class Library:
                 identity=identity, original=original, tuned=tuned, profile=profile,
                 maps=versions.maps,
                 record={
-                    "project_name": path.name,
+                    "project_name": name,
                     "project_sha256": project_sha,
                     "original_slot": slots[0]["slot_index"],
                     "tuned_slot": slot["slot_index"],
@@ -343,21 +363,30 @@ class Library:
                         if st.st_size > max_file_bytes:
                             status, message, pair_ids, sha = "too_large", f"{st.st_size} bytes", [], None
                             break
-                        sha = _stream_sha256(path, meter)
+                        # One network read: copy to local scratch while hashing.
+                        local = self.root / "scratch" / f"current{path.suffix}"
+                        sha = _copy_and_hash(path, local, meter)
                         stats["hashed"] += 1
-                        pairs, rejected = self.pairs_from_project(path, reader, sha, export_hashes)
                         if path.stat().st_mtime_ns != st.st_mtime_ns:
                             raise OSError("bestand veranderde tijdens het lezen")
+                        try:
+                            pairs, rejected = self.pairs_from_project(
+                                local, reader, sha, export_hashes, display_name=path.name)
+                        finally:
+                            local.unlink(missing_ok=True)
                         stats["parsed"] += 1
                         stats["rejected"] += len(rejected)
                         pair_ids = []
                         for pair in pairs:
                             self._save_pair(pair)
                             inserted = self.db.execute(
-                                "INSERT OR IGNORE INTO pairs VALUES(?,?,?,?,?,?,?,?)",
+                                "INSERT OR IGNORE INTO pairs(pair_id,source,project_sha256,original_sha256,"
+                                "tuned_sha256,profile,family_key,first_seen,variant_key,project_name) "
+                                "VALUES(?,?,?,?,?,?,?,?,?,?)",
                                 (pair.pair_id, source_key, pair.record["project_sha256"],
                                  pair.record["original_sha256"], pair.record["tuned_sha256"],
-                                 pair.profile, pair.family_key, _now()),
+                                 pair.profile, pair.family_key, _now(), pair.variant_key,
+                                 pair.record.get("project_name", "")),
                             ).rowcount
                             stats["new_pairs"] += inserted
                             pair_ids.append(pair.pair_id)
@@ -417,69 +446,106 @@ class Library:
         return out
 
     def train(self, *, profile: str = "stage1", holdout_projects: list[str] | None = None,
-              settings: dict[str, Any] | None = None, activate: bool = True) -> dict[str, Any]:
-        pairs = [self.load_pair(pid) for pid in self.all_pairs()]
-        holdout = holdout_closure(pairs, holdout_projects or [])
-        target = [p for p in pairs if p.profile == profile]
-        others = [p for p in pairs if p.profile != profile and p.pair_id not in holdout]
-        excluded = [
-            {"pair_id": p.pair_id, "profile": p.profile,
-             "version": p.record.get("tuned_version_name"),
-             "reason": "Geen zuiver profiel; alleen gebruikt om andere bewerkingen te herkennen."}
-            for p in pairs if p.profile != profile
+              settings: dict[str, Any] | None = None, activate: bool = True,
+              progress: Callable[[str], None] | None = None) -> dict[str, Any]:
+        """Train per software variant, loading one variant's pairs at a time."""
+
+        say = progress or (lambda message: None)
+        rows = [
+            {"pair_id": r[0], "project_sha256": r[1], "original_sha256": r[2], "tuned_sha256": r[3],
+             "profile": r[4], "family_key": r[5], "variant_key": r[6], "project_name": r[7] or ""}
+            for r in self.db.execute(
+                "SELECT pair_id,project_sha256,original_sha256,tuned_sha256,profile,family_key,"
+                "variant_key,project_name FROM pairs ORDER BY pair_id")
         ]
-        if not [p for p in target if p.pair_id not in holdout]:
+        for row in rows:  # rows from before the variant column existed
+            if row["variant_key"] is None:
+                pair = self.load_pair(row["pair_id"])
+                row["variant_key"] = pair.variant_key
+                self.db.execute("UPDATE pairs SET variant_key=?,project_name=? WHERE pair_id=?",
+                                (pair.variant_key, pair.record.get("project_name", ""), row["pair_id"]))
+        self.db.commit()
+        holdout = holdout_closure(rows, holdout_projects or [])
+        groups: dict[tuple[str, str], list[str]] = {}
+        other_groups: dict[tuple[str, str], list[str]] = {}
+        excluded = []
+        for row in rows:
+            key = (row["family_key"], row["variant_key"])
+            if row["pair_id"] in holdout:
+                continue
+            if row["profile"] == profile:
+                groups.setdefault(key, []).append(row["pair_id"])
+            else:
+                other_groups.setdefault(key, []).append(row["pair_id"])
+                excluded.append({"pair_id": row["pair_id"], "profile": row["profile"],
+                                 "reason": "Geen zuiver profiel; alleen gebruikt om andere bewerkingen te herkennen."})
+        if not groups:
             raise ValueError("Geen bevestigde trainingsparen voor dit profiel (na uitsluiting van testdata).")
-        previous = self.store.load_active()
-        package = build_package(
-            target, other_pairs=others, settings={**DEFAULT_SETTINGS, **(settings or {})},
-            holdout=sorted(holdout), excluded=excluded,
-        )
+        previous = None
+        try:
+            previous = self.store.load_active()
+        except ValueError:
+            previous = None
+        builder = PackageBuilder({**DEFAULT_SETTINGS, **(settings or {})})
+        for index, key in enumerate(sorted(groups), 1):
+            ids = sorted(groups[key])
+            say(f"Leren variant {index}/{len(groups)}: {key[0]} ({len(ids)} paren)")
+            learn_ids = ids[:MAX_LEARNING_PAIRS]
+            target = [self.load_pair(pid) for pid in learn_ids]
+            extra = (self.load_pair(pid) for pid in ids[MAX_LEARNING_PAIRS:])
+            others = [self.load_pair(pid) for pid in sorted(other_groups.get(key, []))[:MAX_LEARNING_PAIRS]]
+            builder.add_variant(target, others, extra_known=extra, profile=profile)
+            del target, others
+        package = builder.finish(holdout=sorted(holdout), excluded=excluded)
         self.store.install(package, activate=activate)
         previous_pairs = {p["pair_id"] for p in previous["training_selection"]} if previous else set()
         current_pairs = {p["pair_id"] for p in package["training_selection"]}
         return {
-            "package_id": package["package_id"],
-            "previous_package_id": previous["package_id"] if previous else None,
+            "package_id": package.package_id,
+            "previous_package_id": previous.package_id if previous else None,
             "pairs_used": len(current_pairs),
             "pairs_added_since_previous": sorted(current_pairs - previous_pairs),
             "pairs_removed_since_previous": sorted(previous_pairs - current_pairs),
             "holdout_pairs": sorted(holdout),
             "families": [
                 {"family_key": f["family_key"], "variants": len(f["variants"]),
-                 "profiles": {k: v["statistics"] for k, v in f["profiles"].items()}}
+                 "pairs": sum(len(v["pairs"]) for v in f["variants"]),
+                 "projects": len({p for v in f["variants"] for p in v["projects"]})}
                 for f in package["families"]
             ],
         }
 
 
-def holdout_closure(pairs: list[TrainingPair], holdout_projects: list[str]) -> set[str]:
+def holdout_closure(pairs: list[Any], holdout_projects: list[str]) -> set[str]:
     """Pairs to exclude: the named projects plus every duplicate/descendant.
 
     A pair is linked when it shares a project hash, original hash or tuned
-    hash with an already excluded pair (transitively).
+    hash with an already excluded pair (transitively). Accepts TrainingPair
+    objects or row dicts.
     """
 
+    def record(item: Any) -> dict[str, Any]:
+        return item.record | {"pair_id": item.pair_id} if hasattr(item, "record") else item
+
+    records = [record(p) for p in pairs]
     wanted = {h.lower() for h in holdout_projects}
     excluded: set[str] = set()
     hashes: set[str] = set()
-    for pair in pairs:
-        r = pair.record
-        if r.get("project_sha256") in wanted or r.get("project_name", "").lower() in wanted \
+    for r in records:
+        if r.get("project_sha256") in wanted or (r.get("project_name") or "").lower() in wanted \
                 or r.get("original_sha256") in wanted:
-            excluded.add(pair.pair_id)
+            excluded.add(r["pair_id"])
             hashes.update({r.get("project_sha256"), r.get("original_sha256"), r.get("tuned_sha256")})
+    hashes.discard(None)
     changed = True
     while changed:
         changed = False
-        for pair in pairs:
-            r = pair.record
-            linked = {r.get("project_sha256"), r.get("original_sha256"), r.get("tuned_sha256")}
-            if pair.pair_id not in excluded and linked & hashes:
-                excluded.add(pair.pair_id)
+        for r in records:
+            linked = {r.get("project_sha256"), r.get("original_sha256"), r.get("tuned_sha256")} - {None}
+            if r["pair_id"] not in excluded and linked & hashes:
+                excluded.add(r["pair_id"])
                 hashes |= linked
                 changed = True
-    hashes.discard(None)
     return excluded
 
 

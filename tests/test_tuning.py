@@ -50,6 +50,10 @@ class RevisionTagTests(unittest.TestCase):
         self.assertEqual(classify_profile("Stage 1 + P&B"), "combined")
         self.assertEqual(classify_profile("stage 1 = Vmax 280Km/h"), "combined")
         self.assertEqual(classify_profile("EGR OFF"), "other")
+        for label in ("Stage1", "STAGE 1", "Stufe 1", "St1", "Stage 1 (450PS)", "Stage 1 450hp"):
+            self.assertEqual(classify_profile(label), "stage1", label)
+        for label in ("Stage 1 EGR OFF", "Stage 1 + DPF off", "Stage 1 v2"):
+            self.assertEqual(classify_profile(label), "combined", label)
 
 
 class LearnAndGenerateTests(unittest.TestCase):
@@ -62,7 +66,7 @@ class LearnAndGenerateTests(unittest.TestCase):
         package = build_package([pair])
         result = generate(pair.original, "stage1", package)
         self.assertEqual(result.output, pair.tuned)
-        self.assertEqual({c["method"] for c in result.changes}, {"exact"})
+        self.assertEqual({c["method"] for c in result.changes}, {"bekend paar"})
 
     def test_blind_project_beats_baselines_and_stays_inside_regions(self):
         original = make_original(42, calibration_scale=1.02)
@@ -84,21 +88,41 @@ class LearnAndGenerateTests(unittest.TestCase):
 
     def test_package_is_reproducible_and_tamper_evident(self):
         again = build_package(list(reversed(self.pairs)))
-        self.assertEqual(self.package["package_id"], again["package_id"])
+        self.assertEqual(self.package.package_id, again.package_id)
         original = make_original(42, calibration_scale=1.02)
         self.assertEqual(generate(original, "stage1", self.package).output,
                          generate(original, "stage1", again).output)
         with tempfile.TemporaryDirectory() as tmp:
             path = write_package(self.package, Path(tmp) / "p.olstune")
-            self.assertEqual(read_package(path)["package_id"], self.package["package_id"])
-            tampered = dict(self.package)
-            tampered["settings"] = dict(tampered["settings"], limit_margin=0.9)
-            bad = write_package(tampered, Path(tmp) / "bad.olstune")
+            self.assertEqual(read_package(path).package_id, self.package.package_id)
+            self.assertEqual(generate(original, "stage1", read_package(path)).output,
+                             generate(original, "stage1", self.package).output)
+            import zipfile
+
+            bad = Path(tmp) / "bad.olstune"
+            with zipfile.ZipFile(path) as source, zipfile.ZipFile(bad, "w") as target:
+                for item in source.namelist():
+                    data = source.read(item)
+                    if item == "manifest.json":
+                        manifest = json.loads(data)
+                        manifest["settings"]["limit_margin"] = 0.9
+                        data = json.dumps(manifest).encode()
+                    target.writestr(item, data)
             with self.assertRaisesRegex(ValueError, "beschadigd"):
                 read_package(bad)
+            bad_variant = Path(tmp) / "bad-variant.olstune"
+            with zipfile.ZipFile(path) as source, zipfile.ZipFile(bad_variant, "w") as target:
+                for item in source.namelist():
+                    data = source.read(item)
+                    if item.startswith("variants/"):
+                        data = data.replace(b'"stage1"', b'"stage9"', 1)
+                    target.writestr(item, data)
+            with self.assertRaisesRegex(ValueError, "beschadigd"):
+                generate(original, "stage1", read_package(bad_variant))
 
     def test_coherent_changes_are_learned_with_support(self):
-        regions = self.package["families"][0]["profiles"]["stage1"]["regions"]
+        variant_id = self.package["families"][0]["variants"][0]["variant_id"]
+        regions = self.package.load_variant(variant_id)["profiles"]["stage1"]["regions"]
         starts = {r["start"] for r in regions}
         for offset in MAPS:
             self.assertTrue(any(offset <= s < offset + 200 for s in starts))
@@ -186,7 +210,7 @@ class ExportTests(unittest.TestCase):
         data = json.loads(report.read_text(encoding="utf-8"))
         self.assertEqual(data["input"]["sha256"], self.original_hash)
         self.assertEqual(data["output"]["sha256"], result.output_sha256)
-        self.assertEqual(data["package"]["package_id"], self.package["package_id"])
+        self.assertEqual(data["package"]["package_id"], self.package.package_id)
         self.assertTrue(data["verification"]["passed"])
         self.assertEqual(data["verification"]["changes_outside_allowed_regions"], 0)
         self.assertTrue(data["changed_regions"])
@@ -313,16 +337,16 @@ class LibraryTests(unittest.TestCase):
     def test_network_failure_is_retried_and_never_drops_projects(self):
         path, _ = self.add_project("flaky.ols", 1)
         library = Library(self.store)
-        self.reader.fail_paths[str(path)] = 1
+        self.reader.fail(path, 1)
         ok = library.scan({"Database 1": self.source}, self.reader, retry_delay=0)
         self.assertEqual(ok["sources"]["Database 1"]["confirmed_pairs"], 1)
         path2, _ = self.add_project("down.ols", 2)
-        self.reader.fail_paths[str(path2)] = 10
+        self.reader.fail(path2, 10)
         failed = library.scan({"Database 1": self.source}, self.reader, retry_delay=0, retries=2)
         self.assertEqual(failed["sources"]["Database 1"]["retry_pending"], 1)
         status = library.db.execute("SELECT status FROM files WHERE path=?", (str(path2),)).fetchone()[0]
         self.assertEqual(status, "retry_pending")
-        self.reader.fail_paths[str(path2)] = 0
+        self.reader.fail(path2, 0)
         recovered = library.scan({"Database 1": self.source}, self.reader, retry_delay=0)
         self.assertEqual(recovered["sources"]["Database 1"]["new_pairs"], 1)
         missing = library.scan({"Database 9": self.root / "bestaat niet"}, self.reader)
@@ -343,7 +367,8 @@ class LibraryTests(unittest.TestCase):
         package = self.store.load_active()
         self.assertEqual([s["profile"] for s in package["training_selection"]], ["stage1"])
         self.assertTrue(package["excluded_candidates"])
-        self.assertTrue(package["families"][0]["modification_zones"])
+        variant_id = package["families"][0]["variants"][0]["variant_id"]
+        self.assertTrue(package.load_variant(variant_id)["modification_zones"])
         library.close()
 
     def test_holdout_closure_follows_duplicates(self):
@@ -361,17 +386,18 @@ REPO = Path(__file__).resolve().parents[1]
 EXPORTS = REPO / "ols files geextracteert"
 
 
-@unittest.skipUnless(PY_OLS and Path(PY_OLS).exists(), "PY_OLS_PATH niet gezet (py-ols checkout nodig)")
 class RealSampleReproductionTests(unittest.TestCase):
+    """Uses the built-in reader: runs everywhere the repository samples exist."""
+
     @classmethod
     def setUpClass(cls):
-        from ols_platform.reader import PyOlsReader
+        from ols_platform.tuning.ols_native import NativeOlsReader
 
         cls.tmp = tempfile.TemporaryDirectory()
         store = PackageStore(Path(cls.tmp.name) / "store")
         library = Library(store)
         cls.before = {p.name: sha(p.read_bytes()) for p in (REPO / "ols files als ols").glob("*.ols")}
-        cls.scan = library.scan({"repo": REPO / "ols files als ols"}, PyOlsReader(Path(PY_OLS)),
+        cls.scan = library.scan({"repo": REPO / "ols files als ols"}, NativeOlsReader(),
                                 export_dirs=[EXPORTS])
         cls.training = library.train()
         library.close()
@@ -397,11 +423,25 @@ class RealSampleReproductionTests(unittest.TestCase):
             data = (EXPORTS / original).read_bytes()
             result = generate(data, "stage1", self.package)
             self.assertEqual(result.output, (EXPORTS / tuned).read_bytes(), original)
+            self.assertEqual(result.evidence_level, "KNOWN_PAIR")
+            # Same original with a different byte outside the tuned areas
+            # (e.g. VIN/immobiliser data) still yields the known Stage 1.
+            changed = set()
+            for c in result.changes:
+                changed.update(range(c["start"], c["end"]))
+            spot = next(i for i in range(len(data) // 2, len(data)) if i not in changed and data[i] != 0x55)
+            variant = bytearray(data)
+            variant[spot] = 0x55
+            other = generate(bytes(variant), "stage1", self.package)
+            self.assertEqual(other.evidence_level, "KNOWN_PAIR")
+            self.assertFalse(other.identity["original_sha256_equal"])
+            self.assertEqual(other.output[spot], 0x55)
 
     def test_real_unsuitable_inputs_are_rejected(self):
         cases = {
             "WinOLS (BMW 7er (Stage 1) - B57D30S0-G1).bin": "already_tuned",
             "WinOLS (VW Golf (P&B) - SCG0051000000)": "other_modification_present",
+            "WinOLS (VW Golf (Stage 1) - SCG0051000000)": "already_tuned",
             "WinOLS (Audi A8 (Original) - 522813).DTF": "ecu_not_recognized",
         }
         for name, code in cases.items():
@@ -416,3 +456,49 @@ class RealSampleReproductionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(PY_OLS and Path(PY_OLS).exists(), "PY_OLS_PATH niet gezet (py-ols checkout nodig)")
+class NativeReaderParityTests(unittest.TestCase):
+    def test_native_reader_matches_py_ols_on_all_samples(self):
+        from ols_platform.reader import PyOlsReader
+        from ols_platform.tuning.ols_native import NativeOlsReader
+
+        py, native = PyOlsReader(Path(PY_OLS)), NativeOlsReader()
+        for path in sorted((REPO / "ols files als ols").glob("*.ols")):
+            a, b = py.inspect(path), native.inspect(path)
+            self.assertEqual({k: v for k, v in a.metadata.items() if v},
+                             {k: v for k, v in b.metadata.items() if v}, path.name)
+            self.assertEqual([(s.slot_index, s.blob_offset, s.blob_size) for s in a.version_slots],
+                             [(s.slot_index, s.blob_offset, s.blob_size) for s in b.version_slots], path.name)
+
+
+class ScaleBehaviourTests(unittest.TestCase):
+    def test_software_variants_are_learned_separately(self):
+        alpha = [make_pair(s) for s in (1, 2)]
+        beta_variant = Variant(sw="SWBETA-0002")
+        beta = [make_pair(s, beta_variant) for s in (3, 4)]
+        package = build_package(alpha + beta)
+        self.assertEqual(len(package["families"]), 1)
+        self.assertEqual(len(package["families"][0]["variants"]), 2)
+        for variant, seed in ((Variant(), 9), (beta_variant, 10)):
+            original = make_original(seed, variant, calibration_scale=1.01)
+            result = generate(original, "stage1", package)
+            self.assertIn(variant.sw, result.variant_key)
+
+    def test_most_common_tune_wins_for_a_known_original(self):
+        pair = make_pair(1)
+        other = make_pair(1)
+        alt = bytearray(other.tuned)
+        alt[SWITCH_OFFSET] = 0x02
+        other.tuned = bytes(alt)
+        other.pair_id = "zz-alternative"
+        other.record = dict(other.record, tuned_sha256=sha(other.tuned))
+        twin = make_pair(1)
+        twin.pair_id = "aa-duplicate-project"
+        twin.record = dict(twin.record, project_sha256="another-project")
+        package = build_package([pair, other, twin])
+        result = generate(pair.original, "stage1", package)
+        self.assertEqual(result.output, pair.tuned)
+        self.assertEqual(result.evidence_level, "KNOWN_PAIR")
+        self.assertTrue(any("andere Stage 1" in n for n in result.notes))

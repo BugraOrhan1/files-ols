@@ -1155,9 +1155,9 @@ Zie [TUNING_STATUS.md](./TUNING_STATUS.md) voor bewijs, beperkingen en acceptati
 2. Kies **Stage 1** en klik **Maak getunde BIN**; kies waar het bestand wordt opgeslagen.
 3. Bij weigering staat de reden in beeld; anders ligt naast de BIN een `.rapport.json`.
 
-Het eigen modelpakket staat in `%LOCALAPPDATA%\OLS Tuner\`. Bibliotheek bijwerken:
+Het eigen modelpakket staat in `%LOCALAPPDATA%\OLS Tuner\`. Bibliotheek bijwerken (ingebouwde OLS-lezer, ook via de knop in de app of `OLSTuner.exe train …`):
 
 ```powershell
-python -m ols_platform.tuning train --py-ols C:\tools\py-ols `
-  --source "Database 1=\\Dell\d\Database 1" --exports "D:\WinOLS-exports"
+python -m ols_platform.tuning train `
+  --source "Database 1=\\Dell\d\Database 1" --source "Default=\\Dell\d\Default"
 ```

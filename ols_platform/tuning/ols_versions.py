@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-_TAG_PATTERN = re.compile(rb"(\d{1,2}) \(Original,")
+_TAG_PATTERN = re.compile(rb"(\d{1,2}) \(([^\x00-\x08,\t]{1,80})(?:,\t |\))")
 _HEADER_SCAN_BYTES = 1024 * 1024
 
 
@@ -67,30 +67,45 @@ def parse_revision_tag(head: bytes) -> RevisionTag | None:
             else:
                 name, note = item, ""
             versions.append(VersionTag(index, name.strip(), note.strip()))
-        if not versions or versions[0].name != "Original":
+        if not versions or len(versions) != declared + 1:
             continue
         return RevisionTag(declared, tuple(versions), raw)
     return None
 
 
+_EXTRA_WORK = re.compile(
+    r"\+|&|egr|dpf|fap|opf|gpf|vmax|v-max|pop|bang|burble|crackle|p ?& ?b|adblue|scr|nox|dtc|"
+    r"launch|lc\b|hardcut|cat\b|kat|swirl|flap|immo|start.?stop|e85|flex|lambda|o2|tva|maf|"
+    r"\boff\b|\baus\b|remove|delete|torq(ue)? ?monitor|speed ?limit|limiter",
+    re.IGNORECASE,
+)
+
+
 def classify_profile(name: str) -> str:
     """Return the tuning profile of a version name, or ``combined``/``other``.
 
-    Only an exact Stage 1 label counts as a pure Stage 1 training example;
-    combined labels such as ``Stage 1 + P&B`` or ``stage 1 = Vmax 280`` stay
-    out of the pure set.
+    Pure Stage 1: labels such as ``Stage 1``, ``Stage1``, ``STAGE 1``, ``Stufe 1``,
+    ``St1``, optionally with power/torque info in brackets (``Stage 1 (450PS)``).
+    Anything that names an additional modification (EGR, DPF, Vmax, P&B, ...)
+    is ``combined`` and stays out of the pure set.
     """
 
     normalized = re.sub(r"\s+", " ", name.strip().lower())
-    if normalized == "original":
+    if normalized in ("original", "orginal", "ori", "org", "stock", "serie", "standard"):
         return "original"
-    if re.fullmatch(r"stage ?1", normalized):
-        return "stage1"
-    if re.fullmatch(r"stage ?2", normalized):
-        return "stage2"
-    if re.match(r"stage ?\d", normalized):
+    core = re.sub(r"\((?:[^()]*)\)|\[[^\]]*\]", " ", normalized)
+    core = re.sub(r"\b\d{2,4} ?(ps|hp|pk|cv|kw|nm|bhp)\b", " ", core)
+    core = re.sub(r"\s+", " ", core).strip(" -_.:")
+    stage = re.match(r"^(stage|stufe|st|step|etappe)[ ._-]?(\d)\b", core)
+    if stage is None:
+        return "other"
+    if _EXTRA_WORK.search(core):
         return "combined"
-    return "other"
+    rest = core[stage.end():].strip(" -_.:")
+    if rest:
+        return "combined"
+    number = stage.group(2)
+    return {"1": "stage1", "2": "stage2", "3": "stage3"}.get(number, "other")
 
 
 def checksum_state(note: str) -> str:

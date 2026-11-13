@@ -12,7 +12,7 @@ import struct
 from dataclasses import dataclass, field
 from typing import Any
 
-from .identity import classify_input, match_identity
+from .identity import classify_input
 from .package import PROFILE_LABELS
 
 
@@ -57,52 +57,65 @@ def _unpack(data: bytes, endian: str) -> int:
     return struct.unpack("<H" if endian == "little" else ">H", data)[0]
 
 
-def _select_family(package: dict[str, Any], data: bytes) -> tuple[dict, dict, dict]:
-    ecu_hits = []
-    for family in package["families"]:
+def _select_variant(package, data: bytes) -> tuple[dict, dict, dict]:
+    """Pick the software variant by size and identity tokens found in the bytes."""
+
+    cache: dict[str, bool] = {}
+
+    def has(token: str) -> bool:
+        if token not in cache:
+            cache[token] = token.encode("latin-1", "ignore") in data
+        return cache[token]
+
+    def check(identity: dict[str, list[str]]) -> dict[str, dict[str, list[str]]]:
+        return {
+            field: {"found": [t for t in tokens if has(t)], "missing": [t for t in tokens if not has(t)]}
+            for field, tokens in identity.items()
+        }
+
+    full = []
+    recognized: dict[str, dict] = {}
+    partial = []
+    for family, variant in package.variants():
         ecu_tokens = family["family_identity"].get("ecu_type", [])
-        ecu_found = bool(ecu_tokens) and all(t.encode("latin-1") in data for t in ecu_tokens)
-        if ecu_found:
-            ecu_hits.append(family)
-    if not ecu_hits:
-        # Fall back on full identity in case the ECU type string is absent.
-        for family in package["families"]:
-            for variant in family["variants"]:
-                check = match_identity(variant["identity"], data)
-                if check and all(not v["missing"] for v in check.values()):
-                    ecu_hits.append(family)
-                    break
-    if not ecu_hits:
+        ecu_found = bool(ecu_tokens) and all(has(t) for t in ecu_tokens)
+        result = check(variant["identity"])
+        missing = [t for v in result.values() for t in v["missing"]]
+        found = sum(len(v["found"]) for v in result.values())
+        if ecu_found or found:
+            recognized[family["family_key"]] = family
+        if variant["size"] != len(data):
+            continue
+        if not missing:
+            full.append((-found, variant["variant_id"], family, variant, result))
+        elif ecu_found or found:
+            partial.append((variant["variant_id"], family, variant, result))
+    if full:
+        full.sort(key=lambda item: (item[0], item[1]))
+        _, _, family, variant, result = full[0]
+        return family, variant, result
+    if not recognized:
         known = ", ".join(sorted({f["ecu_type"] or f["family_key"] for f in package["families"]}))
         raise GenerationRejected(
             "ecu_not_recognized",
             "De ECU van dit bestand is niet herkend door het actieve modelpakket "
             f"(bekende families: {known}).",
         )
-    size_hits = [f for f in ecu_hits if f["size"] == len(data)]
-    if not size_hits:
-        sizes = ", ".join(str(f["size"]) for f in ecu_hits)
+    if not partial:
+        family = sorted(recognized.values(), key=lambda f: f["family_key"])[0]
+        sizes = ", ".join(sorted({str(v["size"]) for f in recognized.values() for v in f["variants"]}))
         raise GenerationRejected(
             "unknown_segment_layout",
-            f"De ECU-familie {ecu_hits[0]['ecu_type']} is herkend, maar de bestandsgrootte "
-            f"({len(data)} bytes) past bij geen bewezen leesvorm/segmentindeling "
-            f"({sizes} bytes). Mogelijk is dit een andere uitleesvorm (bijv. alleen "
-            "kalibratie of volledige flash) die nog niet gevalideerd is.",
+            f"De ECU-familie {family['ecu_type'] or family['family_key']} is herkend, maar de "
+            f"bestandsgrootte ({len(data)} bytes) past bij geen bewezen leesvorm/segmentindeling "
+            f"({sizes} bytes). Mogelijk is dit een andere uitleesvorm (bijv. alleen kalibratie of "
+            "volledige flash) die nog niet gevalideerd is.",
         )
-    reasons = []
-    for family in size_hits:
-        for variant in family["variants"]:
-            check = match_identity(variant["identity"], data)
-            hw_missing = [
-                t for f in ("hw_number", "hw_code") for t in check.get(f, {}).get("missing", [])
-            ]
-            sw_missing = [
-                t for f in ("sw_number", "sw_version") for t in check.get(f, {}).get("missing", [])
-            ]
-            if not hw_missing and not sw_missing:
-                return family, variant, check
-            reasons.append((hw_missing, sw_missing))
-    hw_missing, sw_missing = reasons[0]
+    partial.sort(key=lambda item: (
+        -sum(len(v["found"]) for v in item[3].values()), item[0]))
+    _, family, variant, result = partial[0]
+    hw_missing = [t for f in ("hw_number", "hw_code") for t in result.get(f, {}).get("missing", [])]
+    sw_missing = [t for f in ("sw_number", "sw_version") for t in result.get(f, {}).get("missing", [])]
     if hw_missing and not sw_missing:
         raise GenerationRejected(
             "other_hardware",
@@ -111,11 +124,58 @@ def _select_family(package: dict[str, Any], data: bytes) -> tuple[dict, dict, di
         )
     raise GenerationRejected(
         "software_variant_not_validated",
-        "De ECU-familie en bestandsindeling zijn herkend, maar de softwarevariant "
-        "staat niet in het pakket (niet gevonden: "
-        f"{', '.join(sw_missing or hw_missing)}). De kaartindeling voor deze variant "
-        "is nog niet gevalideerd.",
+        "De ECU-familie en bestandsindeling zijn herkend, maar deze softwarevariant staat niet "
+        f"in het pakket (niet gevonden: {', '.join(sw_missing or hw_missing)}). De kaartindeling "
+        "voor deze variant is nog niet gevalideerd; werk de bibliotheek bij met projecten van "
+        "deze software.",
     )
+
+
+def _check_zones(blob: dict[str, Any], data: bytes) -> None:
+    zone_hits = sorted({
+        zone["label"] for zone in blob.get("modification_zones", [])
+        if data[zone["start"]:zone["end"]].hex() == zone["tuned"]
+        and zone["tuned"] != zone["original"]
+    })
+    if zone_hits:
+        raise GenerationRejected(
+            "other_modification_present",
+            "Het bestand bevat al een andere bewerking (" + ", ".join(zone_hits[:5])
+            + "). Open het ongewijzigde origineel.",
+        )
+
+
+def _edits_match(data: bytes, edits: list, column: int) -> bool:
+    for edit in edits:
+        start, expected = edit[0], edit[column]
+        if data[start:start + len(expected) // 2].hex() != expected:
+            return False
+    return True
+
+
+def _known_pair(known: list[dict[str, Any]], data: bytes, input_sha: str) -> dict[str, Any] | None:
+    """Return the training pair whose original matches this input in every
+    byte that pair's Stage 1 changes (identical original -> identical tune)."""
+
+    for pair in known:
+        if pair["edits"] and _edits_match(data, pair["edits"], 2) and not _edits_match(data, pair["edits"], 1):
+            raise GenerationRejected(
+                "already_tuned",
+                "Dit bestand is al getuned: het bevat precies de Stage 1-wijzigingen van "
+                f"trainingsproject {pair.get('project_name') or pair['pair_id']}. Open het originele bestand.",
+            )
+    matches = [p for p in known if p["edits"] and _edits_match(data, p["edits"], 1)]
+    if not matches:
+        return None
+    exact = [p for p in matches if p.get("original_sha256") == input_sha]
+    pool = exact or matches
+    counts: dict[str, int] = {}
+    for p in pool:
+        counts[p["tuned_sha256"]] = counts.get(p["tuned_sha256"], 0) + 1
+    pool.sort(key=lambda p: (-counts[p["tuned_sha256"]], -len(p["edits"]), p["pair_id"]))
+    choice = dict(pool[0])
+    choice["alternatives"] = len({p["tuned_sha256"] for p in pool}) - 1
+    return choice
 
 
 def _region_looks_tuned(region: dict[str, Any], data: bytes) -> bool:
@@ -142,7 +202,7 @@ def _region_looks_tuned(region: dict[str, Any], data: bytes) -> bool:
     return decisive >= 3 and votes / decisive > 0.5
 
 
-def _check_mixed_input(family: dict[str, Any], profile: dict[str, Any], data: bytes) -> None:
+def _check_mixed_input(blob: dict[str, Any], profile: dict[str, Any], data: bytes) -> None:
     tuned_hits = 0
     original_hits = 0
     for region in profile["regions"]:
@@ -162,18 +222,7 @@ def _check_mixed_input(family: dict[str, Any], profile: dict[str, Any], data: by
             f"Dit bestand is al getuned: {tuned_hits} van {total} geleerde "
             "Stage 1-gebieden bevatten al de getunede waarden. Open het originele bestand.",
         )
-    zone_hits = sorted({
-        zone["label"] for zone in family.get("modification_zones", [])
-        if data[zone["start"]:zone["end"]].hex() == zone["tuned"]
-        and zone["tuned"] != zone["original"]
-    })
-    if zone_hits:
-        raise GenerationRejected(
-            "other_modification_present",
-            "Het bestand bevat al een andere bewerking ("
-            + ", ".join(zone_hits)
-            + "). Open het ongewijzigde origineel.",
-        )
+    _check_zones(blob, data)
     if tuned_hits:
         raise GenerationRejected(
             "partially_tuned",
@@ -231,22 +280,71 @@ def _apply_region(region: dict[str, Any], data: bytes, settings: dict[str, Any])
     return bytes(out), "+".join(sorted(methods)) or "exact", []
 
 
-def generate(data: bytes, profile_name: str, package: dict[str, Any], contracts: dict | None = None) -> GenerationResult:
+def _integrity(family: dict[str, Any], contracts: dict | None) -> dict[str, Any]:
+    contract = (contracts or {}).get(family["family_key"], {"contract": "UNKNOWN"})
+    ready = contract.get("contract") == "FLASH_TOOL_CORRECTS_ON_WRITE"
+    return {
+        "reference_checksum_states": family["integrity"]["reference_checksum_states"],
+        "contract": contract.get("contract", "UNKNOWN"),
+        "contract_evidence": contract.get("evidence", ""),
+        "ready_for_use": ready,
+        "remaining_step": (
+            "Checksumcorrectie bij het schrijven door het flashprogramma (AutoTuner), "
+            "zoals door de gebruiker vastgelegd."
+            if ready else "Integriteitsmethode onbekend: export geblokkeerd."
+        ),
+    }
+
+
+def generate(data: bytes, profile_name: str, package, contracts: dict | None = None) -> GenerationResult:
     classification = classify_input(data)
     if classification.kind != "raw_image":
         raise GenerationRejected(f"input_{classification.kind}", classification.message)
-    family, variant, identity = _select_family(package, data)
-    profile = family["profiles"].get(profile_name)
-    if profile is None:
-        available = ", ".join(PROFILE_LABELS.get(p, p) for p in family["profiles"]) or "geen"
+    family, variant, identity = _select_variant(package, data)
+    blob = package.load_variant(variant["variant_id"])
+    profile = blob["profiles"].get(profile_name)
+    known = blob["known_pairs"].get(profile_name, [])
+    if profile is None and not known:
+        available = ", ".join(PROFILE_LABELS.get(p, p) for p in blob["profiles"]) or "geen"
         raise GenerationRejected(
             "profile_not_available",
-            f"Profiel {PROFILE_LABELS.get(profile_name, profile_name)} is voor deze familie "
+            f"Profiel {PROFILE_LABELS.get(profile_name, profile_name)} is voor deze softwarevariant "
             f"niet getraind (beschikbaar: {available}).",
         )
-    if not profile["regions"]:
+    input_sha = hashlib.sha256(data).hexdigest()
+    pair = _known_pair(known, data, input_sha)  # raises already_tuned first
+    _check_zones(blob, data)
+    if pair is not None:
+        output = bytearray(data)
+        changes = []
+        for start, orig_hex, tuned_hex in pair["edits"]:
+            new = bytes.fromhex(tuned_hex)
+            output[start:start + len(new)] = new
+            changes.append({
+                "start": start, "end": start + len(new), "kind": "known_pair", "method": "bekend paar",
+                "changed_bytes": sum(1 for a, b in zip(new, bytes.fromhex(orig_hex)) if a != b),
+                "changed_cells": None, "map": None, "label": f"Wijziging 0x{start:X}",
+            })
+        out_bytes = bytes(output)
+        notes = [
+            f"Origineel herkend: zelfde bytes als trainingsproject {pair.get('project_name') or pair['pair_id']} "
+            f"in alle {len(pair['edits'])} Stage 1-gebieden; diens Stage 1 ({pair.get('tuned_version_name', '')}) is toegepast."
+        ]
+        if pair["alternatives"]:
+            notes.append(f"Er bestaan {pair['alternatives']} andere Stage 1-varianten voor dit origineel; "
+                         "de meest voorkomende is gekozen.")
+        return GenerationResult(
+            output=out_bytes, family_key=family["family_key"], variant_key=variant["variant_key"],
+            profile=profile_name, package_id=package["package_id"], input_sha256=input_sha,
+            output_sha256=hashlib.sha256(out_bytes).hexdigest(), changes=changes,
+            allowed_ranges=[(c["start"], c["end"]) for c in changes],
+            identity={"family": family["ecu_type"], "variant": variant["variant_key"], "match": identity,
+                      "known_pair": pair["pair_id"], "original_sha256_equal": pair.get("original_sha256") == input_sha},
+            evidence_level="KNOWN_PAIR", integrity=_integrity(family, contracts), notes=notes,
+        )
+    if profile is None or not profile["regions"]:
         raise GenerationRejected("empty_profile", "Het profiel bevat geen geleerde wijzigingen.")
-    _check_mixed_input(family, profile, data)
+    _check_mixed_input(blob, profile, data)
     settings = package["settings"]
     output = bytearray(data)
     changes = []
@@ -298,19 +396,7 @@ def generate(data: bytes, profile_name: str, package: dict[str, Any], contracts:
             ),
             {"failures": [{"code": f.code, "message": f.message} for f in failures[:50]]},
         )
-    contract = (contracts or {}).get(family["family_key"], {"contract": "UNKNOWN"})
-    integrity = {
-        "reference_checksum_states": family["integrity"]["reference_checksum_states"],
-        "contract": contract.get("contract", "UNKNOWN"),
-        "contract_evidence": contract.get("evidence", ""),
-        "ready_for_use": contract.get("contract") == "FLASH_TOOL_CORRECTS_ON_WRITE",
-        "remaining_step": (
-            "Checksumcorrectie bij het schrijven door het flashprogramma (AutoTuner), "
-            "zoals door de gebruiker vastgelegd."
-            if contract.get("contract") == "FLASH_TOOL_CORRECTS_ON_WRITE"
-            else "Integriteitsmethode onbekend: export geblokkeerd."
-        ),
-    }
+    integrity = _integrity(family, contracts)
     out_bytes = bytes(output)
     return GenerationResult(
         output=out_bytes,
@@ -318,7 +404,7 @@ def generate(data: bytes, profile_name: str, package: dict[str, Any], contracts:
         variant_key=variant["variant_key"],
         profile=profile_name,
         package_id=package["package_id"],
-        input_sha256=hashlib.sha256(data).hexdigest(),
+        input_sha256=input_sha,
         output_sha256=hashlib.sha256(out_bytes).hexdigest(),
         changes=changes,
         allowed_ranges=[(r["start"], r["end"]) for r in profile["regions"]],
