@@ -1146,3 +1146,18 @@ The integrated Phase 26 release-readiness checklist, final test evidence,
 worker observations, and `NO_GO` distribution decision are recorded in
 [PHASE26_STATUS.md](./PHASE26_STATUS.md). Independent WinOLS validation and
 ECU compatibility remain `NOT_TESTED`.
+
+## OLS Tuner: Stage 1 uit geleerde projecten (Windows-app)
+
+Zie [TUNING_STATUS.md](./TUNING_STATUS.md) voor bewijs, beperkingen en acceptatietests.
+
+1. Start `OLSTuner.exe` (portable ZIP uit de workflow *Windows build*) en klik **Open origineel**.
+2. Kies **Stage 1** en klik **Maak getunde BIN**; kies waar het bestand wordt opgeslagen.
+3. Bij weigering staat de reden in beeld; anders ligt naast de BIN een `.rapport.json`.
+
+Het eigen modelpakket staat in `%LOCALAPPDATA%\OLS Tuner\`. Bibliotheek bijwerken:
+
+```powershell
+python -m ols_platform.tuning train --py-ols C:\tools\py-ols `
+  --source "Database 1=\\Dell\d\Database 1" --exports "D:\WinOLS-exports"
+```
