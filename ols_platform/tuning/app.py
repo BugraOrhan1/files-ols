@@ -18,6 +18,7 @@ from . import SOFTWARE_VERSION
 from .export import ExportBlocked, export_result
 from .background import read_status, request_stop, start_background
 from .diagnostics import app_logger, close_logger, create_bundle
+from .practice import family_line, read_stats, summary_line
 from .generate import GenerationRejected, GenerationResult, available_profiles, generate
 from .ols_versions import profile_label
 from .package import PackageStore, write_package
@@ -242,7 +243,8 @@ class TunerApp:
         pairs = len(self.package["training_selection"])
         profiles = len({p for _f, v in self.package.variants() for p in v["profiles"]})
         self.package_var.set(
-            f"Bibliotheek: {pairs} voorbeelden · {profiles} soorten tuning · {variants} softwarevarianten · "
+            f"Bibliotheek: {pairs} voorbeelden · {profiles} {'soort' if profiles == 1 else 'soorten'} tuning · "
+            f"{variants} softwarevarianten · "
             f"{families} ECU-families  (bijgewerkt {self.package['created_at'][:16].replace('T', ' ')} UTC)")
         if self.original is None:
             self.message.show("info", "Klaar voor gebruik", "Open een origineel bestand om te beginnen.")
@@ -260,7 +262,9 @@ class TunerApp:
                 return default / 100
 
         return {"hint": self.original.name if self.original else "",
-                "min_similarity": pct("min_similarity", 70), "min_coverage": pct("min_coverage", 100)}
+                "min_similarity": pct("min_similarity", 70), "min_coverage": pct("min_coverage", 100),
+                # minimum similarity per ECU family learned from practice
+                "family_floor": read_stats(self.store.root).get("floors", {})}
 
     def poll_background(self) -> None:
         """Show background library progress and load new versions automatically."""
@@ -316,7 +320,8 @@ class TunerApp:
         try:
             options = self._transfer_options()
             _family, _variant, profiles = available_profiles(
-                self.original.read_bytes(), self.package, options["hint"], options["min_similarity"])
+                self.original.read_bytes(), self.package, options["hint"], options["min_similarity"],
+                options["family_floor"])
         except GenerationRejected as exc:
             self.profile_map = {}
             self.profile_box.configure(values=[])
@@ -375,6 +380,9 @@ class TunerApp:
         lines.extend(result.notes)
         lines.append(f"Tuning: {profile_label(result.profile)}  ·  ECU: {result.identity['family']}  ·  "
                      f"{len(result.changes)} gebieden worden aangepast.")
+        practice = family_line(read_stats(self.store.root), result.family_key)
+        if practice:
+            lines.append(practice)
         if not result.integrity["ready_for_use"]:
             lines.append("De app past geen checksum aan. Klik op 'Checksum vastleggen…' als AutoTuner de "
                          "checksum voor deze ECU bij het schrijven corrigeert; daarna kunt u de BIN maken.")
@@ -498,8 +506,8 @@ class LibraryWindow:
         self.app, self.tk, self.ttk = app, tk, ttk
         self.win = tk.Toplevel(app.root)
         self.win.title("OLS Tuner – Bibliotheek")
-        self.win.geometry("900x620")
-        self.win.minsize(780, 540)
+        self.win.geometry("980x640")
+        self.win.minsize(820, 560)
         self.last_log: list[str] = []
         self.last_state = None
         self.notebook = ttk.Notebook(self.win)
@@ -544,11 +552,13 @@ class LibraryWindow:
         self.run_button = ttk.Button(controls, text="Bibliotheek bijwerken", style="Primary.TButton",
                                      command=self.update_library)
         self.run_button.pack(side="left")
+        self.practice_button = ttk.Button(controls, text="Oefenen", command=self.practise)
+        self.practice_button.pack(side="left", padx=(8, 0))
         self.stop_button = ttk.Button(controls, text="Stoppen", command=self.stop, state="disabled")
         self.stop_button.pack(side="left", padx=8)
-        ttk.Label(controls, text="Loopt op de achtergrond door, ook als u dit venster of de app sluit. "
-                  "Bij stoppen wordt alles wat al gescand is direct bruikbaar.",
-                  style="Muted.TLabel", wraplength=470).pack(side="left", padx=8)
+        ttk.Label(controls, text="Loopt op de achtergrond door, ook als u de app sluit. Na het bijwerken "
+                  "oefent hij vanzelf: elk voorbeeld verbergen, opnieuw tunen en vergelijken.",
+                  style="Muted.TLabel", wraplength=400).pack(side="left", padx=8)
         self.progress_var = tk.StringVar(value="")
         self.progress = ttk.Progressbar(run, mode="determinate", maximum=100)
         self.progress.pack(fill="x", pady=(10, 2))
@@ -647,6 +657,17 @@ class LibraryWindow:
             self.write("Het bijwerken loopt al.")
         self.poll(once=True)
 
+    def practise(self) -> None:
+        if self.app.package is None:
+            self.write("Werk eerst de bibliotheek bij.")
+            return
+        if start_background(self.app.store.root, "practice"):
+            self.write("Oefenen gestart op de achtergrond: elk voorbeeld wordt verborgen, opnieuw getuned uit de "
+                       "rest van de database en vergeleken met de echte tune.")
+        else:
+            self.write("Er loopt al een achtergrondtaak.")
+        self.poll(once=True)
+
     def stop(self) -> None:
         request_stop(self.app.store.root)
         self.progress_var.set("Stoppen… lopende projecten worden afgemaakt, daarna wordt geleerd van wat al gescand is.")
@@ -656,14 +677,18 @@ class LibraryWindow:
             status = read_status(self.app.store.root)
             running = status["running"]
             self.run_button.configure(state="disabled" if running else "normal")
+            self.practice_button.configure(state="disabled" if running else "normal")
             self.stop_button.configure(state="normal" if running else "disabled")
             cur = status.get("current") or {}
             if running:
                 if cur.get("found"):
                     self.progress.configure(value=cur["done"] / cur["found"] * 100)
-                text = f"{cur.get('source', '')}: {cur.get('done', 0)} van {cur.get('found', 0)} projecten gelezen" if cur else "Bezig…"
+                text = (f"{cur.get('source', '')}: {cur.get('done', 0)} van {cur.get('found', 0)} projecten gelezen"
+                        if cur else "Bezig…")
                 if status.get("phase") == "leren":
                     text += " – nieuwe bibliotheekversie wordt gemaakt"
+                if status.get("phase") == "oefenen":
+                    text = f"Oefenen: {cur.get('done', 0)} van {cur.get('found', 0)} voorbeelden getest"
                 if not self.progress_var.get().startswith("Stoppen"):
                     self.progress_var.set(text)
             elif status.get("state") in ("finished", "stopped", "failed", "interrupted"):
@@ -706,11 +731,11 @@ class LibraryWindow:
         ttk.Button(top, text="Vernieuwen", command=self.refresh_overview).pack(side="right")
         frame = ttk.Frame(tab)
         frame.pack(fill="both", expand=True, pady=(6, 0))
-        cols = (("tunings", "Soorten tuning", 230), ("projects", "Projecten", 75), ("pairs", "Voorbeelden", 95),
-                ("checksum", "Checksum", 115))
+        cols = (("tunings", "Soorten tuning", 180), ("projects", "Projecten", 80), ("pairs", "Voorbeelden", 95),
+                ("practice", "Oefentests", 150), ("checksum", "Checksum", 120))
         self.overview = ttk.Treeview(frame, columns=[c[0] for c in cols], show="tree headings")
         self.overview.heading("#0", text="ECU-familie / softwarevariant")
-        self.overview.column("#0", width=320)
+        self.overview.column("#0", width=260)
         for col, label, width in cols:
             self.overview.heading(col, text=label, anchor="w")
             self.overview.column(col, width=width, anchor="w")
@@ -748,8 +773,10 @@ class LibraryWindow:
             return
         contracts = self.app.store.contracts()
         variants = sum(1 for _ in package.variants())
+        stats = read_stats(self.app.store.root)
         self.summary_var.set(f"{len(package['training_selection'])} voorbeelden · {variants} softwarevarianten · "
                              f"{len(package['families'])} ECU-families")
+        self.scan_var.set(self.scan_var.get() + "\n" + summary_line(stats))
         for family in package["families"]:
             contract = contracts.get(family["family_key"], {}).get("contract", "UNKNOWN")
             check = "vastgelegd" if contract == "FLASH_TOOL_CORRECTS_ON_WRITE" else "niet vastgelegd"
@@ -758,13 +785,21 @@ class LibraryWindow:
             fam_profiles = sorted({p for v in family["variants"] for p in v["profiles"]})
             fam_id = self.overview.insert(
                 "", "end", text=f"{family['ecu_type'] or family['family_key']}  ({family['size']:,} B)".replace(",", "."),
-                values=(f"{len(fam_profiles)} {'soort' if len(fam_profiles) == 1 else 'soorten'}", projects, pairs, check),
+                values=(f"{len(fam_profiles)} {'soort' if len(fam_profiles) == 1 else 'soorten'}", projects, pairs,
+                        self._practice_text(stats, family["family_key"]), check),
                 open=False)
             for variant in family["variants"]:
                 label = variant["variant_key"].replace("|", "  ·  ")
                 tunings = ", ".join(profile_label(p) for p in sorted(variant["profiles"]))
                 self.overview.insert(fam_id, "end", text=label[:120], values=(
-                    tunings, len(variant["projects"]), len(variant["pairs"]), ""))
+                    tunings, len(variant["projects"]), len(variant["pairs"]), "", ""))
+
+    @staticmethod
+    def _practice_text(stats: dict, family_key: str) -> str:
+        f = stats.get("families", {}).get(family_key)
+        if not f or not f["tests"]:
+            return "nog niet"
+        return f"{f['good']}/{f['tests']} goed ({f['average_score']:.0%})"
 
     # ----- Versies ---------------------------------------------------------
     def _build_packages(self, tab) -> None:
@@ -966,7 +1001,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, indent=2))
         return 0 if result["passed"] else 1
     if argv and argv[0] in ("train", "generate", "packages", "rollback", "install-package",
-                            "export-package", "contract", "update-library", "--store"):
+                            "export-package", "contract", "update-library", "practice", "--store"):
         from .__main__ import main as cli_main
 
         return cli_main(argv)

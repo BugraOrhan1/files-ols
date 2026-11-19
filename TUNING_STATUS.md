@@ -141,6 +141,16 @@ Nog open: 1.623 projecten zonder RevisionTag (ander OLS-formaat). De namen in he
 formaten onbetrouwbaar (slot 3 heet daar “Original” terwijl het “Stage 1 + P&B” is); zonder voorbeeldbestanden
 wordt dit bewust niet geraden.
 
+## Ronde 5: zelf oefenen (verbergen → tunen → vergelijken)
+
+| Onderdeel | Werking | Bewijs |
+| --- | --- | --- |
+| Oefenen | Elk voorbeeld wordt verborgen (met zijn project, kopieën en afgeleiden), opnieuw getuned uit de rest via overzetten (ook andere software-/hardwarenummers) en per 16-bit cel vergeleken met de echte tune (gelijk of ≤0,5% afwijking). Hervatbaar per bibliotheekversie, parallel, stopbaar. | Test: 16 projecten met elk een eigen softwarenummer → 16/16 ≥99%, eigen project nooit als voorbeeld |
+| Leren uit oefenen | Per ECU-familie: aantal tests, aantal goed, gemiddelde, en een geleerde minimale gelijkenis zodra oefenen slechte overzettingen onder een grens vindt; die grens wordt bij tunen automatisch toegepast. | Test `test_learned_floor_blocks_unreliable_similarity` |
+| Beter voorbeeld kiezen | Bij gelijke gelijkenis wint het voorbeeld waarvan de kaartwaarden (op de gevonden plek) het dichtst bij uw bestand liggen. | 21/24 → 24/24 in de oefentest |
+| Veiligheid | Herkent de exacte softwarevariant een (half) getuned bestand, dan wordt er nooit overgezet; herhaalde opvulpatronen tellen niet als bewijs. | Half-getuned test, verschoven VW zonder vals alarm |
+| Achtergrond | Na elke bijwerking oefent hij vanzelf; knop “Oefenen” in Bibliotheek; resultaten in Overzicht en bij elk bestand. | Achtergrondtest `test_background_practice_mode` |
+
 ## Bekend Windows-probleem (bestaande code)
 
 Bestaande index-, inventaris- en workbenchcode vergelijkt soms `Path.resolve()`-paden met

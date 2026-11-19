@@ -246,7 +246,7 @@ def prepare_variant(pairs_by_profile: dict[str, list[TrainingPair]],
             continue
         seen.add(sha)
         fingerprints.append({
-            "variant_id": variant_id, "original_sha256": sha, "size": len(p.original),
+            "variant_id": variant_id, "family_key": first.family_key, "original_sha256": sha, "size": len(p.original),
             "fp": base64.b64encode(fingerprint(p.original)).decode(),
             "anchors": base64.b64encode(anchors(p.original)).decode(),
             "vehicle": p.record.get("vehicle", ""), "project": p.record.get("project_name", ""),

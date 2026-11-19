@@ -211,6 +211,13 @@ def _region_looks_tuned(region: dict[str, Any], data: bytes) -> bool:
     return decisive >= 3 and votes / decisive > 0.5
 
 
+def _layout_confirmed(region: dict[str, Any], data: bytes) -> bool:
+    start, end = region["start"], region["end"]
+    return (_context_matches(data, max(0, start - len(region["context_before"]) // 2),
+                             region["context_before"], region["context_before_mask"])
+            and _context_matches(data, end, region["context_after"], region["context_after_mask"]))
+
+
 def _check_mixed_input(blob: dict[str, Any], profile: dict[str, Any], data: bytes, profile_name: str) -> None:
     label = profile_label(profile_name)
     tuned_hits = 0
@@ -220,10 +227,14 @@ def _check_mixed_input(blob: dict[str, Any], profile: dict[str, Any], data: byte
         tuned_values = {t for o, t in region["exact"]}
         orig_values = {o for o, t in region["exact"]}
         if current in tuned_values and current not in orig_values:
-            tuned_hits += 1
+            raw = bytes.fromhex(current)
+            # repeated fill patterns (e.g. 0080 0080 ...) occur everywhere and prove nothing
+            if len(set(raw)) >= 4 and (_layout_confirmed(region, data) or len(raw) >= 16):
+                tuned_hits += 1
         elif current in orig_values:
             original_hits += 1
-        elif _region_looks_tuned(region, data):
+        elif _layout_confirmed(region, data) and _region_looks_tuned(region, data):
+            # value-level judgement only where the map is at its proven place
             tuned_hits += 1
     total = len(profile["regions"]) or 1
     if tuned_hits and tuned_hits / total >= 0.5:
@@ -290,8 +301,8 @@ def _apply_region(region: dict[str, Any], data: bytes, settings: dict[str, Any])
     return bytes(out), "+".join(sorted(methods)) or "exact", []
 
 
-def available_profiles(data: bytes, package, hint: str = "",
-                       min_similarity: float | None = None) -> tuple[dict | None, dict | None, list[str]]:
+def available_profiles(data: bytes, package, hint: str = "", min_similarity: float | None = None,
+                       family_floor: dict[str, float] | None = None) -> tuple[dict | None, dict | None, list[str]]:
     """Profiles for this file: those of its exact software variant plus those
     of similar originals in the library (best first)."""
 
@@ -309,7 +320,7 @@ def available_profiles(data: bytes, package, hint: str = "",
         profiles = list(variant["profiles"])
     except GenerationRejected as exc:
         error = exc
-    similar, donors = transfer_profiles(package, data, hint, min_similarity or DEFAULT_MIN_SIMILARITY)
+    similar, donors = transfer_profiles(package, data, hint, min_similarity or DEFAULT_MIN_SIMILARITY, family_floor)
     for profile in similar:
         if profile not in profiles:
             profiles.append(profile)
@@ -466,10 +477,10 @@ def _family_of(package, variant_id: str) -> tuple[dict, dict]:
 
 def _by_transfer(data: bytes, profile_name: str, package, contracts: dict | None, hint: str,
                  min_similarity: float | None, min_coverage: float | None,
-                 earlier: GenerationRejected | None) -> GenerationResult:
+                 earlier: GenerationRejected | None, family_floor: dict[str, float] | None = None) -> GenerationResult:
     from .transfer import DEFAULT_MIN_COVERAGE, DEFAULT_MIN_SIMILARITY, transfer
 
-    outcome = transfer(data, profile_name, package, hint=hint,
+    outcome = transfer(data, profile_name, package, hint=hint, family_floor=family_floor,
                        min_similarity=min_similarity or DEFAULT_MIN_SIMILARITY,
                        min_coverage=DEFAULT_MIN_COVERAGE if min_coverage is None else min_coverage)
     if outcome["status"] != "ok":
@@ -524,7 +535,7 @@ def _by_transfer(data: bytes, profile_name: str, package, contracts: dict | None
 
 def generate(data: bytes, profile_name: str, package, contracts: dict | None = None, *,
              hint: str = "", min_similarity: float | None = None,
-             min_coverage: float | None = None) -> GenerationResult:
+             min_coverage: float | None = None, family_floor: dict[str, float] | None = None) -> GenerationResult:
     """Exact software variant first; otherwise transfer from the most similar original."""
 
     classification = classify_input(data)
@@ -535,10 +546,14 @@ def generate(data: bytes, profile_name: str, package, contracts: dict | None = N
     except GenerationRejected as exc:
         # Byte-exact proof that the file is already tuned is final. Everything
         # else (other software, moved maps, value heuristics) gets a transfer try.
-        if exc.code == "already_tuned" or exc.code.startswith("input_"):
+        # Byte-exact or value-range proof from the recognised software variant
+        # that the file is (partly) tuned is final: never transfer onto it.
+        if exc.code in ("already_tuned", "partially_tuned", "other_modification_present") \
+                or exc.code.startswith("input_"):
             raise
         try:
-            return _by_transfer(data, profile_name, package, contracts, hint, min_similarity, min_coverage, exc)
+            return _by_transfer(data, profile_name, package, contracts, hint, min_similarity, min_coverage, exc,
+                                family_floor)
         except GenerationRejected:
             if exc.code in ("partially_tuned", "other_modification_present"):
                 raise exc  # the exact-variant finding is the more specific reason

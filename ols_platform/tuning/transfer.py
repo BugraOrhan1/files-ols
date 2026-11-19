@@ -73,7 +73,8 @@ def shifted_similarity(data: bytes, anchor_blob: bytes) -> float:
 
 
 def rank_donors(package, data: bytes, hint: str = "", profile: str | None = None,
-                min_similarity: float = DEFAULT_MIN_SIMILARITY) -> list[dict[str, Any]]:
+                min_similarity: float = DEFAULT_MIN_SIMILARITY, exclude: set[str] | None = None,
+                family_floor: dict[str, float] | None = None) -> list[dict[str, Any]]:
     """Training originals ordered by similarity to ``data`` (same size only).
 
     Score = max(same-offset sample match, share of anchor snippets found
@@ -89,8 +90,9 @@ def rank_donors(package, data: bytes, hint: str = "", profile: str | None = None
             package._fp_cache = cache  # decoded once per loaded package
         except AttributeError:
             pass
+    exclude = exclude or set()
     for entry in package.fingerprints():
-        if entry["size"] != len(data):
+        if entry["size"] != len(data) or entry["original_sha256"] in exclude:
             continue
         if profile and profile not in entry.get("profiles", []):
             continue
@@ -109,15 +111,16 @@ def rank_donors(package, data: bytes, hint: str = "", profile: str | None = None
         if score < min_similarity and score >= CANDIDATE_FLOOR and checks < MAX_SHIFT_CHECKS and entry.get("anchors"):
             checks += 1
             best = max(score, shifted_similarity(data, base64.b64decode(entry["anchors"])))
-        if best >= min_similarity:
+        floor = max(min_similarity, (family_floor or {}).get(entry.get("family_key", ""), 0.0))
+        if best >= floor:
             ranked.append(dict(entry, similarity=best, same_offset_similarity=score, hint_overlap=overlap))
     ranked.sort(key=lambda e: (-(e["similarity"] + 0.004 * min(e["hint_overlap"], 5)), e["original_sha256"]))
     return ranked
 
 
-def transfer_profiles(package, data: bytes, hint: str = "",
-                      min_similarity: float = DEFAULT_MIN_SIMILARITY) -> tuple[list[str], list[dict[str, Any]]]:
-    donors = rank_donors(package, data, hint, None, min_similarity)[:MAX_DONORS_TRIED * 2]
+def transfer_profiles(package, data: bytes, hint: str = "", min_similarity: float = DEFAULT_MIN_SIMILARITY,
+                      family_floor: dict[str, float] | None = None) -> tuple[list[str], list[dict[str, Any]]]:
+    donors = rank_donors(package, data, hint, None, min_similarity, None, family_floor)[:MAX_DONORS_TRIED * 2]
     profiles: list[str] = []
     for donor in donors:
         for profile in donor.get("profiles", []):
@@ -364,6 +367,60 @@ def already_tuned_by(data: bytes, edits: list[list[Any]]) -> float:
     return tuned_presence(data, edits)[0]
 
 
+def value_distance(data: bytes, edits: list[list[Any]]) -> float:
+    """Mean relative difference between this file's values and the donor's
+    original values, measured where each donor change is actually found
+    (same place, moved, or anchored). Unplaceable changes count as 100 %."""
+
+    _output, placed, missing = place_edits(data, edits)
+    by_start = {e[0]: e for e in edits}
+    total = count = 0.0
+    for item in placed:
+        cells = max(1, (item["end"] - item["start"]) // 2)
+        if item["how"] != "omgerekend":
+            count += cells  # identical original bytes: distance 0
+            continue
+        edit = by_start.get(item["donor_start"])
+        if edit is None:
+            continue
+        orig = bytes.fromhex(edit[1])
+        size = min(len(orig), item["end"] - item["start"]) // 2 * 2
+        if size < 2:
+            continue
+        current = data[item["start"]:item["start"] + size]
+        fmt = "<" if _endian(orig[:size]) == "little" else ">"
+        for a, b in zip(struct.unpack(f"{fmt}{size // 2}H", current), struct.unpack(f"{fmt}{size // 2}H", orig[:size])):
+            total += abs(a - b) / max(b, 1)
+            count += 1
+    for item in missing:
+        cells = max(1, item["length"] // 2)
+        total += cells
+        count += cells
+    return total / count if count else 1.0
+
+
+def _prefer_closest_values(data: bytes, profile: str, package, donors: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Among donors as similar as the best one (within 0.5 %), the donor whose
+    map values are closest to this file comes first: it is the best example
+    to transfer from and the fairest judge of 'already tuned'."""
+
+    if len(donors) < 2:
+        return donors
+    top = donors[0]["similarity"]
+    close = [d for d in donors[:MAX_DONORS_TRIED] if d["similarity"] >= top - 0.005]
+    if len(close) < 2:
+        return donors
+    scored = []
+    for donor in close:
+        pair = choose_known_pair(package.load_variant(donor["variant_id"]), profile, donor["original_sha256"])
+        distance = value_distance(data, pair["edits"]) if pair else 1.0
+        scored.append((distance, -donor["similarity"], donor["original_sha256"], donor))
+    scored.sort(key=lambda item: item[:3])
+    chosen = [item[3] for item in scored]
+    ids = {d["original_sha256"] for d in chosen}
+    return chosen + [d for d in donors if d["original_sha256"] not in ids]
+
+
 def choose_known_pair(blob: dict[str, Any], profile: str, original_sha: str) -> dict[str, Any] | None:
     pairs = [p for p in blob["known_pairs"].get(profile, []) if p.get("original_sha256") == original_sha]
     if not pairs:
@@ -375,17 +432,19 @@ def choose_known_pair(blob: dict[str, Any], profile: str, original_sha: str) -> 
     return pairs[0]
 
 
-def transfer(data: bytes, profile: str, package, *, hint: str = "",
+def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set[str] | None = None,
+             family_floor: dict[str, float] | None = None,
              min_similarity: float = DEFAULT_MIN_SIMILARITY,
              min_coverage: float = DEFAULT_MIN_COVERAGE) -> dict[str, Any]:
     """Best transfer over the most similar donors. Returns a dict with
     ``status`` 'ok' (output, placed, donor, coverage) or 'failed' (reason)."""
 
-    donors = rank_donors(package, data, hint, profile, min_similarity)
+    donors = rank_donors(package, data, hint, profile, min_similarity, exclude, family_floor)
     if not donors:
         return {"status": "failed", "code": "no_similar_original",
                 "reason": f"Geen vergelijkbaar origineel met '{profile}' in de bibliotheek "
                           f"(minimaal {min_similarity:.0%} gelijk, zelfde bestandsgrootte)."}
+    donors = _prefer_closest_values(data, profile, package, donors)
     best = None
     for rank, donor in enumerate(donors[:MAX_DONORS_TRIED]):
         blob = package.load_variant(donor["variant_id"])

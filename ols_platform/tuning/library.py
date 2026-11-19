@@ -701,7 +701,7 @@ class Library:
             by_profile = {p: sorted(ids) for p, ids in groups[key].items()}
             zone_ids = sorted(zones.get(key, []))[:MAX_LEARNING_PAIRS]
             cache_key = hashlib.sha256(json.dumps(
-                {"p": by_profile, "z": zone_ids, "s": cfg, "v": SOFTWARE_VERSION, "f": 4},
+                {"p": by_profile, "z": zone_ids, "s": cfg, "v": SOFTWARE_VERSION, "f": 5},
                 sort_keys=True).encode()).hexdigest()[:32]
             cache_file = cache_dir / f"{cache_key}.json"
             used_cache.add(cache_file.name)

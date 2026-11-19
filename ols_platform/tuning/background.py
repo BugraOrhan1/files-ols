@@ -50,13 +50,14 @@ def request_stop(root: Path) -> None:
     (root / STOP_FILE).write_text(_now(), encoding="utf-8")
 
 
-def worker_command(root: Path) -> list[str]:
+def worker_command(root: Path, mode: str = "update") -> list[str]:
+    command = "practice" if mode == "practice" else "update-library"
     if getattr(sys, "frozen", False):
-        return [sys.executable, "--store", str(root), "update-library"]
-    return [sys.executable, "-m", "ols_platform.tuning", "--store", str(root), "update-library"]
+        return [sys.executable, "--store", str(root), command]
+    return [sys.executable, "-m", "ols_platform.tuning", "--store", str(root), command]
 
 
-def start_background(root: Path) -> bool:
+def start_background(root: Path, mode: str = "update") -> bool:
     """Start the worker detached. Returns False when one is already running."""
 
     if read_status(root)["running"]:
@@ -71,12 +72,13 @@ def start_background(root: Path) -> bool:
         kwargs["start_new_session"] = True
     cwd = Path(__file__).resolve().parents[2]
     try:
-        subprocess.Popen(worker_command(root), cwd=str(cwd) if (cwd / "ols_platform").exists() else None, **kwargs)
+        subprocess.Popen(worker_command(root, mode), cwd=str(cwd) if (cwd / "ols_platform").exists() else None, **kwargs)
     finally:
         log.close()  # the child keeps its own handle
     # Write an initial status so the UI shows "running" immediately.
     _write_status(root, {"state": "running", "pid": None, "started_at": _now(), "heartbeat": time.time(),
-                         "phase": "starten", "log": ["Bijwerken gestart…"], "sources": {}})
+                         "phase": "starten", "sources": {},
+                         "log": ["Oefenen gestart…" if mode == "practice" else "Bijwerken gestart…"]})
     return True
 
 
@@ -111,7 +113,7 @@ class _Status:
 
 
 def run_update(root: Path, *, publish_every_pairs: int = 25, publish_every_seconds: int = 600,
-               workers: int | None = None) -> int:
+               workers: int | None = None, practice: bool = True, practice_only: bool = False) -> int:
     """Body of ``update-library``: scan all configured folders, publish
     intermediate packages, and always publish what was found at the end."""
 
@@ -171,8 +173,21 @@ def run_update(root: Path, *, publish_every_pairs: int = 25, publish_every_secon
     def on_file(source: str, done_count: int, found: int) -> None:
         status.update(current={"source": source, "done": done_count, "found": found})
 
+    def practise() -> None:
+        from .practice import run_practice
+
+        status.update(phase="oefenen", current={"source": "Oefenen", "done": 0, "found": 0})
+        run_practice(library, stop=stop, workers=workers, progress=status.say,
+                     on_test=lambda done_count, total: status.update(
+                         current={"source": "Oefenen", "done": done_count, "found": total}))
+
     exit_code = 0
     try:
+        if practice_only:
+            practise()
+            status.update(state="stopped" if stop.is_set() else "finished", phase="klaar", finished_at=_now())
+            status.say("Oefenen gestopt; verdergaan kan later." if stop.is_set() else "Oefenen klaar.")
+            return exit_code
         if not sources:
             status.say("Geen bronmappen ingesteld.")
         else:
@@ -189,6 +204,8 @@ def run_update(root: Path, *, publish_every_pairs: int = 25, publish_every_secon
                     status.say(f"{key}: {st['found']} projecten, {st['confirmed_pairs']} voorbeelden "
                                f"({st['new_pairs']} nieuw)")
         publish("gestopt – wat al gescand is" if stop.is_set() else "klaar")
+        if practice and not stop.is_set():
+            practise()
         status.update(state="stopped" if stop.is_set() else "finished", phase="klaar", finished_at=_now())
         status.say("Gestopt. Alles wat al gescand is, is nu bruikbaar." if stop.is_set() else "Klaar.")
     except Exception as exc:  # recorded for the UI

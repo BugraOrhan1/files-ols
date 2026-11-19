@@ -139,3 +139,80 @@ class LibraryUpgradeTests(unittest.TestCase):
             out = generate(bytes(similar), "stage1", package)
             self.assertEqual(out.evidence_level, "DONOR_TRANSFER")
             self.assertEqual(out.output, make_stage1(bytes(similar)))
+
+
+def build_varied_archive(folder: Path, projects: int) -> None:
+    """Same engine, every project its own software number and calibration."""
+
+    folder.mkdir(parents=True, exist_ok=True)
+    for n in range(projects):
+        sw = f"SWALPHA-{n:04d}"
+        image = bytearray(make_original(n, Variant(), calibration_scale=0.95 + 0.005 * n))
+        pos = image.find(b"SWALPHA-0001")
+        image[pos:pos + 12] = sw.encode()
+        image = bytes(image)
+        write_native_project(folder / f"p{n:02d}.ols", [image, make_stage1(image)], [("Stage 1", "NOCS")],
+                             metadata(Variant(sw=sw)))
+
+
+class PracticeTests(unittest.TestCase):
+    def test_practice_hides_each_example_and_scores_the_transfer(self):
+        from ols_platform.tuning.practice import read_stats, run_practice
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            build_varied_archive(root / "db", 16)
+            store = PackageStore(root / "store")
+            library = Library(store)
+            library.scan({"db": root / "db"}, NativeOlsReader(), workers=1)
+            library.train()
+            first = run_practice(library, workers=2)
+            self.assertEqual(first["tested"], 16)
+            rows = library.db.execute("SELECT status, score, same_variant, donor_project FROM practice").fetchall()
+            self.assertTrue(all(r[0] == "ok" and r[1] >= 0.99 for r in rows), rows)
+            self.assertTrue(all(r[2] == 0 for r in rows))  # always learned from another software number
+            pair_projects = dict(library.db.execute("SELECT pair_id, project_name FROM pairs").fetchall())
+            for pair_id, donor in library.db.execute("SELECT pair_id, donor_project FROM practice"):
+                self.assertNotEqual(pair_projects[pair_id], donor)  # its own project stayed hidden
+            again = run_practice(library, workers=1)
+            self.assertEqual(again["tested"], 0)  # resumable: nothing tested twice for the same version
+            stats = read_stats(store.root)
+            self.assertEqual(stats["total_good"], 16)
+            library.close()
+
+    def test_learned_floor_blocks_unreliable_similarity(self):
+        import sqlite3
+
+        from ols_platform.tuning.practice import SCHEMA, write_stats
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = sqlite3.connect(Path(tmp) / "x.sqlite3")
+            db.executescript(SCHEMA)
+            results = [(0.75, 0.4), (0.78, 0.6), (0.80, 0.7)] + [(0.90 + i * 0.01, 1.0) for i in range(8)]
+            for i, (sim, score) in enumerate(results):
+                db.execute("INSERT INTO practice(pair_id,package_id,version,family_key,profile,status,similarity,"
+                           "score,same_variant,tested_at) VALUES(?,?,1,'ECU|1',?, 'ok', ?, ?, 0, 'x')",
+                           (f"p{i}", "pkg", "stage1", sim, score))
+            db.commit()
+            stats = write_stats(Path(tmp), db, "pkg")
+            self.assertEqual(stats["floors"], {"ECU|1": 0.9})
+            self.assertEqual(stats["families"]["ECU|1"]["good"], 8)
+
+    def test_background_practice_mode(self):
+        from ols_platform.tuning.practice import read_stats
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            build_varied_archive(root / "db", 8)
+            store_root = root / "store"
+            store_root.mkdir()
+            (store_root / "settings.json").write_text(json.dumps({"sources": [f"db={root / 'db'}"]}), encoding="utf-8")
+            self.assertTrue(start_background(store_root))  # update + practice afterwards
+            deadline = time.time() + 120
+            while time.time() < deadline:
+                status = read_status(store_root)
+                if not status["running"] and status.get("state") in ("finished", "failed", "stopped"):
+                    break
+                time.sleep(0.5)
+            self.assertEqual(status["state"], "finished", status.get("log"))
+            self.assertEqual(read_stats(store_root)["total_tests"], 8)

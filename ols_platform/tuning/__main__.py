@@ -80,6 +80,9 @@ def build_parser() -> argparse.ArgumentParser:
     upd = sub.add_parser("update-library", help="Bibliotheek bijwerken met de mappen uit de app-instellingen "
                          "(zo start de app het achtergrondproces).")
     upd.add_argument("--workers", type=int)
+    upd.add_argument("--no-practice", action="store_true", help="Na het bijwerken niet oefenen.")
+    prc = sub.add_parser("practice", help="Oefenen: elk voorbeeld verbergen, opnieuw tunen en vergelijken.")
+    prc.add_argument("--workers", type=int)
     sub.add_parser("packages", help="Toon pakketten.")
     sub.add_parser("rollback", help="Activeer de vorige pakketversie.")
     inst = sub.add_parser("install-package")
@@ -149,7 +152,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "update-library":
         from .background import run_update
 
-        return run_update(store.root, workers=args.workers)
+        return run_update(store.root, workers=args.workers, practice=not args.no_practice)
+    if args.command == "practice":
+        from .background import run_update
+
+        return run_update(store.root, workers=args.workers, practice_only=True)
     if args.command == "packages":
         print(json.dumps({"active": store.active_id(), "packages": store.list_packages()}, indent=2))
         return 0
