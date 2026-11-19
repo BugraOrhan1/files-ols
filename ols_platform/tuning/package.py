@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from .fileio import read_json, write_json
 from . import SOFTWARE_VERSION
 from .learn import DEFAULT_SETTINGS, TrainingPair, diff_regions, learn_modification_zones, learn_profile
 
@@ -423,13 +424,12 @@ class PackageStore:
     def _state(self) -> dict[str, Any]:
         if not self.state_path.exists():
             return {"active": None, "history": []}
-        return json.loads(self.state_path.read_text(encoding="utf-8"))
+        state = read_json(self.state_path, None)
+        return state if isinstance(state, dict) else {"active": None, "history": []}
 
     def _write_state(self, state: dict[str, Any]) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
-        tmp = self.state_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
-        os.replace(tmp, self.state_path)
+        write_json(self.state_path, state, indent=2)
 
     def install(self, package: Package, activate: bool = True) -> Path:
         path = self.packages_dir / f"{package.package_id}{PACKAGE_SUFFIX}"
@@ -488,7 +488,8 @@ class PackageStore:
     def contracts(self) -> dict[str, Any]:
         if not self.contracts_path.exists():
             return {}
-        return json.loads(self.contracts_path.read_text(encoding="utf-8"))
+        data = read_json(self.contracts_path, {})
+        return data if isinstance(data, dict) else {}
 
     def set_contract(self, family_key: str, contract: str, evidence: str) -> None:
         if contract not in ("FLASH_TOOL_CORRECTS_ON_WRITE", "UNKNOWN"):
@@ -502,6 +503,4 @@ class PackageStore:
             "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
         self.root.mkdir(parents=True, exist_ok=True)
-        tmp = self.contracts_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-        os.replace(tmp, self.contracts_path)
+        write_json(self.contracts_path, data, indent=2)

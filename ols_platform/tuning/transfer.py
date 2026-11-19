@@ -31,7 +31,8 @@ from .package import ANCHOR_SIZE, FP_SAMPLES, fingerprint
 
 DEFAULT_MIN_SIMILARITY = 0.70
 CANDIDATE_FLOOR = 0.10      # below this same-offset score a donor is not even checked for shifts
-MAX_SHIFT_CHECKS = 40
+MAX_SHIFT_CHECKS = 24
+_RANK_CACHE: dict[tuple, list[dict[str, Any]]] = {}
 DEFAULT_MIN_COVERAGE = 1.0
 MAX_DONORS_TRIED = 8
 VALUE_TOLERANCE = 0.6
@@ -64,17 +65,41 @@ def hint_tokens(text: str) -> set[str]:
 
 
 def shifted_similarity(data: bytes, anchor_blob: bytes) -> float:
-    """Fraction of the donor's anchor snippets found anywhere in ``data``."""
+    """Fraction of the donor's anchor snippets found anywhere in ``data``.
+    Stops early when the first quarter already shows the donor is unrelated."""
 
     snippets = [anchor_blob[i:i + ANCHOR_SIZE] for i in range(0, len(anchor_blob), ANCHOR_SIZE)]
     if not snippets:
         return 0.0
-    return sum(1 for s in snippets if s in data) / len(snippets)
+    found = 0
+    quarter = max(1, len(snippets) // 4)
+    for index, snippet in enumerate(snippets, 1):
+        if snippet in data:
+            found += 1
+        if index == quarter and found / quarter < 0.3:
+            return found / len(snippets)
+    return found / len(snippets)
 
 
 def rank_donors(package, data: bytes, hint: str = "", profile: str | None = None,
                 min_similarity: float = DEFAULT_MIN_SIMILARITY, exclude: set[str] | None = None,
                 family_floor: dict[str, float] | None = None) -> list[dict[str, Any]]:
+    """Cached front for :func:`_rank_donors` (the app asks twice per file)."""
+
+    key = (package.package_id, hashlib.sha256(data).digest(), hint, profile, min_similarity,
+           frozenset(exclude or ()), tuple(sorted((family_floor or {}).items())))
+    cached = _RANK_CACHE.get(key)
+    if cached is None:
+        cached = _rank_donors(package, data, hint, profile, min_similarity, exclude, family_floor)
+        if len(_RANK_CACHE) > 16:
+            _RANK_CACHE.clear()
+        _RANK_CACHE[key] = cached
+    return [dict(d) for d in cached]
+
+
+def _rank_donors(package, data: bytes, hint: str = "", profile: str | None = None,
+                 min_similarity: float = DEFAULT_MIN_SIMILARITY, exclude: set[str] | None = None,
+                 family_floor: dict[str, float] | None = None) -> list[dict[str, Any]]:
     """Training originals ordered by similarity to ``data`` (same size only).
 
     Score = max(same-offset sample match, share of anchor snippets found

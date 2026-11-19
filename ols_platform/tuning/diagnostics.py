@@ -129,11 +129,14 @@ def create_bundle(store, target: Path) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("systeem.json", json.dumps(info, indent=2, ensure_ascii=False))
-        for name in (APP_LOG, APP_LOG + ".1", APP_LOG + ".2", "library_worker.log", "library_status.json",
+        for name in (APP_LOG, APP_LOG + ".1", APP_LOG + ".2", "crash.log", "library_worker.log", "library_status.json",
                      "settings.json", "integrity_contracts.json", "active.json"):
             path = root / name
             if path.exists():
-                archive.writestr(name, _tail(path))
+                try:
+                    archive.writestr(name, _tail(path))
+                except OSError as exc:  # file locked by the running worker: note it, keep going
+                    archive.writestr(name + ".fout.txt", str(exc))
         try:
             archive.writestr("bibliotheek.json", json.dumps(_library_summary(root), indent=2, ensure_ascii=False))
         except Exception as exc:

@@ -30,7 +30,7 @@ class AppTests(unittest.TestCase):
         self.store = PackageStore(self.root_dir / "store")
         self.tk = tk.Tk()
         self.tk.withdraw()
-        self.app = TunerApp(self.tk, self.store)
+        self.app = TunerApp(self.tk, self.store, synchronous=True)
         self.app.settings.data["output_dir"] = str(self.root_dir / "uit")
 
     def tearDown(self):
@@ -108,3 +108,68 @@ class AppTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FileIoTests(unittest.TestCase):
+    def test_replace_is_retried_while_another_process_holds_the_file(self):
+        from unittest import mock
+
+        from ols_platform.tuning import fileio
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "status.json"
+            real_replace = os.replace
+            calls = {"n": 0}
+
+            def flaky(src, dst):
+                calls["n"] += 1
+                if calls["n"] <= 3:
+                    raise PermissionError(32, "in gebruik door een ander proces")
+                return real_replace(src, dst)
+
+            with mock.patch.object(fileio.os, "replace", flaky):
+                fileio.write_json(target, {"state": "running"})
+            self.assertEqual(fileio.read_json(target), {"state": "running"})
+            self.assertEqual(calls["n"], 4)
+            self.assertEqual([p.name for p in Path(tmp).iterdir()], ["status.json"])  # no leftovers
+
+    def test_background_status_write_never_raises(self):
+        from unittest import mock
+
+        from ols_platform.tuning import background, fileio
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(fileio.os, "replace", side_effect=PermissionError(32, "bezet")), \
+                    mock.patch.object(fileio, "DELAY", 0):
+                background._write_status(Path(tmp), {"state": "running"})  # must not raise
+
+
+@unittest.skipUnless(HAVE_DISPLAY, "tkinter met scherm niet beschikbaar")
+class ResponsiveAppTests(unittest.TestCase):
+    def test_recognition_runs_in_background_and_window_stays_responsive(self):
+        import time
+
+        from ols_platform.tuning.app import TunerApp
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root_dir = Path(tmp)
+            store = PackageStore(root_dir / "store")
+            pair = make_pair(1)
+            store.install(build_package([pair]))
+            window = tk.Tk()
+            window.withdraw()
+            app = TunerApp(window, store)  # asynchronous, as in the real app
+            try:
+                original = root_dir / "origineel.bin"
+                original.write_bytes(pair.original)
+                app.set_original(original)
+                self.assertIn("wordt herkend", app.status_text)  # returned immediately
+                deadline = time.time() + 30
+                while app.result is None and time.time() < deadline:
+                    window.update()
+                    time.sleep(0.02)
+                self.assertIsNotNone(app.result)
+                self.assertEqual(app.result.output, pair.tuned)
+            finally:
+                app.close()
+                window.destroy()

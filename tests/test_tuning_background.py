@@ -195,6 +195,7 @@ class PracticeTests(unittest.TestCase):
                            (f"p{i}", "pkg", "stage1", sim, score))
             db.commit()
             stats = write_stats(Path(tmp), db, "pkg")
+            db.close()  # Windows cannot remove an open database file
             self.assertEqual(stats["floors"], {"ECU|1": 0.9})
             self.assertEqual(stats["families"]["ECU|1"]["good"], 8)
 

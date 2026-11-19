@@ -30,4 +30,5 @@ Integriteit: de app past geen checksum aan. Bij een oranje melding verschijnt de
 
 Problemen melden
 - Klik rechtsonder op "Diagnose opslaan..." en stuur de ZIP. Die bevat alleen logboeken
-  en tellingen (app.log, library_worker.log, library_status.json), geen klantbestanden.
+  en tellingen (app.log, crash.log, library_worker.log, library_status.json), geen
+  klantbestanden. Na een crash staat de oorzaak in app.log of crash.log.

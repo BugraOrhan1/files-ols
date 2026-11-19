@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
+from .fileio import read_json, write_json
 from . import SOFTWARE_VERSION
 from .export import ExportBlocked, export_result
 from .background import read_status, request_stop, start_background
@@ -65,14 +68,15 @@ class Settings:
             "min_similarity": 70,
             "min_coverage": 100,
         }
-        try:
-            self.data.update(json.loads(self.path.read_text(encoding="utf-8")))
-        except (OSError, ValueError):
-            pass
+        stored = read_json(self.path, {})
+        if isinstance(stored, dict):
+            self.data.update(stored)
 
     def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self.data, indent=2, ensure_ascii=False), encoding="utf-8")
+        try:
+            write_json(self.path, self.data, indent=2)
+        except OSError:
+            pass  # settings are retried on the next save
 
 
 def open_path(path: Path) -> None:
@@ -126,7 +130,7 @@ class MessagePanel:
 
 
 class TunerApp:
-    def __init__(self, root, store: PackageStore | None = None) -> None:
+    def __init__(self, root, store: PackageStore | None = None, synchronous: bool = False) -> None:
         import tkinter as tk
         from tkinter import ttk
 
@@ -141,6 +145,11 @@ class TunerApp:
         self.result: GenerationResult | None = None
         self.last_output: Path | None = None
         self.library_window: LibraryWindow | None = None
+        self.synchronous = synchronous  # tests: run recognition inline
+        self._results: queue.Queue = queue.Queue()
+        self._token = None
+        self._closed = False
+        self._after_ids: dict[str, str] = {}
 
         root.title("OLS Tuner")
         root.geometry("780x700")
@@ -164,7 +173,8 @@ class TunerApp:
         # Step 1
         step1 = ttk.LabelFrame(outer, text="  1   Origineel  ", style="Step.TLabelframe", padding=12)
         step1.pack(fill="x", pady=(16, 8))
-        ttk.Button(step1, text="Open origineel…", command=self.choose_original).pack(side="left")
+        self.open_button = ttk.Button(step1, text="Open origineel…", command=self.choose_original)
+        self.open_button.pack(side="left")
         info = ttk.Frame(step1)
         info.pack(side="left", fill="x", expand=True, padx=14)
         self.file_var = tk.StringVar(value="Nog geen bestand gekozen")
@@ -207,7 +217,8 @@ class TunerApp:
 
         self.active_id = None
         self.reload_package()
-        self.root.after(1500, self.poll_background)
+        self._after_ids["poll"] = self.root.after(1500, self.poll_background)
+        self._after_ids["drain"] = self.root.after(120, self._drain)
 
     # ----- state ------------------------------------------------------------
     @property
@@ -285,8 +296,8 @@ class TunerApp:
                     self.bg_var.set(self.bg_var.get() + "  Nieuwe bibliotheekversie geladen.")
         except Exception:
             pass
-        if self.root.winfo_exists():
-            self.root.after(2000, self.poll_background)
+        if not self._closed and self.root.winfo_exists():
+            self._after_ids["poll"] = self.root.after(2000, self.poll_background)
 
     # ----- actions ----------------------------------------------------------
     def choose_original(self) -> None:
@@ -307,43 +318,72 @@ class TunerApp:
         self.log.info("Origineel geopend: %s (%d bytes)", path.name, size)
         self.update_profiles()
 
+    # ----- background work (keeps the window responsive) --------------------
+    def _run(self, label: str, func, done) -> None:
+        """Run ``func`` off the GUI thread; ``done(result, error)`` runs on the
+        GUI thread. Only the newest request's result is applied."""
+
+        token = object()
+        self._token = token
+        if self.synchronous:
+            try:
+                result, error = func(), None
+            except Exception as exc:  # handed to done()
+                result, error = None, exc
+            done(result, error)
+            return
+        self._set_busy(label)
+
+        def work() -> None:
+            try:
+                self._results.put((token, done, func(), None))
+            except Exception as exc:
+                self._results.put((token, done, None, exc))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _drain(self) -> None:
+        try:
+            while True:
+                token, done, result, error = self._results.get_nowait()
+                if token is self._token:
+                    self._set_busy(None)
+                    try:
+                        done(result, error)
+                    except Exception:
+                        self.log.exception("Fout bij verwerken van resultaat")
+                        self.message.show("error", "Onverwachte fout",
+                                          "De details staan in het logboek (Diagnose opslaan…).")
+        except queue.Empty:
+            pass
+        if not self._closed and self.root.winfo_exists():
+            self._after_ids["drain"] = self.root.after(120, self._drain)
+
+    def _set_busy(self, label: str | None) -> None:
+        state = "disabled" if label else "normal"
+        self.open_button.configure(state=state)
+        self.profile_box.configure(state="disabled" if label else "readonly")
+        if label:
+            self.make_button.configure(state="disabled")
+            self.message.show("info", label, "Even geduld; u kunt de app gewoon blijven gebruiken.")
+            self.root.configure(cursor="watch")
+        else:
+            self.root.configure(cursor="")
+
+    def _show_error(self, error: Exception, what: str) -> None:
+        if isinstance(error, GenerationRejected):
+            self.log.warning("%s geweigerd [%s]: %s", what, error.code, error.message)
+            self.message.show("error", "Dit bestand kan niet getuned worden", error.message)
+        elif isinstance(error, OSError):
+            self.log.error("Lezen mislukt: %s", error)
+            self.message.show("error", "Bestand kon niet gelezen worden", str(error))
+        else:
+            self.log.error("Onverwachte fout bij %s: %r", what, error, exc_info=error)
+            self.message.show("error", "Onverwachte fout",
+                              f"{error}\nDe details staan in het logboek. Gebruik 'Diagnose opslaan…'.")
+
     def update_profiles(self) -> None:
         """Fill the tuning list with the profiles this file's software supports."""
-
-        self.result = None
-        self.make_button.configure(state="disabled")
-        if self.original is None:
-            return
-        if self.package is None:
-            self.message.show("warn", "Nog geen bibliotheek", "Bouw eerst de bibliotheek op via 'Bibliotheek…'.")
-            return
-        try:
-            options = self._transfer_options()
-            _family, _variant, profiles = available_profiles(
-                self.original.read_bytes(), self.package, options["hint"], options["min_similarity"],
-                options["family_floor"])
-        except GenerationRejected as exc:
-            self.profile_map = {}
-            self.profile_box.configure(values=[])
-            self.profile_var.set("")
-            self.log.warning("Herkenning geweigerd [%s]: %s", exc.code, exc.message)
-            self.message.show("error", "Dit bestand kan niet getuned worden", exc.message)
-            return
-        except OSError as exc:
-            self.message.show("error", "Bestand kon niet gelezen worden", str(exc))
-            return
-        previous = self._profile_key()
-        self.log.info("Herkend: familie %s, variant %s, tunings: %s",
-                      _family["family_key"] if _family else "-",
-                      _variant["variant_key"] if _variant else "geen exacte variant (overzetten)", ", ".join(profiles))
-        self.profile_map = {profile_label(p): p for p in profiles}
-        self.profile_box.configure(values=list(self.profile_map))
-        choice = previous if previous in profiles else ("stage1" if "stage1" in profiles else profiles[0])
-        self.profile_var.set(profile_label(choice))
-        self.check_original()
-
-    def check_original(self) -> None:
-        """Recognise the file immediately so the user knows before clicking."""
 
         self.result = None
         self.make_button.configure(state="disabled")
@@ -353,24 +393,61 @@ class TunerApp:
         if self.package is None:
             self.message.show("warn", "Nog geen bibliotheek", "Bouw eerst de bibliotheek op via 'Bibliotheek…'.")
             return
-        if not self._profile_key():
+        path, package, options = self.original, self.package, self._transfer_options()
+
+        def work():
+            return available_profiles(path.read_bytes(), package, options["hint"], options["min_similarity"],
+                                      options["family_floor"])
+
+        def done(result, error) -> None:
+            if error is not None:
+                self.profile_map = {}
+                self.profile_box.configure(values=[])
+                self.profile_var.set("")
+                self._show_error(error, "Herkenning")
+                return
+            family, variant, profiles = result
+            previous = self._profile_key()
+            self.log.info("Herkend: familie %s, variant %s, tunings: %s",
+                          family["family_key"] if family else "-",
+                          variant["variant_key"] if variant else "geen exacte variant (overzetten)",
+                          ", ".join(profiles))
+            self.profile_map = {profile_label(p): p for p in profiles}
+            self.profile_box.configure(values=list(self.profile_map))
+            choice = previous if previous in profiles else ("stage1" if "stage1" in profiles else profiles[0])
+            self.profile_var.set(profile_label(choice))
+            self.check_original()
+
+        self._run("Bestand wordt herkend…", work, done)
+
+    def check_original(self) -> None:
+        """Recognise and prepare the tune so the user knows before clicking."""
+
+        self.result = None
+        self.make_button.configure(state="disabled")
+        self.checksum_button.pack_forget()
+        if self.original is None:
             return
-        self.root.configure(cursor="watch")
-        self.root.update_idletasks()
-        try:
-            data = self.original.read_bytes()
-            result = generate(data, self._profile_key(), self.package, self.store.contracts(),
-                              **self._transfer_options())
-        except GenerationRejected as exc:
-            self.log.warning("Tuning %s geweigerd [%s]: %s", self._profile_key(), exc.code, exc.message)
-            self.message.show("error", "Dit bestand kan niet getuned worden", exc.message)
+        if self.package is None:
+            self.message.show("warn", "Nog geen bibliotheek", "Bouw eerst de bibliotheek op via 'Bibliotheek…'.")
             return
-        except OSError as exc:
-            self.log.error("Lezen mislukt: %s", exc)
-            self.message.show("error", "Bestand kon niet gelezen worden", str(exc))
+        profile = self._profile_key()
+        if not profile:
             return
-        finally:
-            self.root.configure(cursor="")
+        path, package, options, contracts = self.original, self.package, self._transfer_options(), self.store.contracts()
+
+        def work():
+            return generate(path.read_bytes(), profile, package, contracts, **options)
+
+        def done(result, error) -> None:
+            if error is not None:
+                self._show_error(error, f"Tuning {profile}")
+                return
+            self._show_result(result)
+
+        self._run(f"{profile_label(profile)} wordt voorbereid…", work, done)
+
+    def _show_result(self, result) -> None:
         self.result = result
         self.current_family = result.family_key
         self.log.info("Klaar om te maken: %s, %s, %d gebieden, bewijs %s, checksumcontract %s",
@@ -398,9 +475,7 @@ class TunerApp:
 
     def make_bin(self, ask_path: bool = True) -> Path | None:
         if self.result is None or self.original is None:
-            self.check_original()
-            if self.result is None:
-                return None
+            return None
         result = self.result
         output_dir = Path(self.settings.data["output_dir"])
         tag = "".join(ch if ch.isalnum() else "-" for ch in profile_label(result.profile)).strip("-")
@@ -436,6 +511,12 @@ class TunerApp:
         return final
 
     def close(self) -> None:
+        self._closed = True
+        for after_id in self._after_ids.values():
+            try:
+                self.root.after_cancel(after_id)
+            except Exception:
+                pass
         close_logger(self.log)
 
     def confirm_checksum(self) -> None:
@@ -523,7 +604,16 @@ class LibraryWindow:
         self._build_checksum(self.tabs["Checksum"])
         self._build_settings(self.tabs["Instellingen"])
         self.refresh()
-        self.win.after(200, self.poll)
+        self._poll_id = self.win.after(200, self.poll)
+        self.win.bind("<Destroy>", self._on_destroy, add="+")
+
+    def _on_destroy(self, event) -> None:
+        if event.widget is self.win and getattr(self, "_poll_id", None):
+            try:
+                self.win.after_cancel(self._poll_id)
+            except Exception:
+                pass
+            self._poll_id = None
 
     def select(self, name: str) -> None:
         self.notebook.select(self.tabs[name])
@@ -717,7 +807,7 @@ class LibraryWindow:
         except Exception as exc:
             self.progress_var.set(f"Status kon niet worden gelezen: {exc}")
         if not once and self.win.winfo_exists():
-            self.win.after(1000, self.poll)
+            self._poll_id = self.win.after(1000, self.poll)
 
     # ----- Overzicht --------------------------------------------------------
     def _build_overview(self, tab) -> None:
@@ -983,6 +1073,34 @@ class LibraryWindow:
         self.refresh_checksum()
 
 
+def _install_crash_logging(root: Path) -> None:
+    """Record every crash: Python errors anywhere (also in threads) go to
+    app.log, hard crashes (e.g. a native fault) to crash.log."""
+
+    import faulthandler
+    import traceback
+
+    log = app_logger(root)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        crash_file = open(root / "crash.log", "a", encoding="utf-8")
+        crash_file.write(f"\n--- start {SOFTWARE_VERSION} ---\n")
+        crash_file.flush()
+        faulthandler.enable(file=crash_file, all_threads=True)
+    except OSError:
+        pass
+
+    def excepthook(exc_type, exc, tb):
+        log.error("Onverwachte fout: %s", "".join(traceback.format_exception(exc_type, exc, tb)))
+
+    def thread_hook(args):
+        log.error("Onverwachte fout in achtergrondtaak: %s",
+                  "".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)))
+
+    sys.excepthook = excepthook
+    threading.excepthook = thread_hook
+
+
 def main(argv: list[str] | None = None) -> int:
     import multiprocessing
 
@@ -1005,6 +1123,7 @@ def main(argv: list[str] | None = None) -> int:
         from .__main__ import main as cli_main
 
         return cli_main(argv)
+    _install_crash_logging(PackageStore().root)
     import tkinter as tk
 
     root = tk.Tk()

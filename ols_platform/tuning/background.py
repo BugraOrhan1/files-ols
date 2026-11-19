@@ -11,7 +11,6 @@ has been scanned so far is usable right away.
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
@@ -21,6 +20,7 @@ from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from .fileio import read_json, write_json
 
 STATUS_FILE = "library_status.json"
 STOP_FILE = "library.stop"
@@ -34,9 +34,8 @@ def _now() -> str:
 
 
 def read_status(root: Path) -> dict[str, Any]:
-    try:
-        status = json.loads((root / STATUS_FILE).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    status = read_json(root / STATUS_FILE)
+    if not isinstance(status, dict):
         return {"state": "idle", "running": False}
     running = status.get("state") == "running" and time.time() - status.get("heartbeat", 0) < STALE_AFTER
     status["running"] = running
@@ -83,9 +82,10 @@ def start_background(root: Path, mode: str = "update") -> bool:
 
 
 def _write_status(root: Path, status: dict[str, Any]) -> None:
-    tmp = root / (STATUS_FILE + f".{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(status, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, root / STATUS_FILE)
+    try:
+        write_json(root / STATUS_FILE, status)
+    except OSError:
+        pass  # a missed heartbeat is harmless; never let it stop the worker
 
 
 class _Status:
@@ -125,10 +125,7 @@ def run_update(root: Path, *, publish_every_pairs: int = 25, publish_every_secon
     if current["running"] and current.get("pid") not in (None, os.getpid()):
         print("Er loopt al een bijwerkproces.")
         return 0
-    try:
-        settings = json.loads((root / "settings.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        settings = {}
+    settings = read_json(root / "settings.json", {}) or {}
     sources = settings.get("sources") or []
     status = _Status(root)
     stop = threading.Event()

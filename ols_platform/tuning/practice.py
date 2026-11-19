@@ -15,8 +15,6 @@ ECU family they give
 
 from __future__ import annotations
 
-import json
-import os
 import sqlite3
 import threading
 import time
@@ -25,6 +23,7 @@ from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+from .fileio import read_json, write_json
 
 PRACTICE_VERSION = 1
 STATS_FILE = "practice_stats.json"
@@ -286,17 +285,18 @@ def write_stats(root: Path, db: sqlite3.Connection, package_id: str | None = Non
     stats = {"updated_at": _now(), "package_id": package_id, "families": families, "floors": floors,
              "total_tests": sum(f["tests"] for f in families.values()),
              "total_good": sum(f["good"] for f in families.values())}
-    tmp = root / (STATS_FILE + f".{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(stats, indent=1, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, root / STATS_FILE)
+    try:
+        write_json(root / STATS_FILE, stats, indent=1)
+    except OSError:
+        pass
     return stats
 
 
 def read_stats(root: Path) -> dict[str, Any]:
-    try:
-        return json.loads((root / STATS_FILE).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    stats = read_json(root / STATS_FILE, None)
+    if not isinstance(stats, dict):
         return {"families": {}, "floors": {}, "total_tests": 0, "total_good": 0}
+    return stats
 
 
 def summary_line(stats: dict[str, Any]) -> str:
