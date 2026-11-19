@@ -149,6 +149,7 @@ class TunerApp:
         self._results: queue.Queue = queue.Queue()
         self._token = None
         self._closed = False
+        self._loading = False
         self._after_ids: dict[str, str] = {}
 
         root.title("OLS Tuner")
@@ -226,9 +227,38 @@ class TunerApp:
         return self.message.text
 
     def reload_package(self) -> None:
-        try:
-            self.package = self.store.load_active()
-        except (OSError, ValueError) as exc:
+        """Load the active library version off the GUI thread (it can be large)."""
+
+        if self.synchronous:
+            try:
+                self._apply_package(self.store.load_active(), None)
+            except (OSError, ValueError) as exc:
+                self._apply_package(None, exc)
+            return
+        if self._loading:
+            return
+        self._loading = True
+        self.package_var.set("Bibliotheek wordt geladen…")
+        store = self.store
+
+        def work() -> None:
+            try:
+                try:
+                    store.prune()  # old versions from earlier runs can take GBs and slow everything down
+                except OSError:
+                    pass
+                self._results.put((None, self._package_loaded, store.load_active(), None))
+            except Exception as exc:
+                self._results.put((None, self._package_loaded, None, exc))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _package_loaded(self, package, error) -> None:
+        self._loading = False
+        self._apply_package(package, error)
+
+    def _apply_package(self, package, exc) -> None:
+        if exc is not None:
             self.package = None
             if "verouderd" in str(exc):
                 self.message.show("warn", "Bibliotheek omzetten naar de nieuwe versie",
@@ -239,6 +269,7 @@ class TunerApp:
                 self.message.show("error", "Bibliotheek kon niet worden geladen", str(exc))
             self.package_var.set("Bibliotheek moet worden bijgewerkt")
             return
+        self.package = package
         if self.package is None:
             self.package_var.set("Nog geen bibliotheek opgebouwd")
             self.message.show(
@@ -346,8 +377,9 @@ class TunerApp:
         try:
             while True:
                 token, done, result, error = self._results.get_nowait()
-                if token is self._token:
-                    self._set_busy(None)
+                if token is None or token is self._token:
+                    if token is not None:
+                        self._set_busy(None)
                     try:
                         done(result, error)
                     except Exception:
@@ -391,7 +423,10 @@ class TunerApp:
         if self.original is None:
             return
         if self.package is None:
-            self.message.show("warn", "Nog geen bibliotheek", "Bouw eerst de bibliotheek op via 'Bibliotheek…'.")
+            if self._loading:
+                self.message.show("info", "Bibliotheek wordt geladen…", "Het bestand wordt herkend zodra dat klaar is.")
+            else:
+                self.message.show("warn", "Nog geen bibliotheek", "Bouw eerst de bibliotheek op via 'Bibliotheek…'.")
             return
         path, package, options = self.original, self.package, self._transfer_options()
 
@@ -591,6 +626,8 @@ class LibraryWindow:
         self.win.minsize(820, 560)
         self.last_log: list[str] = []
         self.last_state = None
+        self._ui_queue: queue.Queue = queue.Queue()
+        self._variant_rows: dict[str, list] = {}
         self.notebook = ttk.Notebook(self.win)
         self.notebook.pack(fill="both", expand=True, padx=12, pady=12)
         self.tabs = {}
@@ -605,9 +642,26 @@ class LibraryWindow:
         self._build_settings(self.tabs["Instellingen"])
         self.refresh()
         self._poll_id = self.win.after(200, self.poll)
+        self._fill_id = self.win.after(100, self._drain_ui)
         self.win.bind("<Destroy>", self._on_destroy, add="+")
 
+    def _drain_ui(self) -> None:
+        try:
+            while True:
+                self._fill(self._ui_queue.get_nowait())
+        except queue.Empty:
+            pass
+        except Exception as exc:
+            self.summary_var.set(f"Overzicht kon niet worden getoond: {exc}")
+        if self.win.winfo_exists():
+            self._fill_id = self.win.after(150, self._drain_ui)
+
     def _on_destroy(self, event) -> None:
+        if event.widget is self.win and getattr(self, "_fill_id", None):
+            try:
+                self.win.after_cancel(self._fill_id)
+            except Exception:
+                pass
         if event.widget is self.win and getattr(self, "_poll_id", None):
             try:
                 self.win.after_cancel(self._poll_id)
@@ -833,6 +887,7 @@ class LibraryWindow:
         self.overview.configure(yscrollcommand=scroll.set)
         self.overview.pack(side="left", fill="both", expand=True)
         scroll.pack(side="left", fill="y")
+        self.overview.bind("<<TreeviewOpen>>", self._open_family)
 
     def _scan_text(self) -> str:
         db = self.app.store.root / "library.sqlite3"
@@ -855,34 +910,57 @@ class LibraryWindow:
         return prefix + ("Gescand per map – " + "  ·  ".join(parts) if parts else "Nog niets gescand.")
 
     def refresh_overview(self) -> None:
-        self.scan_var.set(self._scan_text())
-        self.overview.delete(*self.overview.get_children())
-        package = self.app.package
-        if package is None:
-            self.summary_var.set("Nog geen bibliotheekversie. Start 'Bibliotheek bijwerken'; tussentijds verschijnen hier de resultaten.")
+        self.refresh()
+
+    def _fill(self, data: dict) -> None:
+        if "error" in data:
+            self.summary_var.set(f"Overzicht kon niet worden geladen: {data['error']}")
             return
-        contracts = self.app.store.contracts()
-        variants = sum(1 for _ in package.variants())
-        stats = read_stats(self.app.store.root)
+        self._fill_overview(data)
+        self._fill_packages(data)
+
+    def _fill_overview(self, data: dict) -> None:
+        self.overview.delete(*self.overview.get_children())
+        self._variant_rows = {}
+        package = self.app.package
+        stats = data["stats"]
+        self.scan_var.set(data["scan"] + "\n" + summary_line(stats))
+        if package is None:
+            self.summary_var.set("Nog geen bibliotheekversie. Start 'Bibliotheek bijwerken'; tussentijds verschijnen "
+                                 "hier de resultaten.")
+            return
+        contracts = data["contracts"]
+        variants = sum(len(f["variants"]) for f in package["families"])
         self.summary_var.set(f"{len(package['training_selection'])} voorbeelden · {variants} softwarevarianten · "
                              f"{len(package['families'])} ECU-families")
-        self.scan_var.set(self.scan_var.get() + "\n" + summary_line(stats))
         for family in package["families"]:
             contract = contracts.get(family["family_key"], {}).get("contract", "UNKNOWN")
             check = "vastgelegd" if contract == "FLASH_TOOL_CORRECTS_ON_WRITE" else "niet vastgelegd"
             projects = len({p for v in family["variants"] for p in v["projects"]})
             pairs = sum(len(v["pairs"]) for v in family["variants"])
-            fam_profiles = sorted({p for v in family["variants"] for p in v["profiles"]})
+            fam_profiles = {p for v in family["variants"] for p in v["profiles"]}
             fam_id = self.overview.insert(
                 "", "end", text=f"{family['ecu_type'] or family['family_key']}  ({family['size']:,} B)".replace(",", "."),
                 values=(f"{len(fam_profiles)} {'soort' if len(fam_profiles) == 1 else 'soorten'}", projects, pairs,
                         self._practice_text(stats, family["family_key"]), check),
                 open=False)
-            for variant in family["variants"]:
-                label = variant["variant_key"].replace("|", "  ·  ")
-                tunings = ", ".join(profile_label(p) for p in sorted(variant["profiles"]))
-                self.overview.insert(fam_id, "end", text=label[:120], values=(
-                    tunings, len(variant["projects"]), len(variant["pairs"]), "", ""))
+            if family["variants"]:
+                self.overview.insert(fam_id, "end", text="…")  # filled when opened
+                self._variant_rows[fam_id] = family["variants"]
+
+    def _open_family(self, _event=None) -> None:
+        item = self.overview.focus()
+        variants = self._variant_rows.pop(item, None)
+        if variants is None:
+            return
+        self.overview.delete(*self.overview.get_children(item))
+        for variant in variants[:500]:
+            label = variant["variant_key"].replace("|", "  ·  ")
+            tunings = ", ".join(profile_label(p) for p in sorted(variant["profiles"]))
+            self.overview.insert(item, "end", text=label[:120], values=(
+                tunings, len(variant["projects"]), len(variant["pairs"]), "", ""))
+        if len(variants) > 500:
+            self.overview.insert(item, "end", text=f"… en nog {len(variants) - 500} varianten")
 
     @staticmethod
     def _practice_text(stats: dict, family_key: str) -> str:
@@ -916,13 +994,15 @@ class LibraryWindow:
                   "Handig om de bibliotheek naar een andere pc te verhuizen.", style="Muted.TLabel").pack(anchor="w", pady=(8, 0))
 
     def refresh_packages(self) -> None:
+        self.refresh()
+
+    def _fill_packages(self, data: dict) -> None:
         self.package_tree.delete(*self.package_tree.get_children())
-        active = self.app.store.active_id()
-        for item in sorted(self.app.store.list_packages(), key=lambda i: i.get("created_at", ""), reverse=True):
+        for item in sorted(data["packages"], key=lambda i: i.get("created_at", ""), reverse=True):
             if "error" in item:
                 continue
             self.package_tree.insert("", "end", values=(
-                "in gebruik" if item["package_id"] == active else "", item["created_at"].replace("T", " ")[:16],
+                "in gebruik" if item["package_id"] == data["active"] else "", item["created_at"].replace("T", " ")[:16],
                 item["pairs"], item["variants"], item["package_id"]))
 
     def attach(self) -> None:
@@ -1067,10 +1147,22 @@ class LibraryWindow:
         self.write("Instellingen opgeslagen.")
 
     def refresh(self) -> None:
+        """Gather overview data off the GUI thread, then fill the tabs."""
+
         self.refresh_sources()
-        self.refresh_overview()
-        self.refresh_packages()
         self.refresh_checksum()
+        self.summary_var.set("Gegevens worden geladen…")
+        store = self.app.store
+
+        def work() -> None:
+            try:
+                data = {"scan": self._scan_text(), "packages": store.list_packages(), "active": store.active_id(),
+                        "contracts": store.contracts(), "stats": read_stats(store.root)}
+                self._ui_queue.put(data)
+            except Exception as exc:
+                self._ui_queue.put({"error": str(exc)})
+
+        threading.Thread(target=work, daemon=True).start()
 
 
 def _install_crash_logging(root: Path) -> None:

@@ -575,3 +575,22 @@ class AllProfilesRealSampleTests(unittest.TestCase):
                 self.assertEqual(generate(data, profile, package).output, tuned.read_bytes(), tuned.name)
                 checked += 1
         return checked
+
+
+class PackageStoreHousekeepingTests(unittest.TestCase):
+    def test_only_recent_versions_are_kept_and_listing_uses_summaries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = PackageStore(Path(tmp) / "store")
+            pairs = [make_pair(s) for s in range(1, 10)]
+            ids = []
+            for k in range(1, 9):
+                package = build_package(pairs[:k + 1])
+                store.install(package)
+                ids.append(package.package_id)
+            files = sorted(p.name for p in store.packages_dir.glob("*.olstune"))
+            self.assertEqual(len(files), PackageStore.KEEP_VERSIONS)
+            self.assertIn(f"{ids[-1]}.olstune", files)
+            listing = store.list_packages()
+            self.assertEqual(len(listing), PackageStore.KEEP_VERSIONS)
+            self.assertTrue(all("pairs" in item for item in listing))
+            self.assertEqual(store.rollback(), ids[-2])  # history still usable after pruning

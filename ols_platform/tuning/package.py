@@ -431,17 +431,54 @@ class PackageStore:
         self.root.mkdir(parents=True, exist_ok=True)
         write_json(self.state_path, state, indent=2)
 
+    KEEP_VERSIONS = 5
+
+    def _summary_path(self, package_id: str) -> Path:
+        return self.packages_dir / f"{package_id}.summary.json"
+
     def install(self, package: Package, activate: bool = True) -> Path:
         path = self.packages_dir / f"{package.package_id}{PACKAGE_SUFFIX}"
         if not path.exists():
             write_package(package, path)
+        write_json(self._summary_path(package.package_id), {
+            "package_id": package.package_id,
+            "created_at": package["created_at"],
+            "families": len(package["families"]),
+            "variants": sum(1 for _ in package.variants()),
+            "pairs": len(package["training_selection"]),
+        })
         if activate:
             state = self._state()
             if state["active"] and state["active"] != package.package_id:
                 state["history"].append(state["active"])
             state["active"] = package.package_id
             self._write_state(state)
+            self.prune()
         return path
+
+    def prune(self, keep: int | None = None) -> list[str]:
+        """Keep the active version and the most recent previous ones; delete
+        older versions (they can be large). Returns the removed ids."""
+
+        keep = self.KEEP_VERSIONS if keep is None else keep
+        state = self._state()
+        history = [h for h in state["history"] if h != state["active"]]
+        kept = set(history[-(keep - 1):] if keep > 1 else []) | {state["active"]}
+        removed = []
+        if self.packages_dir.exists():
+            for path in self.packages_dir.glob(f"*{PACKAGE_SUFFIX}"):
+                package_id = path.name[:-len(PACKAGE_SUFFIX)]
+                if package_id not in kept:
+                    try:
+                        path.unlink()
+                        self._summary_path(package_id).unlink(missing_ok=True)
+                        removed.append(package_id)
+                    except OSError:
+                        pass  # in use by another process: removed next time
+        if removed or len(state["history"]) != len(history):
+            state["history"] = [h for h in history if h in kept]
+            self._write_state(state)
+        return removed
 
     def install_file(self, source: Path, activate: bool = True) -> Package:
         package = read_package(source)
@@ -458,22 +495,26 @@ class PackageStore:
         return read_package(self.packages_dir / f"{active}{PACKAGE_SUFFIX}")
 
     def list_packages(self) -> list[dict[str, Any]]:
+        """Fast listing from the small summary files (no package is opened)."""
+
         items = []
         if self.packages_dir.exists():
             for path in sorted(self.packages_dir.glob(f"*{PACKAGE_SUFFIX}")):
-                try:
-                    package = read_package(path)
-                except ValueError as exc:
-                    items.append({"path": str(path), "error": str(exc)})
-                    continue
-                items.append({
-                    "package_id": package.package_id,
-                    "created_at": package["created_at"],
-                    "families": [f["family_key"] for f in package["families"]],
-                    "variants": sum(1 for _ in package.variants()),
-                    "pairs": len(package["training_selection"]),
-                    "path": str(path),
-                })
+                package_id = path.name[:-len(PACKAGE_SUFFIX)]
+                summary = read_json(self._summary_path(package_id), None)
+                if not isinstance(summary, dict):
+                    try:
+                        with zipfile.ZipFile(path) as archive:
+                            manifest = json.loads(archive.read("manifest.json"))
+                        summary = {"package_id": package_id, "created_at": manifest.get("created_at", ""),
+                                   "families": len(manifest.get("families", [])),
+                                   "variants": sum(len(f["variants"]) for f in manifest.get("families", [])),
+                                   "pairs": len(manifest.get("training_selection", []))}
+                        write_json(self._summary_path(package_id), summary)
+                    except (OSError, ValueError, KeyError, zipfile.BadZipFile) as exc:
+                        items.append({"path": str(path), "error": str(exc)})
+                        continue
+                items.append(dict(summary, path=str(path)))
         return items
 
     def rollback(self) -> str:

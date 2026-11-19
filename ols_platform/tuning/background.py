@@ -112,7 +112,7 @@ class _Status:
         _write_status(self.root, data)
 
 
-def run_update(root: Path, *, publish_every_pairs: int = 25, publish_every_seconds: int = 600,
+def run_update(root: Path, *, publish_every_pairs: int = 500, publish_every_seconds: int = 1800,
                workers: int | None = None, practice: bool = True, practice_only: bool = False) -> int:
     """Body of ``update-library``: scan all configured folders, publish
     intermediate packages, and always publish what was found at the end."""

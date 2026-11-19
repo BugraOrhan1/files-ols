@@ -163,7 +163,8 @@ class ResponsiveAppTests(unittest.TestCase):
                 original = root_dir / "origineel.bin"
                 original.write_bytes(pair.original)
                 app.set_original(original)
-                self.assertIn("wordt herkend", app.status_text)  # returned immediately
+                self.assertTrue("wordt herkend" in app.status_text or "wordt geladen" in app.status_text,
+                                app.status_text)  # returned immediately, work continues in the background
                 deadline = time.time() + 30
                 while app.result is None and time.time() < deadline:
                     window.update()
