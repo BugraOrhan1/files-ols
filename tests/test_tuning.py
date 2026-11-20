@@ -44,9 +44,18 @@ class RevisionTagTests(unittest.TestCase):
         self.assertEqual(tag.versions[1].checksum_note, "CS-, OLS280 2.50")
         self.assertEqual(tag.declared_count, 2)
 
+    def test_version_names_with_commas_and_long_names_are_read(self):
+        long_name = "Stage 1 " + "x" * 120
+        raw = b"\x00" * 10 + revision_tag_bytes(
+            [("Stage 1, Vmax", "CS+, OLS280 2.50"), (long_name, "NOCS")]
+        ) + b"\x02\x00"
+        tag = parse_revision_tag(raw)
+        self.assertIsNotNone(tag)
+        self.assertEqual([v.name for v in tag.versions], ["Original", "Stage 1, Vmax", long_name])
+
     def test_profile_classification_covers_all_tuning_types(self):
         cases = {
-            "Stage 1": "stage1", "Stage1": "stage1", "STAGE 1": "stage1", "Stufe 1": "stage1", "St1": "stage1",
+            "Stage 1": "stage1", "Stage1": "stage1", "STAGE 1": "stage1", "Stufe 1": "stage1", "St1": "stage1", "Stg1": "stage1", "STG 2": "stage2",
             "Stage 1 (450PS)": "stage1", "Stage 1 450hp": "stage1", "Stage 2": "stage2",
             "Stage 1 + P&B": "stage1+pop_bang", "stage 1 = Vmax 280Km/h": "stage1+vmax",
             "Stage 1 EGR OFF": "stage1+egr_off", "EGR OFF": "egr_off", "P&B": "pop_bang",

@@ -327,7 +327,7 @@ def available_profiles(data: bytes, package, hint: str = "", min_similarity: flo
     if not profiles:
         if error is not None:
             raise GenerationRejected(error.code, error.message + " Er is ook geen vergelijkbaar origineel "
-                                     "(zelfde grootte, voldoende gelijk) in de bibliotheek.")
+                                     "(voldoende gelijk, ook niet bij andere bestandsgrootte) in de bibliotheek.")
         raise GenerationRejected("profile_not_available", "Geen tunings beschikbaar voor dit bestand.")
     if family is None and donors:
         family = next((f for f in package["families"] for v in f["variants"]

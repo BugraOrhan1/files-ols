@@ -21,6 +21,11 @@ Bibliotheek
 - Oefenen: na elke bijwerking test de app zichzelf op de achtergrond (voorbeeld verbergen,
   opnieuw tunen uit de rest, vergelijken met de echte tune). Per ECU ziet u hoeveel tests
   goed gingen; waar het onbetrouwbaar blijkt, past hij zelf een strengere grens toe.
+- Blijven oefenen: knop in de bibliotheek. Scant nieuwe projecten, leert, oefent en begint
+  elke 30 minuten opnieuw, tot u op Stoppen drukt. Nieuw aangesloten schijven (Database 1-4)
+  worden elke ronde meegenomen; wat eerder geleerd is blijft bewaard als een schijf ontbreekt.
+- Andere uitleesvorm: is uw bestand groter of kleiner dan de voorbeelden (bijv. volledige
+  flash tegenover alleen kalibratie), dan zoekt hij ook daar het meest gelijkende origineel.
 - Versies: elke bijwerking maakt automatisch een nieuwe versie; "Terug naar vorige
   versie" en "Back-up maken/terugzetten" (om naar een andere pc te verhuizen).
 - Gegevens staan in %LOCALAPPDATA%\OLS Tuner\ en bevatten klantgegevens: lokaal houden.

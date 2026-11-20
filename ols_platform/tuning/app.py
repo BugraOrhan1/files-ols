@@ -698,6 +698,8 @@ class LibraryWindow:
         self.run_button.pack(side="left")
         self.practice_button = ttk.Button(controls, text="Oefenen", command=self.practise)
         self.practice_button.pack(side="left", padx=(8, 0))
+        self.continuous_button = ttk.Button(controls, text="Blijven oefenen", command=self.keep_practising)
+        self.continuous_button.pack(side="left", padx=(8, 0))
         self.stop_button = ttk.Button(controls, text="Stoppen", command=self.stop, state="disabled")
         self.stop_button.pack(side="left", padx=8)
         ttk.Label(controls, text="Loopt op de achtergrond door, ook als u de app sluit. Na het bijwerken "
@@ -812,6 +814,15 @@ class LibraryWindow:
             self.write("Er loopt al een achtergrondtaak.")
         self.poll(once=True)
 
+    def keep_practising(self) -> None:
+        self.app.settings.save()
+        if start_background(self.app.store.root, "continuous"):
+            self.write("Blijven oefenen gestart: nieuwe projecten scannen, leren, elk voorbeeld verbergen en "
+                       "opnieuw tunen, en elke 30 minuten opnieuw. Loopt door tot u op Stoppen drukt.")
+        else:
+            self.write("Er loopt al een achtergrondtaak.")
+        self.poll(once=True)
+
     def stop(self) -> None:
         request_stop(self.app.store.root)
         self.progress_var.set("Stoppen… lopende projecten worden afgemaakt, daarna wordt geleerd van wat al gescand is.")
@@ -822,6 +833,7 @@ class LibraryWindow:
             running = status["running"]
             self.run_button.configure(state="disabled" if running else "normal")
             self.practice_button.configure(state="disabled" if running else "normal")
+            self.continuous_button.configure(state="disabled" if running else "normal")
             self.stop_button.configure(state="normal" if running else "disabled")
             cur = status.get("current") or {}
             if running:
@@ -853,7 +865,7 @@ class LibraryWindow:
                     stats = self.app.settings.data.setdefault("source_stats", {})
                     for key, st in status["sources"].items():
                         stats[key] = "niet bereikbaar" if st["status"].startswith("unavailable") else (
-                            f"{st['found']} projecten, {st['confirmed_pairs']} voorbeelden"
+                            f"{st['found']} projecten, {st.get('total_pairs', st['confirmed_pairs'])} voorbeelden"
                             + (f", {st['retry_pending']} opnieuw proberen" if st["retry_pending"] else ""))
                     self.app.settings.save()
                 if not running:

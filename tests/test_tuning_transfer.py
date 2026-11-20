@@ -52,6 +52,23 @@ class TransferTests(unittest.TestCase):
         self.assertEqual(result.output, make_stage1(data))
         self.assertEqual(result.identity["coverage"], 1.0)
 
+    def test_other_read_size_of_same_ecu_gives_complete_tune(self):
+        # Same ECU read in another form: a full read with an extra block in
+        # front, so the file size differs from every library original.
+        rng = random.Random(5)
+        prefix = bytes(rng.randrange(256) for _ in range(0x10000))
+        body = with_other_sw(self.pair.original, noise=0.01)
+        data = prefix + body
+        self.assertNotEqual(len(data), len(self.pair.original))
+        result = generate(data, "stage1", self.package)
+        self.assertEqual(result.evidence_level, "DONOR_TRANSFER")
+        self.assertEqual(result.output, prefix + make_stage1(body))
+        self.assertEqual(result.identity["coverage"], 1.0)
+
+    def test_cut_off_read_is_not_treated_as_other_read_form(self):
+        with self.assertRaises(GenerationRejected):
+            generate(with_other_sw(self.pair.original)[:-1024], "stage1", self.package)
+
     def test_moved_maps_with_other_values_are_recalculated(self):
         original = make_original(7, calibration_scale=1.04, map_shift=64)
         data = with_other_sw(original)

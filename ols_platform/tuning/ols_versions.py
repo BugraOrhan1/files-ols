@@ -22,7 +22,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-_TAG_PATTERN = re.compile(rb"(\d{1,2}) \(([^\x00-\x08,\t]{1,80})(?:,\t |\))")
+# Version names may contain commas ("Stage 1, Vmax") and be long; only ",\t "
+# separates versions.
+_TAG_PATTERN = re.compile(rb"(\d{1,3}) \(((?:[^\x00-\x08,\t]|,(?!\t)){1,250})(?:,\t |\))")
 _HEADER_SCAN_BYTES = 1024 * 1024
 
 
@@ -96,7 +98,7 @@ COMPONENTS: list[tuple[str, str, re.Pattern]] = [
     )
 ]
 COMPONENT_LABELS = {key: label for key, label, _ in COMPONENTS}
-_STAGE = re.compile(r"\b(stage|stufe|st|step|etappe)[ ._-]?([1-4])(?!\d)", re.IGNORECASE)
+_STAGE = re.compile(r"\b(stage|stufe|stg|st|step|etappe|level|lvl)[ ._-]?([1-4])(?!\d)", re.IGNORECASE)
 _ORIGINAL = {"original", "orginal", "ori", "org", "stock", "serie", "standard", "origineel"}
 
 

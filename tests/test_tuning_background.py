@@ -217,3 +217,37 @@ class PracticeTests(unittest.TestCase):
                 time.sleep(0.5)
             self.assertEqual(status["state"], "finished", status.get("log"))
             self.assertEqual(read_stats(store_root)["total_tests"], 8)
+
+
+class ContinuousPracticeTests(unittest.TestCase):
+    def test_continuous_mode_keeps_going_until_stopped(self):
+        from ols_platform.tuning.background import request_stop, run_update, worker_command
+
+        self.assertIn("--continuous", worker_command(Path("x"), "continuous"))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            build_archive(root / "db", 4)
+            store_root = root / "store"
+            store_root.mkdir()
+            (store_root / "settings.json").write_text(json.dumps({"sources": [f"db={root / 'db'}"]}), encoding="utf-8")
+            result: dict = {}
+
+            def worker() -> None:
+                result["code"] = run_update(store_root, workers=1, continuous=True, pause_minutes=1)
+
+            thread = threading.Thread(target=worker)
+            thread.start()
+            deadline = time.time() + 120
+            while time.time() < deadline:
+                status = read_status(store_root)
+                if status.get("phase") == "wachten":
+                    break
+                time.sleep(0.3)
+            self.assertEqual(status.get("phase"), "wachten", status.get("log"))
+            self.assertTrue(thread.is_alive())  # still going: waiting for the next round
+            request_stop(store_root)
+            thread.join(60)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(result["code"], 0)
+            self.assertEqual(read_status(store_root)["state"], "stopped")
+            self.assertEqual(len(PackageStore(store_root).list_packages()), 1)

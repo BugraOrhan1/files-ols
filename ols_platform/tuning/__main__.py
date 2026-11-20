@@ -81,6 +81,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "(zo start de app het achtergrondproces).")
     upd.add_argument("--workers", type=int)
     upd.add_argument("--no-practice", action="store_true", help="Na het bijwerken niet oefenen.")
+    upd.add_argument("--continuous", action="store_true",
+                     help="Blijven oefenen: scannen, leren, oefenen en na een pauze opnieuw, tot Stoppen.")
+    upd.add_argument("--pause-minutes", type=int, default=30, help="Pauze tussen rondes bij --continuous.")
     prc = sub.add_parser("practice", help="Oefenen: elk voorbeeld verbergen, opnieuw tunen en vergelijken.")
     prc.add_argument("--workers", type=int)
     sub.add_parser("packages", help="Toon pakketten.")
@@ -152,7 +155,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "update-library":
         from .background import run_update
 
-        return run_update(store.root, workers=args.workers, practice=not args.no_practice)
+        return run_update(store.root, workers=args.workers, practice=not args.no_practice,
+                          continuous=args.continuous, pause_minutes=max(1, args.pause_minutes))
     if args.command == "practice":
         from .background import run_update
 

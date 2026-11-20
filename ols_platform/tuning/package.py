@@ -367,8 +367,12 @@ def write_package(package: Package, path: Path) -> Path:
         info = zipfile.ZipInfo("manifest.json", _ZIP_DATE)
         info.compress_type = zipfile.ZIP_DEFLATED
         archive.writestr(info, json.dumps(package.manifest, indent=1, sort_keys=True))
+        written: set[str] = set()
         for _family, variant in package.variants():
             vid = variant["variant_id"]
+            if vid in written:
+                continue  # a variant listed under two families is stored once
+            written.add(vid)
             info = zipfile.ZipInfo(f"variants/{vid}.json", _ZIP_DATE)
             info.compress_type = zipfile.ZIP_DEFLATED
             archive.writestr(info, package._blobs.get(vid) or _read_blob(package, vid))

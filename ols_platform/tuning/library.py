@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS runs (
 DONE_STATES = ("parsed_no_pairs", "parsed_with_pairs", "rejected", "too_large")
 # Bump when extraction rules change: rejected / no-pair files from older scans
 # are then looked at again (unchanged files with pairs are still skipped).
-SCAN_VERSION = 2
+SCAN_VERSION = 3  # 3: version names with commas / long names, re-read earlier rejects
 STATUS_TEXT = {
     "parsed_with_pairs": "gelezen, voorbeelden gevonden",
     "parsed_no_pairs": "gelezen, geen bruikbare versies",
@@ -612,6 +612,9 @@ class Library:
         finally:
             if pool is not None:
                 pool.shutdown(wait=True)
+        totals = dict(self.db.execute("SELECT source,COUNT(*) FROM pairs GROUP BY source").fetchall())
+        for key, stats in per_source.items():
+            stats["total_pairs"] = totals.get(key, 0)  # everything learned from this source, not just this run
         summary = {"sources": per_source, "resources": meter.summary(), "workers": workers}
         self.db.execute("UPDATE runs SET finished_at=?,status=?,stats=? WHERE id=?",
                         (_now(), "interrupted" if stopped() else "finished", json.dumps(summary), run_id))

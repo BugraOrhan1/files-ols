@@ -50,10 +50,12 @@ def request_stop(root: Path) -> None:
 
 
 def worker_command(root: Path, mode: str = "update") -> list[str]:
-    command = "practice" if mode == "practice" else "update-library"
+    command = ["practice"] if mode == "practice" else ["update-library"]
+    if mode == "continuous":
+        command.append("--continuous")
     if getattr(sys, "frozen", False):
-        return [sys.executable, "--store", str(root), command]
-    return [sys.executable, "-m", "ols_platform.tuning", "--store", str(root), command]
+        return [sys.executable, "--store", str(root), *command]
+    return [sys.executable, "-m", "ols_platform.tuning", "--store", str(root), *command]
 
 
 def start_background(root: Path, mode: str = "update") -> bool:
@@ -77,7 +79,8 @@ def start_background(root: Path, mode: str = "update") -> bool:
     # Write an initial status so the UI shows "running" immediately.
     _write_status(root, {"state": "running", "pid": None, "started_at": _now(), "heartbeat": time.time(),
                          "phase": "starten", "sources": {},
-                         "log": ["Oefenen gestart…" if mode == "practice" else "Bijwerken gestart…"]})
+                         "log": [{"practice": "Oefenen gestart…", "continuous": "Blijven oefenen gestart…"}.get(
+                             mode, "Bijwerken gestart…")]})
     return True
 
 
@@ -113,9 +116,15 @@ class _Status:
 
 
 def run_update(root: Path, *, publish_every_pairs: int = 500, publish_every_seconds: int = 1800,
-               workers: int | None = None, practice: bool = True, practice_only: bool = False) -> int:
+               workers: int | None = None, practice: bool = True, practice_only: bool = False,
+               continuous: bool = False, pause_minutes: int = 30) -> int:
     """Body of ``update-library``: scan all configured folders, publish
-    intermediate packages, and always publish what was found at the end."""
+    intermediate packages, and always publish what was found at the end.
+
+    With ``continuous`` the worker keeps going until stopped: scan for new
+    projects, learn, practise (hide each example, re-tune it from the rest,
+    compare, learn per ECU family how far transfers can be trusted), pause,
+    and start over."""
 
     from .__main__ import _reader, _sources
     from .library import Library
@@ -185,24 +194,49 @@ def run_update(root: Path, *, publish_every_pairs: int = 500, publish_every_seco
             status.update(state="stopped" if stop.is_set() else "finished", phase="klaar", finished_at=_now())
             status.say("Oefenen gestopt; verdergaan kan later." if stop.is_set() else "Oefenen klaar.")
             return exit_code
-        if not sources:
-            status.say("Geen bronmappen ingesteld.")
-        else:
-            summary = library.scan(
-                _sources(sources), _reader(settings.get("py_ols") or None),
-                export_dirs=[Path(settings["exports"])] if settings.get("exports") else [],
-                progress=status.say, stop=stop, on_file=on_file, on_pairs=on_pairs, workers=workers,
-            )
-            status.update(sources=summary["sources"], resources=summary["resources"])
-            for key, st in summary["sources"].items():
-                if st["status"].startswith("unavailable"):
-                    status.say(f"{key}: niet bereikbaar")
-                else:
-                    status.say(f"{key}: {st['found']} projecten, {st['confirmed_pairs']} voorbeelden "
-                               f"({st['new_pairs']} nieuw)")
-        publish("gestopt – wat al gescand is" if stop.is_set() else "klaar")
-        if practice and not stop.is_set():
-            practise()
+        round_no = 0
+        while True:
+            round_no += 1
+            if round_no > 1:
+                # settings are re-read every round: newly connected drives
+                # (Database 1-4) are picked up without restarting
+                settings = read_json(root / "settings.json", {}) or {}
+                sources = settings.get("sources") or []
+                status.say(f"Ronde {round_no}: opnieuw scannen op nieuwe projecten…")
+                status.update(phase="scannen")
+            new_pairs = 0
+            last_publish["pairs"] = 0  # on_pairs counts per scan
+            if not sources:
+                status.say("Geen bronmappen ingesteld.")
+            else:
+                summary = library.scan(
+                    _sources(sources), _reader(settings.get("py_ols") or None),
+                    export_dirs=[Path(settings["exports"])] if settings.get("exports") else [],
+                    progress=status.say, stop=stop, on_file=on_file, on_pairs=on_pairs, workers=workers,
+                )
+                status.update(sources=summary["sources"], resources=summary["resources"])
+                for key, st in summary["sources"].items():
+                    new_pairs += st.get("new_pairs", 0)
+                    if st["status"].startswith("unavailable"):
+                        status.say(f"{key}: niet bereikbaar (wat eerder geleerd is blijft bewaard)")
+                    else:
+                        status.say(f"{key}: {st['found']} projecten, {st.get('total_pairs', st['confirmed_pairs'])} "
+                                   f"voorbeelden ({st['new_pairs']} nieuw)")
+            if round_no == 1 or new_pairs or stop.is_set():
+                publish("gestopt – wat al gescand is" if stop.is_set() else "klaar")
+            else:
+                status.say("Geen nieuwe voorbeelden; huidige bibliotheekversie blijft actief.")
+            if practice and not stop.is_set():
+                practise()
+            if not continuous or stop.is_set():
+                break
+            status.update(phase="wachten", current=None)
+            status.say(f"Blijven oefenen: volgende ronde over {pause_minutes} min (Stoppen beëindigt).")
+            deadline = time.time() + pause_minutes * 60
+            while time.time() < deadline and not stop.is_set():
+                stop.wait(5)
+            if stop.is_set():
+                break
         status.update(state="stopped" if stop.is_set() else "finished", phase="klaar", finished_at=_now())
         status.say("Gestopt. Alles wat al gescand is, is nu bruikbaar." if stop.is_set() else "Klaar.")
     except Exception as exc:  # recorded for the UI

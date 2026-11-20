@@ -32,6 +32,9 @@ from .package import ANCHOR_SIZE, FP_SAMPLES, fingerprint
 DEFAULT_MIN_SIMILARITY = 0.70
 CANDIDATE_FLOOR = 0.10      # below this same-offset score a donor is not even checked for shifts
 MAX_SHIFT_CHECKS = 24
+CROSS_SIZE_CHECKS = 200     # donors of another file size (full read vs calibration-only) checked by anchors
+CROSS_SIZE_RATIO = 4.0      # ... only when the sizes differ at most this factor
+CROSS_SIZE_ALIGN = 0x10000  # ... and both are whole 64 KB sectors (a cut-off read is never "another form")
 _RANK_CACHE: dict[tuple, list[dict[str, Any]]] = {}
 DEFAULT_MIN_COVERAGE = 1.0
 MAX_DONORS_TRIED = 8
@@ -100,7 +103,10 @@ def rank_donors(package, data: bytes, hint: str = "", profile: str | None = None
 def _rank_donors(package, data: bytes, hint: str = "", profile: str | None = None,
                  min_similarity: float = DEFAULT_MIN_SIMILARITY, exclude: set[str] | None = None,
                  family_floor: dict[str, float] | None = None) -> list[dict[str, Any]]:
-    """Training originals ordered by similarity to ``data`` (same size only).
+    """Training originals ordered by similarity to ``data``.
+
+    Donors of the same size are compared at the same offsets first; donors of
+    another size (other read form of the same ECU) by their anchor snippets.
 
     Score = max(same-offset sample match, share of anchor snippets found
     anywhere in the file); the second catches moved maps and inserted code."""
@@ -116,10 +122,22 @@ def _rank_donors(package, data: bytes, hint: str = "", profile: str | None = Non
         except AttributeError:
             pass
     exclude = exclude or set()
+    cross_size = []
     for entry in package.fingerprints():
-        if entry["size"] != len(data) or entry["original_sha256"] in exclude:
+        if entry["original_sha256"] in exclude:
             continue
         if profile and profile not in entry.get("profiles", []):
+            continue
+        if entry["size"] != len(data):
+            # Same ECU read in another form (e.g. full flash vs calibration
+            # only, or another dump size). Same-offset sampling says nothing
+            # here; the donor's anchor snippets are searched anywhere instead.
+            ratio = entry["size"] / len(data) if data else 0
+            if (entry.get("anchors") and 1 / CROSS_SIZE_RATIO <= ratio <= CROSS_SIZE_RATIO
+                    and len(data) % CROSS_SIZE_ALIGN == 0 and entry["size"] % CROSS_SIZE_ALIGN == 0):
+                donor_tokens = hint_tokens(" ".join((entry.get("vehicle", ""), entry.get("ecu", ""),
+                                                     entry.get("project", ""))))
+                cross_size.append((len(tokens & donor_tokens), entry))
             continue
         key = (entry["variant_id"], entry["original_sha256"])
         donor_fp = cache.get(key)
@@ -139,6 +157,13 @@ def _rank_donors(package, data: bytes, hint: str = "", profile: str | None = Non
         floor = max(min_similarity, (family_floor or {}).get(entry.get("family_key", ""), 0.0))
         if best >= floor:
             ranked.append(dict(entry, similarity=best, same_offset_similarity=score, hint_overlap=overlap))
+    cross_size.sort(key=lambda item: (-item[0], abs(item[1]["size"] - len(data)), item[1]["original_sha256"]))
+    for overlap, entry in cross_size[:CROSS_SIZE_CHECKS]:
+        best = shifted_similarity(data, base64.b64decode(entry["anchors"]))
+        floor = max(min_similarity, (family_floor or {}).get(entry.get("family_key", ""), 0.0))
+        if best >= floor:
+            ranked.append(dict(entry, similarity=best, same_offset_similarity=0.0, hint_overlap=overlap,
+                               cross_size=True))
     ranked.sort(key=lambda e: (-(e["similarity"] + 0.004 * min(e["hint_overlap"], 5)), e["original_sha256"]))
     return ranked
 
@@ -468,7 +493,7 @@ def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set
     if not donors:
         return {"status": "failed", "code": "no_similar_original",
                 "reason": f"Geen vergelijkbaar origineel met '{profile}' in de bibliotheek "
-                          f"(minimaal {min_similarity:.0%} gelijk, zelfde bestandsgrootte)."}
+                          f"(minimaal {min_similarity:.0%} gelijk)."}
     donors = _prefer_closest_values(data, profile, package, donors)
     best = None
     for rank, donor in enumerate(donors[:MAX_DONORS_TRIED]):
