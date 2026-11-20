@@ -92,6 +92,30 @@ def build_parser() -> argparse.ArgumentParser:
     inst.add_argument("file", type=Path)
     exp = sub.add_parser("export-package")
     exp.add_argument("file", type=Path)
+    exp_ = sub.add_parser("explain", help="Leg uit welke referenties passen, wat ontbreekt en wat de volgende "
+                          "controle is (alleen lezen).")
+    exp_.add_argument("original", type=Path)
+    exp_.add_argument("--profile")
+    exp_.add_argument("--top", type=int, default=5)
+    exp_.add_argument("--check", action="store_true",
+                      help="Overzetcontrole: plaats de wijzigingen van elke kandidaat in het geheugen en meet "
+                           "hoeveel op identieke originele bytes landen (schrijft niets).")
+    exp_.add_argument("--filter", choices=("exact", "alternative_revision", "insufficient", "conflict"))
+    exp_.add_argument("--json", action="store_true")
+    exp_.add_argument("--propose", action="store_true",
+                      help="Leg de beste kandidaat vast als voorgestelde relatie (voor beoordeling).")
+    rev = sub.add_parser("review", help="Beoordeel een voorgestelde relatie (bevestigen is geen onafhankelijk bewijs).")
+    rev.add_argument("relation_id", type=int)
+    rev.add_argument("decision", choices=("confirm", "reject", "conflict", "reopen"))
+    rev.add_argument("--reason", required=True)
+    rev.add_argument("--reviewer", required=True)
+    rel = sub.add_parser("relations", help="Toon relaties en hun beoordelingsgeschiedenis.")
+    rel.add_argument("--file", type=Path, help="Alleen relaties van dit bestand.")
+    fpi = sub.add_parser("fingerprint-index", help="Vingerafdrukindex van een map (stromend, hervatbaar).")
+    fpi.add_argument("folder", type=Path)
+    fpi.add_argument("--index", type=Path, help="Indexbestand (standaard in de opslag).")
+    evm = sub.add_parser("evaluate-matching", help="Meet precision/recall door elk origineel te verbergen.")
+    evm.add_argument("--limit", type=int)
     con = sub.add_parser("contract", help="Leg het integriteitscontract voor een familie vast.")
     con.add_argument("family_key")
     con.add_argument("--flash-tool-corrects", action="store_true")
@@ -152,6 +176,8 @@ def main(argv: list[str] | None = None) -> int:
         summary.update({"status": "GEËXPORTEERD", "output": str(out), "report": str(report)})
         print(json.dumps(summary, indent=2, ensure_ascii=False))
         return 0
+    if args.command in ("explain", "review", "relations", "fingerprint-index", "evaluate-matching"):
+        return _evidence_command(args, store)
     if args.command == "update-library":
         from .background import run_update
 
@@ -188,6 +214,75 @@ def main(argv: list[str] | None = None) -> int:
         print("Contract vastgelegd.")
         return 0
     return 1
+
+
+def _evidence_command(args, store: PackageStore) -> int:
+    import hashlib
+
+    from .evidence import EvidenceGraph
+
+    if args.command == "fingerprint-index":
+        from .ecu_fingerprint import FingerprintIndex
+
+        index = FingerprintIndex(args.index or store.root / "fingerprints.sqlite")
+        try:
+            print(json.dumps(index.index_tree(args.folder, progress=print), indent=2))
+        finally:
+            index.close()
+        return 0
+    graph = EvidenceGraph(store.root)
+    try:
+        if args.command == "review":
+            row = graph.review(args.relation_id, args.decision, args.reason, args.reviewer)
+            print(json.dumps({"relation": row, "history": graph.history(args.relation_id)}, indent=2,
+                             ensure_ascii=False))
+            return 0
+        if args.command == "relations":
+            subject = None
+            if args.file:
+                subject = "file:" + hashlib.sha256(args.file.read_bytes()).hexdigest()
+                graph.mark_stale(f"path:{args.file.resolve()}", subject[5:])
+            rows = graph.relations(subject)
+            print(json.dumps([dict(r, history=graph.history(r["id"])) for r in rows], indent=2, ensure_ascii=False))
+            return 0
+        package = store.load_active()
+        if package is None:
+            print("Geen actief modelpakket.")
+            return 2
+        if args.command == "evaluate-matching":
+            from .explain import evaluate
+
+            print(json.dumps(evaluate(package, store.root, limit=args.limit), indent=2))
+            return 0
+        from .explain import explain, format_report
+
+        data = args.original.read_bytes()
+        report = explain(data, package, store_root=store.root, hint=args.original.name, profile=args.profile,
+                         top=args.top, check=args.check, graph=graph)
+        if args.filter:
+            report["candidates"] = [c for c in report["candidates"] if c["category"] == args.filter]
+        if args.propose and report["candidates"]:
+            best = report["candidates"][0]
+            kind = {"exact": "exact_content" if best["identity_status"] == "IDENTICAL_CONTENT" else "same_family",
+                    "alternative_revision": "related_revision", "insufficient": "same_family",
+                    "conflict": "conflict"}[best["category"]]
+            evidence = [{"kind": "explain_report", "detail": best["reason"],
+                         "source_sha256": report["input"]["sha256"]}]
+            if best["identity_status"] == "IDENTICAL_CONTENT":
+                evidence.append({"kind": "sha256_identical", "detail": "SHA-256 gelijk",
+                                 "source_sha256": report["input"]["sha256"]})
+            if best["compatibility_status"] == "TRANSFER_CHECK_IDENTICAL_BYTES":
+                evidence.append({"kind": "transfer_dry_run_identical_bytes", "detail": best["compatibility"]["detail"],
+                                 "source_sha256": report["input"]["sha256"]})
+            report["proposed_relation"] = graph.propose(
+                kind, f"file:{report['input']['sha256']}", f"file:{best['reference']['original_sha256']}",
+                evidence=evidence, source_sha256=report["input"]["sha256"], algorithm=report["engine"],
+                original_values={"input_identifiers": report["input"].get("identifiers", []),
+                                 "path": str(args.original)})
+        print(json.dumps(report, indent=2, ensure_ascii=False) if args.json else format_report(report))
+        return 0
+    finally:
+        graph.close()
 
 
 if __name__ == "__main__":

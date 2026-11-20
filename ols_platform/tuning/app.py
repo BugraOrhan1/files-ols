@@ -215,6 +215,8 @@ class TunerApp:
         ttk.Label(footer, text=f"Versie {SOFTWARE_VERSION}  ·  gegevens: {self.store.root}",
                   style="Muted.TLabel").pack(side="left")
         ttk.Button(footer, text="Diagnose opslaan…", command=self.save_diagnostics).pack(side="right")
+        self.explain_button = ttk.Button(footer, text="Uitleg: welke referentie past?", command=self.show_explanation)
+        self.explain_button.pack(side="right", padx=8)
 
         self.active_id = None
         self.reload_package()
@@ -401,6 +403,14 @@ class TunerApp:
             self.root.configure(cursor="watch")
         else:
             self.root.configure(cursor="")
+
+    def show_explanation(self) -> None:
+        """Explain candidates for the open original (read-only, off the GUI thread)."""
+
+        if self.original is None or self.package is None:
+            self.message.show("info", "Uitleg", "Open eerst een origineel en laad de bibliotheek.")
+            return
+        ExplainWindow(self, self.original, self.package)
 
     def _show_error(self, error: Exception, what: str) -> None:
         if isinstance(error, GenerationRejected):
@@ -612,6 +622,90 @@ class TunerApp:
         if tab:
             self.library_window.select(tab)
         return self.library_window
+
+
+class ExplainWindow:
+    """Candidates with matched / missing / conflicting fields and the next check."""
+
+    FILTERS = {"Alle": None, "Exacte identiteit": "exact", "Andere revisie": "alternative_revision",
+               "Onvoldoende bewijs": "insufficient", "Tegenstrijdig": "conflict"}
+
+    def __init__(self, app: "TunerApp", path: Path, package) -> None:
+        import tkinter as tk
+        from tkinter import ttk
+
+        self.app, self.path, self.package, self.report = app, path, package, None
+        self.win = tk.Toplevel(app.root)
+        self.win.title(f"Uitleg – {path.name}")
+        self.win.geometry("980x620")
+        bar = ttk.Frame(self.win, padding=8)
+        bar.pack(fill="x")
+        self.filter_var = tk.StringVar(value="Alle")
+        ttk.Label(bar, text="Filter:").pack(side="left")
+        box = ttk.Combobox(bar, textvariable=self.filter_var, values=list(self.FILTERS), state="readonly", width=22)
+        box.pack(side="left", padx=6)
+        box.bind("<<ComboboxSelected>>", lambda _e: self.render())
+        self.check_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(bar, text="Overzetcontrole uitvoeren (alleen in geheugen)", variable=self.check_var,
+                        command=self.compute).pack(side="left", padx=12)
+        ttk.Label(self.win, padding=(8, 0), style="Muted.TLabel", wraplength=940, text=(
+            "Overeenkomst is een meting, geen kans. Identiteit, compatibiliteit en referentie zijn aparte "
+            "bewijsstatussen; een hoge overeenkomst verhoogt ze nooit.")).pack(fill="x")
+        self.text = tk.Text(self.win, wrap="word", font=("Consolas", 9), relief="flat")
+        self.text.pack(fill="both", expand=True, padx=8, pady=8)
+        self.compute()
+
+    def compute(self) -> None:
+        from .explain import explain
+
+        self.text.delete("1.0", "end")
+        self.text.insert("end", "Bezig met vergelijken…\n")
+        options = self.app._transfer_options()
+        path, package, check, root = self.path, self.package, self.check_var.get(), self.app.store.root
+
+        def work() -> None:
+            try:
+                from .evidence import EvidenceGraph
+
+                graph = EvidenceGraph(root)
+                try:
+                    result = explain(path.read_bytes(), package, store_root=root, hint=options["hint"], top=8,
+                                     check=check, graph=graph)
+                finally:
+                    graph.close()
+                self.app._results.put((None, self._done, result, None))
+            except Exception as exc:
+                self.app._results.put((None, self._done, None, exc))
+
+        if self.app.synchronous:  # tests
+            work()
+            _token, done, result, error = self.app._results.get_nowait()
+            done(result, error)
+            return
+        threading.Thread(target=work, daemon=True).start()
+
+    def _done(self, report, error) -> None:
+        if not self.win.winfo_exists():
+            return
+        if error is not None:
+            self.app.log.error("Uitleg mislukt: %r", error, exc_info=error)
+            self.text.delete("1.0", "end")
+            self.text.insert("end", f"Uitleg mislukt: {error}")
+            return
+        self.report = report
+        self.app.log.info("Uitleg: %s, %d kandidaten", report["verdict"]["status"], len(report["candidates"]))
+        self.render()
+
+    def render(self) -> None:
+        from .explain import format_report
+
+        if self.report is None:
+            return
+        wanted = self.FILTERS[self.filter_var.get()]
+        shown = dict(self.report, candidates=[c for c in self.report["candidates"]
+                                              if wanted is None or c["category"] == wanted])
+        self.text.delete("1.0", "end")
+        self.text.insert("end", format_report(shown) + "\n")
 
 
 class LibraryWindow:
@@ -1223,7 +1317,8 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, indent=2))
         return 0 if result["passed"] else 1
     if argv and argv[0] in ("train", "generate", "packages", "rollback", "install-package",
-                            "export-package", "contract", "update-library", "practice", "--store"):
+                            "export-package", "contract", "update-library", "practice", "explain", "review",
+                            "relations", "fingerprint-index", "evaluate-matching", "--store"):
         from .__main__ import main as cli_main
 
         return cli_main(argv)

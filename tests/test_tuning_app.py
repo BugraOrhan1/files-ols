@@ -80,6 +80,16 @@ class AppTests(unittest.TestCase):
         self.assertEqual(str(self.app.make_button["state"]), "normal")
         output = self.app.make_bin(ask_path=False)
         self.assertEqual(output.read_bytes(), pair.tuned)
+        # Explanation window: candidates with separate statuses, filterable.
+        from ols_platform.tuning.app import ExplainWindow
+
+        window = ExplainWindow(self.app, original, self.app.package)
+        self.assertEqual(window.report["candidates"][0]["identity_status"], "IDENTICAL_CONTENT")
+        self.assertIn("identiteit IDENTICAL_CONTENT", window.text.get("1.0", "end"))
+        window.filter_var.set("Tegenstrijdig")
+        window.render()
+        self.assertNotIn("identiteit IDENTICAL_CONTENT", window.text.get("1.0", "end"))
+        window.win.destroy()
         self.assertTrue(os.path.exists(str(output) + ".rapport.json"))
         tuned = self.root_dir / "al getuned.bin"
         tuned.write_bytes(make_stage1(make_original(1)))

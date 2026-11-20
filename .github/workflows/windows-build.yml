@@ -105,6 +105,9 @@ jobs:
           if (-not ($status.log -match "parallel|tegelijk")) { throw "worker count not reported" }
           if ((Run @("export-package", "`"$env:RUNNER_TEMP\frozen.olstune`"")) -ne 0) { throw "package export failed" }
           if ((Run @("install-package", "`"$env:RUNNER_TEMP\frozen.olstune`"")) -ne 0) { throw "install failed" }
+          # Explainable matching works in the frozen EXE (read-only, with the transfer check).
+          if ((Run @("explain", "`"$orig`"", "--check", "--json")) -ne 0) { throw "explain failed" }
+          if ((Run @("evaluate-matching")) -ne 0) { throw "evaluate-matching failed" }
           $code = Run @("generate", "`"$orig`"", "--output-dir", "`"$out`"", "--name", "blocked.bin")
           if ($code -ne 4) { if (Test-Path $env:OLS_TUNER_LOG) { Get-Content $env:OLS_TUNER_LOG }; throw "expected export block without integrity contract, got $code" }
           if (Test-Path (Join-Path $out "blocked.bin")) { throw "blocked export left a file" }
