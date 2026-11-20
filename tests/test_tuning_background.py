@@ -1,3 +1,4 @@
+import gc
 import json
 import sys
 import tempfile
@@ -235,6 +236,11 @@ class ContinuousPracticeTests(unittest.TestCase):
             def worker() -> None:
                 result["code"] = run_update(store_root, workers=1, continuous=True, pause_minutes=1)
 
+            # Tk objects left by the GUI tests must not be garbage-collected
+            # in this worker thread (Tcl_AsyncDelete aborts the process).
+            gc.collect()
+            gc.disable()
+            self.addCleanup(gc.enable)
             thread = threading.Thread(target=worker)
             thread.start()
             deadline = time.time() + 120
