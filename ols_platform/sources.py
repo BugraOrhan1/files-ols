@@ -63,6 +63,9 @@ def test_source(database: Any, source_id: int) -> dict[str, Any]:
     return result
 
 
+test_source.__test__ = False  # app function, not a pytest test
+
+
 def move_source(database: Any, source_id: int, new_path: Path) -> dict[str, Any]:
     source = database.get_source(source_id)
     if source is None:

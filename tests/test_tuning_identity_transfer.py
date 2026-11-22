@@ -99,5 +99,28 @@ class IdentityConfirmedTransferTests(unittest.TestCase):
             generate(_other_code(make_original(21, other)), "stage1", self.package)
 
 
+GOLF = Path(__file__).resolve().parents[1] / "ols files geextracteert"
+
+
+@unittest.skipUnless((GOLF / "WinOLS (VW Golf (Original) - SCG0051000000)").exists(), "Golf-voorbeeld ontbreekt")
+class RealSimos1810Tests(unittest.TestCase):
+    """Real VW Golf Simos18.10 bench read (5.5 MB) as library reference; a
+    4 MB read holding the same calibration elsewhere must get exactly
+    WinOLS' Stage 1."""
+
+    def test_obd_read_gets_winols_stage1(self):
+        o = (GOLF / "WinOLS (VW Golf (Original) - SCG0051000000)").read_bytes()
+        t = (GOLF / "WinOLS (VW Golf (Stage 1) - SCG0051000000)").read_bytes()
+        variant = Variant(ecu="SIMOS18.10", hw="SCG0051000000", sw="5G0906259N")
+        package = build_package([_pair(o, t, variant, 31)])
+        rng = random.Random(1)
+        obd = bytearray(rng.randrange(256) for _ in range(0x400000))
+        obd[0x100000:0x1C0000] = o[0x200000:0x2C0000]
+        expected = bytearray(obd)
+        expected[0x100000:0x1C0000] = t[0x200000:0x2C0000]
+        result = generate(bytes(obd), "stage1", package)
+        self.assertEqual(result.output, bytes(expected))
+
+
 if __name__ == "__main__":
     unittest.main()
