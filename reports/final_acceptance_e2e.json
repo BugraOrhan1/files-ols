@@ -1,0 +1,17 @@
+{
+  "configured_test_roots": 5,
+  "hash_run_files": 1,
+  "hash_outcomes": {
+    "HASHED": 1
+  },
+  "import_partial": 1,
+  "resume_skipped_unchanged": 1,
+  "search_results": 1,
+  "parser_warnings": 7,
+  "dashboard_result_and_warnings_shown": true,
+  "binary_similarity_percent": 95.0,
+  "threshold_met": true,
+  "sqlite_integrity": "ok",
+  "test_source_hashes_unchanged": true,
+  "server_thread_stopped": true
+}

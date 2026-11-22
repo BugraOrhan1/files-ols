@@ -13,16 +13,80 @@ from .reader import ProjectSnapshot, ReadIssue
 SCHEMA_VERSION = 16
 
 
+def _is_process_alive(process_id: int) -> bool:
+    if process_id <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        # On Windows, os.kill(pid, 0) can terminate the target process.
+        SYNCHRONIZE = 0x00100000
+        ERROR_ACCESS_DENIED = 5
+        ERROR_INVALID_PARAMETER = 87
+        WAIT_OBJECT_0 = 0
+        WAIT_TIMEOUT = 258
+        WAIT_FAILED = 0xFFFFFFFF
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        open_process = kernel32.OpenProcess
+        open_process.argtypes = (
+            wintypes.DWORD, wintypes.BOOL, wintypes.DWORD,
+        )
+        open_process.restype = wintypes.HANDLE
+        wait_for_single_object = kernel32.WaitForSingleObject
+        wait_for_single_object.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        wait_for_single_object.restype = wintypes.DWORD
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = (wintypes.HANDLE,)
+        close_handle.restype = wintypes.BOOL
+
+        handle = open_process(SYNCHRONIZE, False, process_id)
+        if not handle:
+            error = ctypes.get_last_error()
+            if error == ERROR_ACCESS_DENIED:
+                return True
+            if error == ERROR_INVALID_PARAMETER:
+                return False
+            raise ctypes.WinError(error)
+        try:
+            result = wait_for_single_object(handle, 0)
+            if result == WAIT_OBJECT_0:
+                return False
+            if result == WAIT_TIMEOUT:
+                return True
+            if result == WAIT_FAILED:
+                raise ctypes.WinError(ctypes.get_last_error())
+            raise OSError(f"Unexpected process wait result: {result}")
+        finally:
+            if not close_handle(handle):
+                raise ctypes.WinError(ctypes.get_last_error())
+
+    try:
+        os.kill(process_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 class IndexDatabase:
-    def __init__(self, path: Path) -> None:
-        self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(path, timeout=30)
+    def __init__(self, path: Path, *, read_only: bool = False) -> None:
+        self.path = Path(path)
+        if read_only:
+            uri = f"{self.path.resolve().as_uri()}?mode=ro"
+            self.connection = sqlite3.connect(uri, uri=True, timeout=30)
+            self.connection.execute("PRAGMA query_only = ON")
+        else:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.connection = sqlite3.connect(self.path, timeout=30)
         self.connection.row_factory = sqlite3.Row
-        self.connection.execute("PRAGMA foreign_keys = ON")
-        self.connection.execute("PRAGMA journal_mode = WAL")
         self.connection.execute("PRAGMA busy_timeout = 30000")
-        self._initialize()
+        if not read_only:
+            self.connection.execute("PRAGMA foreign_keys = ON")
+            self.connection.execute("PRAGMA journal_mode = WAL")
+            self._initialize()
 
     def close(self) -> None:
         self.connection.close()
@@ -1868,19 +1932,47 @@ class IndexDatabase:
 
     def recover_hash_run(self) -> dict:
         with self.connection:
+            worker = self.connection.execute(
+                "SELECT status,process_id FROM hash_worker_state WHERE id=1"
+            ).fetchone()
+            process_id = worker["process_id"] if worker else None
+            if process_id is not None:
+                process_id = int(process_id)
+                if process_id <= 0:
+                    raise RuntimeError(
+                        "Hash worker process ID is invalid; refusing recovery."
+                    )
+                if _is_process_alive(process_id):
+                    raise RuntimeError(
+                        f"Hash worker process {process_id} appears active; "
+                        "refusing recovery."
+                    )
+            elif worker and worker["status"] in {"running", "paused"}:
+                raise RuntimeError(
+                    "Hash worker status is active but its process ID is unknown; "
+                    "refusing recovery."
+                )
             control = self.connection.execute(
                 "SELECT status,run_id FROM hash_control WHERE id=1"
             ).fetchone()
             run_id = control["run_id"] if control else None
+            recovered_run_id = None
             if run_id is not None:
-                self.connection.execute(
-                    """
-                    UPDATE hash_runs SET status='INTERRUPTED',
-                        finished_at=CURRENT_TIMESTAMP
-                    WHERE id=? AND status='RUNNING'
-                    """,
+                run = self.connection.execute(
+                    "SELECT status FROM hash_runs WHERE id=?",
                     (run_id,),
-                )
+                ).fetchone()
+                if run and run["status"] == "RUNNING":
+                    cursor = self.connection.execute(
+                        """
+                        UPDATE hash_runs SET status='INTERRUPTED',
+                            finished_at=CURRENT_TIMESTAMP
+                        WHERE id=? AND status='RUNNING'
+                        """,
+                        (run_id,),
+                    )
+                    if cursor.rowcount:
+                        recovered_run_id = run_id
             cursor = self.connection.execute(
                 """
                 UPDATE hash_jobs SET status='RETRY_PENDING',run_id=NULL,
@@ -1904,7 +1996,7 @@ class IndexDatabase:
                 """
             )
         return {
-            "recovered_run_id":run_id,
+            "recovered_run_id":recovered_run_id,
             "jobs_requeued":cursor.rowcount,
             "control":self.hash_control_status(),
         }
@@ -1920,21 +2012,12 @@ class IndexDatabase:
             ).fetchone()
             if current and current["status"] in {"running", "paused"}:
                 previous_pid = current["process_id"]
-                alive = False
                 if previous_pid:
-                    try:
-                        os.kill(int(previous_pid), 0)
-                        alive = True
-                    except ProcessLookupError:
-                        alive = False
-                    except PermissionError:
-                        alive = True
-                    except OSError:
-                        alive = False
-                if alive:
-                    raise RuntimeError(
-                        f"Hash worker process {previous_pid} is already active."
-                    )
+                    previous_pid = int(previous_pid)
+                    if _is_process_alive(previous_pid):
+                        raise RuntimeError(
+                            f"Hash worker process {previous_pid} is already active."
+                        )
                 active_run_id = current["active_run_id"]
                 if active_run_id is not None:
                     self.connection.execute(
@@ -2823,9 +2906,16 @@ class IndexDatabase:
                         f"""
                         UPDATE {table} SET path=? || substr(path,length(?)+1)
                         WHERE source_id=? AND
-                            (path=? OR substr(path,1,length(?)+1)=? || '\\')
+                            (
+                                path=? OR
+                                substr(path,1,length(?)+1)=? || '\\' OR
+                                substr(path,1,length(?)+1)=? || '/'
+                            )
                         """,
-                        (new_root,old_root,source_id,old_root,old_root,old_root),
+                        (
+                            new_root,old_root,source_id,old_root,
+                            old_root,old_root,old_root,old_root,
+                        ),
                     )
                     result[table] = cursor.rowcount
                 cursor = self.connection.execute(
@@ -2847,9 +2937,14 @@ class IndexDatabase:
                 cursor = self.connection.execute(
                     """
                     UPDATE source_files SET path=? || substr(path,length(?)+1)
-                    WHERE path=? OR substr(path,1,length(?)+1)=? || '\\'
+                    WHERE path=? OR
+                        substr(path,1,length(?)+1)=? || '\\' OR
+                        substr(path,1,length(?)+1)=? || '/'
                     """,
-                    (new_root,old_root,old_root,old_root,old_root),
+                    (
+                        new_root,old_root,old_root,old_root,old_root,
+                        old_root,old_root,
+                    ),
                 )
                 result["source_files"] = cursor.rowcount
                 self.connection.execute(

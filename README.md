@@ -21,7 +21,115 @@ and small; PostgreSQL, DuckDB/Parquet, and a WPF shell remain future
 scaling/UI work, not current capabilities. Re-indexing is invalidated when the
 source content, parser fingerprint or application version changes.
 
+## Isolated local test setup
+
+The default database is this checkout's `data\ols-index.sqlite3`. Commands
+including `status` and `hashing status` open it with write-capable
+initialization; they are **not** safe read-only production status checks.
+Do not run them against a production index merely to test the application.
+Dashboard GET requests open the index read-only, but the dashboard also has
+write-capable actions; use a separate test database
+until its configured paths and intended operation have been reviewed.
+
+For a disposable local run from the project directory:
+
+The full test suite starts simulated hash workers against temporary test
+databases, including a two-thread test. Do not run that suite when worker
+execution itself is prohibited.
+
+```powershell
+$source = (Get-Location).Path
+$testRoot = Join-Path $env:TEMP ("files-ols-test-" + [guid]::NewGuid())
+New-Item -ItemType Directory -Path $testRoot | Out-Null
+foreach ($name in @("ols_platform", "deployment", "tests", "reports", "ols files als ols")) {
+  Copy-Item -LiteralPath (Join-Path $source $name) -Destination (Join-Path $testRoot $name) -Recurse
+}
+Set-Location $testRoot
+$env:PY_OLS_PATH = "D:\werkmap\py-ols-study" # Set to the local parser checkout.
+py -3 -m unittest discover -s tests -v
+py -3 -m ols_platform.cli --database (Join-Path $testRoot "test.sqlite3") init-db
+py -3 -m ols_platform.cli --database (Join-Path $testRoot "test.sqlite3") import --py-ols-path $env:PY_OLS_PATH (Join-Path $testRoot "ols files als ols\100009.ols")
+py -3 -m ols_platform.cli --database (Join-Path $testRoot "test.sqlite3") serve
+```
+
+Open `http://127.0.0.1:8765/` for the temporary index. The test copy is
+separate from the production data; delete it only after confirming its path.
+For independent WinOLS checks, use the reference-package procedure below with
+reviewed exports from temporary OLS copies. A parser result or match score is
+not proof of ECU compatibility.
+
 ## Commands
+
+### Dashboard: import a BIN and export a selected indexed research file
+
+Start the current dashboard code from the project directory:
+
+```powershell
+py -3 -m ols_platform.cli --database "D:\werkmap\files ols\data\ols-index.sqlite3" serve --port 8765
+```
+
+Open `http://127.0.0.1:8765/#ecu-workbench`. If another instance already uses
+that port, stop only an instance you own or choose a free port, for example
+`--port 8766`, and open that port instead. An already running server must be
+restarted or replaced with a new instance to load the updated Python API.
+
+1. Select the original `.bin`, optionally enter known identifiers and click
+   **Importeer en analyseer**. The browser sends the bytes over loopback to
+   the separate Workbench store; it does not modify the original.
+2. Select a registered binary reference from the candidate menu. Use **Andere
+   geregistreerde referenties** for unrelated records, or enter an already
+   indexed directory and select **Zoek in index** for standalone BIN/ORI
+   locations. Directory search queries recorded paths, not the filesystem;
+   enter the indexed absolute path. It does not scan the corpus.
+3. Click **Controleer geselecteerde kandidaat** and review the source, hashes,
+   missing/conflicting identifiers, warnings, byte comparison and status.
+   The same-size byte percentage is calculated only for the selected pair.
+4. Enter an existing output directory and a `.bin` filename, optionally edit
+   the label, confirm the warning, and click **Exporteer geselecteerde BIN**.
+   The selected bytes and adjacent `.bin.manifest.json` appear at that path.
+   Existing files are never overwritten; changed or missing sources fail.
+
+Indexed version names are shown as **unconfirmed** labels, not inferred from
+filenames or proof of a tuning type. A standalone location without an indexed
+hash is hashed on explicit selection and rechecked during export. OLS parser
+slots without independently established extraction boundaries are shown as
+non-exportable. No candidate or percentage proves ECU compatibility; all
+exports remain `COMPATIBILITY_NOT_VALIDATED`.
+
+### CLI: import a BIN and export a selected indexed research file
+
+Create the output directory first, then run the interactive command with the
+existing index (the global `--database` option precedes the command):
+
+```powershell
+py -3 -m ols_platform.cli --database "D:\werkmap\files ols\data\ols-index.sqlite3" `
+  ecu-bin-export "C:\path\to\original.bin" `
+  --output-dir "C:\path\to\existing-output-folder" `
+  --ecu-type "known ECU type" --hw-number "known hardware number" `
+  --sw-number "known software number" --label "research"
+```
+
+Identification options and the label are optional, user-provided and
+unverified; omit unknown values. `--help` lists the other options, including
+`--output-name`. The original is read without modification and archived in the
+separate `ecu-workbench` directory beside the index. The index is opened
+read-only; this command neither scans the corpus nor starts a hash worker.
+
+Review the candidate table and warnings, choose its number, and inspect the
+exact source and destination in the confirmation screen. Enter `EXPORT` only
+to copy that candidate; `Q` cancels. Enter `A` to browse other registered
+binary references when no relevant candidate is found. If the destination BIN
+or manifest already exists, choose another name. The output folder receives the
+selected unchanged `.bin` and a `.bin.manifest.json` containing the source,
+original and output hashes and the available evidence.
+
+Only registered BIN/ORI reference artifacts are offered; use `N`/`V` to page
+through lists longer than 500 records. A listed path can be missing or stale. Raw BIN
+identifiers, original/tuned status and tuning type are not inferred from a
+filename. Project retrieval points are not a percentage; byte similarity is
+calculated only after selecting an equally sized candidate. Neither selection nor byte
+identity proves ECU compatibility: exports remain
+`COMPATIBILITY_NOT_VALIDATED` and must not be interpreted as ready to flash.
 
 Initialize the database:
 
@@ -148,6 +256,25 @@ or establish that two files are compatible tune/original pairs.
 python -m ols_platform.cli compare original.bin tuned.bin
 ```
 
+For a comparison that must not create or write to the SQLite index, use
+`--no-store`. `--output` writes a JSON report to a new path and refuses to
+overwrite an existing file or either comparison input:
+
+```powershell
+python -m ols_platform.cli compare original.bin tuned.bin --no-store `
+  --output data\comparison-reports\comparison.json
+```
+For two selected nonempty files of equal size, `byte_similarity` reports the
+percentage of identical bytes at identical offsets. Its threshold is 95% by
+default; `--byte-threshold 90` changes it for a CLI comparison, and the
+Workbench comparison form provides the same setting. Unequal sizes and empty
+files are `NOT_COMPARABLE` for this metric. The Workbench also reports
+conflicting user-supplied identification fields; those fields are unverified.
+This is a pairwise byte measurement, not corpus-wide candidate retrieval,
+structure matching, a confidence probability, or ECU compatibility evidence.
+Small files and long equal padding can have misleadingly high percentages.
+`rank_score` remains a separate retrieval tally and is not a percentage.
+
 For WinOLS reference manifests, first review the generated per-project
 manifest, then import it and run validation. Binary exports without an explicit
 slot mapping can produce candidate matches, but these remain inconclusive if
@@ -170,6 +297,18 @@ only referenced by path, size, and SHA-256.
 ```powershell
 python -m ols_platform.cli reference-package-template 8
 python -m ols_platform.cli reference-package-inspect data\reference-packets\8\manifest.json
+```
+
+Manifest version 1 is described by
+[schemas/winols-reference-package-v1.schema.json](./schemas/winols-reference-package-v1.schema.json).
+Run the offline audit to execute the existing package, version, metadata and
+map checks without writing run history or other data to the index. The index
+must already exist and is opened read-only. Report output must be a new path:
+
+```powershell
+python -m ols_platform.cli reference-package-audit `
+  data\reference-packets\8\manifest.json `
+  --output data\reference-reports\project-8-offline-audit.json
 ```
 
 Place each actual WinOLS raw version export separately in
@@ -197,6 +336,19 @@ python -m ols_platform.cli reference-map-compare data\reference-packets\8\manife
 python -m ols_platform.cli reference-package-report 8 --output data\reference-reports\project-8-package.json
 ```
 
+For an offline audit that reuses the same inspection, version, metadata, and
+map gates without appending a run or otherwise writing to the index, use:
+
+```powershell
+python -m ols_platform.cli --database data\ols-index.sqlite3 reference-package-audit data\reference-packets\8\manifest.json --output data\reference-reports\project-8-offline-audit.json
+```
+
+The audit opens SQLite in read-only/query-only mode. Its JSON keeps each
+canonical gate separate and reports an overall `PASS` only when every gate
+passes and the packet declares complete coverage. Missing evidence remains
+`NOT_TESTED` or `INCONCLUSIVE`; the command does not create exports or import
+reference artifacts.
+
 Version comparisons stream the export against each source slot, post-marker
 payload, and contiguous boundary range. They report full-length equality,
 exact partial prefixes, size differences, and changed byte ranges separately.
@@ -217,8 +369,9 @@ metadata JSON must use `{"metadata": {"field": "value"}}`. Map rows must carry a
 join key. Addresses require matching declared representations. Incomplete
 metadata, axes, map inventory, project/version relations, or export provenance
 cannot produce an overall `PASS`. Map metadata does not validate numeric map
-values in a binary. All package inspection, matching, and comparison runs are
-append-only. The loopback-only Importdiagnose page includes packet inspection,
+values in a binary. The standalone package inspection, matching, and
+comparison commands are append-only; `reference-package-audit` is read-only.
+The loopback-only Importdiagnose page includes packet inspection,
 parser data, latest package runs, and missing references.
 Until a real packet is supplied, project 8 remains `NOT_TESTED`; synthetic
 unit fixtures are not WinOLS validation evidence.
@@ -448,7 +601,9 @@ bounded to 100 per page by the dashboard; the service and CLI support
 `--limit` (maximum 1000) and `--offset`. Complete SHA-256 values found by the
 live file-location hasher are visible to search without a parser re-import.
 When both exist, search and project matching prefer that complete live content
-hash over the parser-import snapshot and report the hash provenance. If the
+hash over the parser-import snapshot and report the hash provenance. When
+registered roots overlap, full-hash search uses the same highest-ID present
+location with a recorded hash that is displayed in the result. If the
 hashes differ, parser-derived metadata and binary-slot evidence are flagged as
 potentially stale and cannot raise a project comparison to `LIKELY`; missing
 live hashes remain explicitly unverified rather than being treated as current.
@@ -470,6 +625,11 @@ python -m ols_platform.cli search-projects `
 
 Results carry matched fields, parser warnings/errors, missing-information
 flags, available versions and binary slots, and bounded map/axis summaries.
+For partial metadata searches, matched fields include only filters that
+actually matched, and the explanation identifies different or missing
+filters. Metadata confidence remains `INCONCLUSIVE` for conflicting ECU
+identifiers even if other identifiers match; Workbench metadata candidates
+also expose parser warnings and errors.
 Project detail also shows the current evidence and differences for comparable
 projects. A `CONFIRMED` exact full-file hash means only that OLS file contents
 are identical; it does not independently validate metadata, versions or tune
@@ -823,11 +983,12 @@ python -m unittest discover -s tests -v
 The eight-project integration test is skipped unless `PY_OLS_PATH` points to a
 separate py-ols checkout and all eight sample files are available in the
 workspace. Unit tests still run without the external parser.
-The Phase 11D full run used the configured separate parser checkout and all
-eight samples: 91 tests passed, with 0 failures and 0 skips. Both real-parser
-integration tests ran. The unittest child process exit was `0`; the PowerShell
-tool wrapper reported `1` for the same invocation, so these results and exit
-codes are recorded separately in `PHASE11_STATUS.md`.
+The historical Phase 11D run used the configured separate parser checkout and
+all eight samples: 91 tests passed, with 0 failures and 0 skips. The later
+Phase 11G review reran the suite with 116 tests passed and no skips; Phase 16
+records the latest integrated run. The Phase 11D wrapper-exit discrepancy is
+preserved in `PHASE11_STATUS.md` as a historical result, not the current test
+status.
 
 ### Read-only OLS parser diagnostics
 
@@ -865,6 +1026,64 @@ relationship is incomplete. No independent WinOLS exports were available for
 the eight samples during Phase 11D, so their structural validation remains
 `NOT_TESTED`.
 
+### Phase 11E offline evidence audit
+
+The read-only offline audit reuses the canonical reference-package gates and
+does not write to the SQLite index. The latest bounded audit covered the eight
+known OLS samples, ten existing binary artifacts, and four tracked `.DTF`
+files; it did not scan the larger corpus. All eight current OLS hashes matched
+the index, and all ten legacy artifact hashes and sizes matched their existing
+manifests. The Golf, Peugeot, and BMW package audits remain `INCONCLUSIVE`;
+the Audi A8 template remains `NOT_TESTED`. The binary checks identify only
+partial byte-range candidates and observed byte differences, not confirmed
+project/version links or Original/Tuned pairs.
+
+The four Audi A8 `.DTF` files are each 4 MiB and share a 32-byte prefix. Their
+format and export meaning are not established, so they are not parsed or
+compared as raw BIN files. A separate public-domain/0BSD C parser was tested
+read-only on the eight samples: all processes exited successfully, but it
+returned zero maps for every sample and synthetic version labels. It is not
+integrated; the parser observations do not constitute independent WinOLS
+validation. No active WinOLS license or new export was used. Full Phase 11
+remains in progress and independent content validation remains `NOT_TESTED`.
+
+The separate Phase 11E parser comparison records read-only observations from
+`py-ols` and `jinglinsen/ols-parser` on all eight samples. Neither parser is
+treated as ground truth, and their disagreements do not validate maps,
+versions, or extracted bytes. See the [Phase 11E audit and test results](PHASE11E_STATUS.md)
+and [machine-readable parser report](reports/phase11e_parser_audit.json).
+Independent WinOLS validation remains `NOT_TESTED`.
+
+### Phase 11F/11G review
+
+Phase 11F's structural regression results and the Phase 11G independent code-review verdict are documented in [PHASE11F_STATUS.md](./PHASE11F_STATUS.md) and [PHASE11G_REVIEW.md](./PHASE11G_REVIEW.md). The review found and fixed an invalid version-record geometry case that could mislabel a binary slot. Phase 11 remains in progress; independent WinOLS validation and ECU compatibility remain `NOT_TESTED`.
+
+### Phase 12 parser validation
+
+Phase 12 reran the parser-structure regressions and the real-parser integration tests against the eight read-only OLS samples using a temporary database. All 26 focused and integration tests passed, and all 14 tracked OLS/BIN fixture sizes and SHA-256 values remained unchanged. This validates only the adapter's tested behavior; independent WinOLS validation remains `NOT_TESTED`. See [PHASE12_STATUS.md](./PHASE12_STATUS.md).
+
+### Phase 13 indexing and search
+
+Phase 13 fixed search pagination applying before evidence ranking: default ranking is now evaluated across the filtered SQL result set before `LIMIT/OFFSET`, with a regression for multiple `any`-mode identifier matches. The focused temporary-database suite passed 35 tests. A 250-project synthetic search measured a 0.000906-second median locally; this is not a full-corpus benchmark. See [PHASE13_STATUS.md](./PHASE13_STATUS.md).
+
+### Phase 14 comparison and workbench
+
+Phase 14 validated bounded streaming comparisons, explicit byte-difference reporting, reference gating, and inconclusive semantic classifications. The focused comparison, workbench, binary-reference, and package suites passed 39 tests using temporary data. No ECU compatibility or independent WinOLS correctness is claimed; see [PHASE14_STATUS.md](./PHASE14_STATUS.md).
+
+### Phase 15 dashboard accessibility
+
+Comparison-history reports are native buttons and can be opened by mouse,
+Enter, or Space. Keyboard focus is visible; the targeted regression and
+real-browser interaction results are in [PHASE15_STATUS.md](./PHASE15_STATUS.md).
+
+### Phase 16 integrated release readiness
+
+The integrated test suite and local static checks are recorded in
+[PHASE16_STATUS.md](./PHASE16_STATUS.md). The verdict is
+`GO_WITH_LIMITATIONS` for the tested local application scope only. Independent
+WinOLS validation and ECU compatibility remain `NOT_TESTED`; this is not a
+claim that the parser or ECU interpretation is independently validated.
+
 ## Phase 5 limits
 
 The inventory command is a dry-run and is not the 6-TB indexer. It has not been
@@ -882,3 +1101,63 @@ are generated. No WinOLS automation is enabled. Use the export queue and the
 existing reference packet workflow until the installed WinOLS version,
 documented automation interface, license permissions, and correct version
 selection can be established.
+
+## External parser and tooling review
+
+Phase 17 reviewed eight public parser, extractor and comparison repositories
+at pinned commits. No external source code was copied or adopted, and none of
+the alternatives was established as an authoritative WinOLS parser. See
+[PHASE17_STATUS.md](./PHASE17_STATUS.md) and
+[reports/external_repo_review.md](./reports/external_repo_review.md) for the
+license, issue-tracker, provenance and validation findings.
+
+Phase 18 documents the offline evidence-audit path in
+[PHASE18_STATUS.md](./PHASE18_STATUS.md). The pinned C-parser experiment and
+its per-sample observations are documented in
+[PHASE19_STATUS.md](./PHASE19_STATUS.md) and
+[reports/phase19_c_parser_smoke.json](./reports/phase19_c_parser_smoke.json);
+parser output remains unverified until compared with independent WinOLS
+exports.
+
+The configured push, pull-request and manual CI checks are described in
+[PHASE20_STATUS.md](./PHASE20_STATUS.md). GitHub Actions run
+[43147415557](https://github.com/BugraOrhan1/files-ols/actions/runs/43147415557)
+passed on the isolated feature branch after a POSIX path-relocation defect was
+fixed. CI success does not establish parser correctness or ECU compatibility.
+
+The bounded security and dashboard interaction review is recorded in
+[PHASE21_STATUS.md](./PHASE21_STATUS.md); it is not a complete application
+security or accessibility certification.
+
+Temporary interrupted-hash recovery safeguards and their regression
+evidence are recorded in [PHASE22_STATUS.md](./PHASE22_STATUS.md). Recovery
+must still only be run after an operator confirms no worker process is active.
+
+The targeted dashboard UX review is in [PHASE24_STATUS.md](./PHASE24_STATUS.md).
+
+Dependency and licensing limits, including the missing repository license
+decision and external GPL-3.0 parser, are recorded in
+[PHASE25_STATUS.md](./PHASE25_STATUS.md).
+
+The bounded synthetic comparison experiment and its performance limits are
+recorded in [PHASE23_STATUS.md](./PHASE23_STATUS.md).
+
+The integrated Phase 26 release-readiness checklist, final test evidence,
+worker observations, and `NO_GO` distribution decision are recorded in
+[PHASE26_STATUS.md](./PHASE26_STATUS.md). Independent WinOLS validation and
+ECU compatibility remain `NOT_TESTED`.
+
+## OLS Tuner: Stage 1 uit geleerde projecten (Windows-app)
+
+Zie [TUNING_STATUS.md](./TUNING_STATUS.md) voor bewijs, beperkingen en acceptatietests.
+
+1. Start `OLSTuner.exe` (portable ZIP uit de workflow *Windows build*) en klik **Open origineel**.
+2. Kies **Stage 1** en klik **Maak getunde BIN**; kies waar het bestand wordt opgeslagen.
+3. Bij weigering staat de reden in beeld; anders ligt naast de BIN een `.rapport.json`.
+
+Het eigen modelpakket staat in `%LOCALAPPDATA%\OLS Tuner\`. Bibliotheek bijwerken (ingebouwde OLS-lezer, ook via de knop in de app of `OLSTuner.exe train …`):
+
+```powershell
+python -m ols_platform.tuning train `
+  --source "Database 1=\\Dell\d\Database 1" --source "Default=\\Dell\d\Default"
+```

@@ -1,0 +1,170 @@
+# OLS Tuner – leerketen, generator en Windows-app
+
+Status: **TECHNISCHE REPRODUCTIE GESLAAGD; BLINDE GENERATIETEST OP ECHTE DATA NIET UITGEVOERD.**
+De uitspraak “de app maakt zelfstandig Stage 1” wordt **niet** gedaan: daarvoor ontbreken
+(in deze omgeving) een tweede onafhankelijk project binnen dezelfde ECU-familie en een echt
+AutoTuner-origineel met apart gehouden, deskundig beoordeelde referentie.
+
+## Wat er gebouwd is
+
+| Onderdeel | Bestand | Functie |
+| --- | --- | --- |
+| Eigen OLS-lezer | `ols_platform/tuning/ols_native.py` | Leest projectgegevens en versie-images zonder WinOLS of py-ols. |
+| Versies uit OLS | `ols_platform/tuning/ols_versions.py` | Leest de RevisionTag (versienamen + WinOLS-checksumnotitie per versie) en de versie-images. |
+| Identificatie | `ols_platform/tuning/identity.py` | Onderscheidt ruwe uitlezing, OLS-project, ZIP/7z/RAR (ook hernoemd naar .bin), versleuteld (Slave), tekst, leeg; leert ECU/HW/SW-tokens die letterlijk in de bytes staan. |
+| Leren | `ols_platform/tuning/learn.py` | Ontleedt paren in bewerkingsgebieden, leert welke gebieden samen veranderen (support), classificeert kaart (16-bit, bytevolgorde bepaald) vs. patch, leert per cel exact/ratio/delta + grenzen + toepasbaarheid. |
+| Pakket | `ols_platform/tuning/package.py` | Deterministisch, inhoud-gehasht pakket (`.olstune`), lokale opslag met actief pakket, historie en terugzetten; integriteitscontracten per familie. |
+| Bibliotheek bijwerken | `ols_platform/tuning/library.py` | Hervatbare batchverwerking van bronmappen (checkpoint per project, retries, geen verlies bij netwerkuitval), paarbevestiging, opslag van paren, training, uitsluiting testprojecten incl. duplicaten/afstammelingen. |
+| Maak getunde BIN | `ols_platform/tuning/generate.py` | Herkent familie/variant, controleert indeling en context per gebied, weigert al getunede/gemengde invoer, past alleen samenhangend geheel toe. |
+| Export | `ols_platform/tuning/export.py` | Tijdelijk bestand → onafhankelijke herlezing van schijf → 0 wijzigingen buiten toegestane gebieden → atomisch publiceren zonder overschrijven → rapport. Onbekende integriteit blokkeert. |
+| Evaluatie | `ols_platform/tuning/evaluate.py` | Vergelijking met apart gehouden referentie en twee basislijnen (ongewijzigd origineel, donor-diff-kopie). |
+| CLI | `python -m ols_platform.tuning …` | `train`, `generate`, `packages`, `rollback`, `install-package`, `export-package`, `contract`. |
+| App | `ols_platform/tuning/app.py` | Nederlandstalig hoofdscherm + scherm “Bibliotheek en diagnose”; knop **Bibliotheek bijwerken** gebruikt dezelfde `Library.scan` + `Library.train` als `train`. |
+| Build | `packaging/OLSTuner.spec`, `.github/workflows/windows-build.yml` | PyInstaller 6.11.1 onedir-build, ZIP + SHA-256, test van precies dat archief. |
+
+## Gemeten bevindingen op de 8 OLS-voorbeelden
+
+1. **Slotgrens py-ols is 4 bytes verschoven.** Het versie-image is
+   `bestand[blob_offset + 4 : blob_offset + 4 + blob_size]`. Dit is SHA-256-identiek aan alle
+   14 onafhankelijke WinOLS-exports in de repo (4 projecten). De bestaande reader leest
+   “marker + payload” en zit dus 4 bytes ernaast; de tuningketen gebruikt de gecorrigeerde grens.
+2. **Versienamen** komen uit de RevisionTag (bijv. `1 (Original,\t Stage 1:\t NOCS)`); volgorde =
+   slotvolgorde, bevestigd met dezelfde 14 exports. De slotnamen van py-ols zijn verschoven en worden
+   niet gebruikt.
+3. **Checksumstatus van de referenties:** BMW, VW, Audi, MB: `NOCS` (WinOLS heeft niet gecorrigeerd);
+   Peugeot: `CS+, OLS280 2.50` (gecorrigeerd door de checksummodule) en `CS-` voor EGR OFF.
+4. **Paren:** bevestigde zuivere Stage 1-paren: **BMW 7er MDG1_MD1CP002** (100009.ols) en
+   **VW Golf SIMOS18.10** (100004.ols). Uitgesloten: MB C220 CRD3 (identificatie staat niet in de
+   bytes), Audi A8 “stage 1 = Vmax 280” (gecombineerd), alle P&B/EGR/Stage 2-varianten (alleen
+   gebruikt om gemengde invoer te herkennen).
+5. **Kaartdefinities:** het OLS-project van BMW bevat 4 (naamloze) kaarten, VW 0. De 4558 resp. 9978
+   gewijzigde bytes liggen grotendeels daarbuiten; de leerfunctie leidt de gebieden daarom zelf af
+   (BMW: 282 gebieden, 274 als 16-bit kaart herkend, 8 overig; VW: 79 gebieden, 58 kaart, 21 overig).
+   Physical units: de aanwezige definities hebben factor 1.0 en geen eenheid → afwijkingen worden in
+   ruwe eenheden gerapporteerd.
+6. **C-parsers** jinglinsen/ols-parser en JSD-SpeedUP/ols-parser-public verschillen 14 regels
+   (alleen een `strdup`-vervanger), zelfde copyrighthouder: **geen onafhankelijk bewijs**.
+
+## Acceptatietests (deze sessie)
+
+| Test | Invoer | Verwachting | Uitkomst | Status |
+| --- | --- | --- | --- | --- |
+| Bestaande software | `python -m unittest discover -s tests` | alles groen | 173 tests, OK, exit 0; 6 skips zonder `PY_OLS_PATH` (echte-parsertests), 0 skips met py-ols @4c283a8 | GESLAAGD |
+| Bekend trainingspaar BMW | export `WinOLS (BMW 7er (Original) …).bin` | byte-identiek aan Stage 1-export | SHA-256 `1e6aa221…` = referentie; 0 wijzigingen buiten gebieden | GESLAAGD |
+| Bekend trainingspaar VW | export VW Golf Original | byte-identiek aan Stage 1-export | identiek, 9978 bytes gereproduceerd | GESLAAGD |
+| Pakket reproduceerbaar | 2× trainen met dezelfde input | zelfde `package_id`, zelfde uitvoer | gelijk | GESLAAGD |
+| Nieuw project toevoegen | synthetisch project erbij | volgende run toont toegevoegd paar | `pairs_added_since_previous` = 1, rollback naar vorige werkt | GESLAAGD (synthetisch) |
+| Blinde proef synthetisch | 3 trainingsprojecten, 4e project onbekend | binnen 1 eenheid, 0 buiten gebied, beter dan basislijn | max. afwijking 1 ruwe eenheid; donor-diff 123 | GESLAAGD (alleen mechanisme) |
+| **Blinde proef echte data** | – | – | per familie maar 1 project beschikbaar | **NIET UITGEVOERD** |
+| Afwijzingen | verkeerde SW zelfde grootte, andere HW, onbekende ECU, al getuned (BMW/VW Stage 1), gedeeltelijk getuned, P&B-invoer, afgekapt, leeg, OLS-project, ZIP, willekeurig/versleuteld, kaart verschoven, cel buiten bereik, onverklaarde patch | specifieke reden, geen BIN | alle gevallen juiste code + Nederlandse reden | GESLAAGD |
+| Ongeldige/onbekende checksum | geen contract | export geblokkeerd, geen bestand | `integrity_unknown`, geen bestand | GESLAAGD |
+| Onderbrekingen | netwerkfout (retry + `retry_pending` + herstel), batchlimiet + hervatten, stop-signaal, bron onbereikbaar, volle schijf, twee gelijktijdige exports, paden met spaties/Unicode | geen verlies, geen dubbele records, geen halve BIN, origineel ongewijzigd | zoals verwacht | GESLAAGD (gesimuleerd) |
+| GUI | lege installatie + volledig pad onder Xvfb (Linux) | eerste-startmelding, BIN, afwijzing | zoals verwacht; schermafbeeldingen gemaakt | GESLAAGD |
+| Windows-release | `OLSTuner-win64-3dd137d.zip` (SHA-256 `1a04ea95ac1a466d4b2048395d1206d02b4b2137e8204e6d816da65a7471f9d8`) uitgepakt in een map met spatie en ü op de GitHub Windows-runner, Python verwijderd van PATH, lege installatie | selftest, GUI-rooktest, lege installatie, echte BMW-reproductie via EXE, blokkade zonder contract, afwijzing Audi | alles geslaagd in run 43493379410; EXE-uitvoer SHA-identiek aan WinOLS Stage 1-export; teruggedownload artefact heeft dezelfde ZIP-hash | GESLAAGD (CI-runner, geen schone eigen pc) |
+| Volledige suite op Windows | `python -m unittest discover -s tests -v` op windows-latest | alles groen | 173 tests geslaagd met lange TEMP-map; met de standaard 8.3-TEMP (`RUNNER~1`) falen 13 bestaande index-/inventarisatietests door padnormalisatie | GESLAAGD met kanttekening |
+| AutoTuner-herkenning / voertuig | – | – | geen AutoTuner, geen voertuig, geen testbank beschikbaar | NIET UITGEVOERD |
+
+## Ondersteunde combinaties (bewijsniveau REPRODUCTION_ONLY)
+
+| Familie | Grootte / leesvorm | HW | SW | Profiel | Projecten |
+| --- | --- | --- | --- | --- | --- |
+| Bosch MDG1_MD1CP002 (BMW 7er G12 50d, B57) | 2.621.440 B; importnaam “…-obd-vr.bin” (OBD/virtueel, niet geverifieerd) | 8KTB1-000047D1-028 | B57D30S0-G1 / B57S0_RDE / S15A-17-07-504-FS | Stage 1 | 1 |
+| Continental SIMOS18.10 (VW Golf 2.0 TSI) | 5.767.168 B; leesvorm onbekend | 5G0906259N / SCG0051000000 | 5G0906259N | Stage 1 | 1 |
+
+Bewezen is alleen: hetzelfde origineel → dezelfde Stage 1 als de WinOLS-referentie. Een ander
+voertuig binnen dezelfde softwarevariant wordt alleen verwerkt als alle cellen binnen het geleerde
+bereik vallen (tolerantie 15 %) en de kaartindeling exact overeenkomt; dat is **niet** blind getest op
+echte data. Zonder vastgelegd integriteitscontract blokkeert de export.
+
+## Integriteit
+
+Er is in deze sessie **geen** ECU-checksum- of handtekeningmethode geverifieerd. De referenties zelf
+zijn `NOCS`. De app schrijft pas een gebruiksklare BIN als de gebruiker per familie vastlegt dat zijn
+AutoTuner-route de checksum bij schrijven corrigeert (contract `FLASH_TOOL_CORRECTS_ON_WRITE`, met
+onderbouwing); het rapport noemt die resterende stap. Dit contract is door de gebruiker te
+controleren; het is niet door deze software bewezen.
+
+## GitHub-bronnen
+
+| Bron | Revisie / licentie | Bevinding | Gebruik |
+| --- | --- | --- | --- |
+| TheFlashBold/py-ols | 4c283a8, GPLv3 | Metadata en slots bruikbaar; slotgrens 4 bytes verschoven; versienamen niet correct; weinig/naamloze kaarten | Alleen bij Bibliotheek bijwerken, door gebruiker aangeleverd; **niet gebundeld** |
+| jinglinsen/ols-parser | c77616e, 0BSD | RevisionTag, segmenten zichtbaar | Idee RevisionTag; eigen Python-implementatie |
+| JSD-SpeedUP/ols-parser-public | 0640c3b, 0BSD | 14 regels verschil met jinglinsen → zelfde code | Niet als onafhankelijk bewijs geteld |
+| NXT-Tronic/winols-mcp | 7bd849d, MIT | Vereist WinOLS + licentie External Control (OLS530); eigen README: niet getest tegen live WinOLS | Niet gebruikt (geen WinOLS in deze omgeving) |
+| mohammedbenserya/pywinauto | 22b00fd, geen licentie | Eén GUI-klikscript, vaste paden/slaaptijden | Niet geschikt als betrouwbare exportroute; geen licentie |
+| 2CRPerformance/LinOLS | 2bc16a7, GPL | Python-hexviewer | Niet gebundeld |
+| reproteq/phpOLS | e8d57be, MIT | PHP CSV-kaartlezer | Niet gebruikt (geen CSV-export beschikbaar) |
+| reproteq/winols_damos_translator | ab5cd9d, geen licentie | Vertaalt via googletrans (online) | Niet gebruikt: stuurt namen naar externe dienst |
+| infinitehexsearcher/Ghidra-WinOLS-CSV-Importer | e6dada5, GPL | Ghidra-plugin | Niet gebruikt |
+| liushengjia-AAL/shengjia | cdcbe28, geen licentie | Achtergrond (o.a. md1-platform, checksum-crc-engine) | Alleen achtergrond; niets overgenomen |
+
+## Ronde 2: fouten bij gebruik op de hele database (opgelost)
+
+| Fout | Gevolg bij 6 TB | Oplossing | Bewijs |
+| --- | --- | --- | --- |
+| EXE kon de database niet zelf analyseren (py-ols nodig, GPL, niet gebundeld) | Bibliotheek bijwerken alleen via terminal + losse parser | Eigen OLS-lezer `ols_native.py` (header, versierecord, images op +4) | Identiek aan py-ols op alle 8 projecten (metadata + slots); images = 14 WinOLS-exports; CI traint via de EXE zelf |
+| Leren per ECU-familie i.p.v. per softwarevariant | Verschillende software door elkaar → gebieden vallen weg, alles geweigerd | Profiel per (familie, softwarevariant) | Test: 2 varianten in één familie, elk eigen Stage 1 |
+| Training laadt alle paren tegelijk | Geheugen loopt vol bij duizenden paren | Per variant laden, max. 32 leerparen per variant, rest alleen als bekend paar | 300 projecten/20 varianten: piek 26 MB |
+| Origineel uit de database gaf niet gegarandeerd dezelfde Stage 1 | “Origineel erin → getuned terug” niet zeker | Bekend-paar-pad: zelfde bytes in alle Stage 1-gebieden → exact die Stage 1; meerdere tunes → meest voorkomende | BMW/VW byte-identiek; ook met afwijkende byte buiten de gebieden (VIN/immo) |
+| Pakket als één JSON | Onwerkbaar groot | Pakket v2: ZIP met manifest + één bestand per variant, hash per variant | Manipulatietest manifest én variant |
+| Bronbestand 3× over netwerk gelezen | 3× zo traag | Eén keer kopiëren+hashen naar lokale scratch, daar parsen | — |
+| “Stage 1”-herkenning te streng | Veel bruikbare paren gemist | `Stage1`, `STAGE 1`, `Stufe 1`, `St1`, `Stage 1 (450PS)` = Stage 1; alles met EGR/DPF/Vmax/P&B/+ = gecombineerd | Tests op labels |
+| “Al getuned” werd soms als “andere bewerking” gemeld | Verwarrende reden | Volgorde van controles aangepast | VW Stage 1 → “al getuned” |
+
+## Ronde 3: alle tuningsoorten, achtergrond, snelheid
+
+| Onderdeel | Wat er veranderd is | Bewijs |
+| --- | --- | --- |
+| Alle soorten tuning | Versienamen worden profielen: `stage1..4` plus EGR/DPF/AdBlue/KAT/DTC/Pop & Bang/Vmax/Launch/Hardcut/IMMO/Swirl/Start-Stop/MAF/Torque/EVAP/TVA/E85 en combinaties (`stage1+egr_off`). Elk profiel wordt per softwarevariant geleerd; de app toont per bestand welke beschikbaar zijn. | Alle 10 WinOLS-exports in de repo (BMW, VW, Audi, Peugeot; 9 profielen) byte-identiek; test `test_every_exported_version_is_reproduced` |
+| Achtergrond | “Bibliotheek bijwerken” start een los proces (`update-library`); status in `library_status.json`, stoppen via `library.stop`. Loopt door bij sluiten van venster of app. | Test start detached proces, wacht op status `finished`; CI draait hetzelfde commando via de EXE |
+| Tussentijds bruikbaar | Elke 25 nieuwe voorbeelden of 10 minuten een nieuwe versie; bij stoppen altijd een versie van wat al gescand is; de app laadt nieuwe versies automatisch. | Test: stoppen na 10 van 30 projecten → pakket met precies die voorbeelden; hervatten slaat ze over |
+| Snelheid | Parallelle verwerking (standaard tot 4 processen), geen kopie bij lokale schijf, originelen één keer opgeslagen, snelle compressie, cache per variant | 120 MB voorbeelden: 1 proces 132 MB/s, 3 processen ≈ 620 MB/s (uit cache); 2e run zonder wijzigingen 0,1 s |
+| Overzicht | Toont per map hoeveel er al gescand is en hoeveel voorbeelden, ook tijdens het scannen | GUI-doorloop |
+| Modelpakketten | Heten nu “Versies”, worden automatisch gemaakt; alleen terugzetten en back-up | GUI-doorloop |
+| Export op USB/exFAT | Zonder hardlinks: exclusief aanmaken + vervangen, nog steeds nooit overschrijven | Test `test_filesystem_without_hard_links_still_never_overwrites` |
+
+## Ronde 4: “95% match → 100%” (overzetten van een vergelijkbaar bestand)
+
+Aanleiding: de diagnose van de gebruiker (Windows 11, 3.700 projecten, 5.656 voorbeelden) liet zien dat
+bestanden met een andere software- of hardwareversie werden geweigerd, ook als WinOLS ~95% overeenkomst gaf.
+
+| Onderdeel | Werking | Bewijs |
+| --- | --- | --- |
+| Donor zoeken | Per trainingsorigineel een vingerafdruk (1024 posities) + 64 ankerfragmenten; gelijkenis = max(zelfde positie, ankers ergens gevonden). Bestandsnaam (auto/ECU/jaar) breekt gelijke standen. | Verschoven BMW: 40% zelfde positie, 100% met ankers |
+| Plaatsen | Per wijziging: zelfde plek → verschoven (met omliggende bytes als anker) → omrekenen per 16-bit cel met de verhouding van het voorbeeld → tweede ronde via de verschuiving van de buren. 1–3-byte schakelaars worden nooit omgerekend. | BMW 1 en 3 verschuivingen, VW 512 bytes verschoven: byte-identiek aan de verwachte Stage 1; synthetisch: andere waarden + verschoven kaarten binnen 1 eenheid |
+| Veiligheid | Al getuned (ook verschoven of met iets andere waarden) of half getuned → geweigerd, nooit dubbel verhogen. Onvolledig overzetten → geweigerd tenzij de gebruiker het minimum verlaagt. | Tests `test_tuning_transfer.py`, half-getuned case |
+| Herkenningsfouten | Tokens als `!!!!!!` en algemene namen (MEDC17) tellen niet meer; varianten zonder bruikbare identificatie alleen via overzetten. | Diagnose: Citroën “MED 9.1 !!!!!!”, VW Golf “MEDC17” |
+| Meer voorbeelden | Projecten zonder identificatie in de bytes worden bewaard (via overzetten bruikbaar); eerder geweigerde bestanden worden één keer opnieuw bekeken; oude labels (“combined”) worden opnieuw ingedeeld. | Test `LibraryUpgradeTests` |
+
+Nog open: 1.623 projecten zonder RevisionTag (ander OLS-formaat). De namen in het versierecord zijn in nieuwe
+formaten onbetrouwbaar (slot 3 heet daar “Original” terwijl het “Stage 1 + P&B” is); zonder voorbeeldbestanden
+wordt dit bewust niet geraden.
+
+## Ronde 5: zelf oefenen (verbergen → tunen → vergelijken)
+
+| Onderdeel | Werking | Bewijs |
+| --- | --- | --- |
+| Oefenen | Elk voorbeeld wordt verborgen (met zijn project, kopieën en afgeleiden), opnieuw getuned uit de rest via overzetten (ook andere software-/hardwarenummers) en per 16-bit cel vergeleken met de echte tune (gelijk of ≤0,5% afwijking). Hervatbaar per bibliotheekversie, parallel, stopbaar. | Test: 16 projecten met elk een eigen softwarenummer → 16/16 ≥99%, eigen project nooit als voorbeeld |
+| Leren uit oefenen | Per ECU-familie: aantal tests, aantal goed, gemiddelde, en een geleerde minimale gelijkenis zodra oefenen slechte overzettingen onder een grens vindt; die grens wordt bij tunen automatisch toegepast. | Test `test_learned_floor_blocks_unreliable_similarity` |
+| Beter voorbeeld kiezen | Bij gelijke gelijkenis wint het voorbeeld waarvan de kaartwaarden (op de gevonden plek) het dichtst bij uw bestand liggen. | 21/24 → 24/24 in de oefentest |
+| Veiligheid | Herkent de exacte softwarevariant een (half) getuned bestand, dan wordt er nooit overgezet; herhaalde opvulpatronen tellen niet als bewijs. | Half-getuned test, verschoven VW zonder vals alarm |
+| Achtergrond | Na elke bijwerking oefent hij vanzelf; knop “Oefenen” in Bibliotheek; resultaten in Overzicht en bij elk bestand. | Achtergrondtest `test_background_practice_mode` |
+
+## Bekend Windows-probleem (bestaande code)
+
+Bestaande index-, inventaris- en workbenchcode vergelijkt soms `Path.resolve()`-paden met
+onopgeloste paden. Bij een 8.3-kortpad (bijv. `C:\Users\RUNNER~1\…`) mislukken daardoor
+13 bestaande tests. De tuningketen heeft hier geen last van. CI gebruikt een lange TEMP-map;
+een echte padnormalisatie staat open.
+
+## Wat nodig is voor de beslissende proef
+
+1. Minimaal **twee onafhankelijke projecten (verschillend origineel) per familie** met zuivere
+   Stage 1-versie, uit `\\Dell\d\Database 1-4` en `\\Dell\d\Default`; draai daar
+   `python -m ols_platform.tuning train --py-ols <map> --source "Database 1=\\Dell\d\Database 1" …
+   --holdout <testproject>`.
+2. Een **echt AutoTuner-origineel** (onversleutelde lezing) van een voertuig waarvan een deskundig
+   beoordeelde Stage 1 apart wordt gehouden.
+3. Bevestiging per familie van de **checksumroute** (AutoTuner-correctie bij schrijven of WinOLS
+   checksummodule), liefst met een WinOLS-checksumcontrole van de gegenereerde BIN.

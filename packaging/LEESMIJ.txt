@@ -1,0 +1,39 @@
+OLS Tuner - Windows x64 (portable)
+
+Gebruik
+1. Start OLSTuner.exe en klik "1. Open origineel" (onversleutelde AutoTuner-uitlezing).
+2. Kies bij "2. Kies tuning" Stage 1 en klik "3. Maak getunde BIN"; kies waar u opslaat.
+3. Lees de reden als het bestand wordt geweigerd; anders staat naast de BIN een .rapport.json.
+
+Bibliotheek
+- "Bibliotheek..." > Bronmappen: voeg mappen toe met "+ Map toevoegen..." (ook lokale
+  schijven) en klik "Bibliotheek bijwerken". Dit loopt op de achtergrond door, ook als u
+  het venster of de app sluit. Tussendoor en bij "Stoppen" wordt alles wat al gescand is
+  direct bruikbaar; een volgende keer gaat hij verder waar hij was.
+- Alle soorten tuning uit uw projecten worden geleerd (Stage 1/2/3, EGR, DPF, AdBlue,
+  Pop & Bang, Vmax, DTC, ... en combinaties). Na "Open origineel" toont de lijst bij
+  stap 2 wat uw database voor die software heeft.
+- Een origineel dat in de database voorkomt, krijgt exact die tuning terug.
+- Andere software/hardware maar vergelijkbaar bestand (zoals 95% match in WinOLS): de app
+  zoekt het meest gelijkende bestand en zet elke wijziging over (ook verschoven kaarten,
+  andere waarden worden omgerekend). Bij "Instellingen" staan de grenzen (standaard 70% /
+  100%). Een al (half) getuned bestand wordt nooit nog eens getuned.
+- Oefenen: na elke bijwerking test de app zichzelf op de achtergrond (voorbeeld verbergen,
+  opnieuw tunen uit de rest, vergelijken met de echte tune). Per ECU ziet u hoeveel tests
+  goed gingen; waar het onbetrouwbaar blijkt, past hij zelf een strengere grens toe.
+- Blijven oefenen: knop in de bibliotheek. Scant nieuwe projecten, leert, oefent en begint
+  elke 30 minuten opnieuw, tot u op Stoppen drukt. Nieuw aangesloten schijven (Database 1-4)
+  worden elke ronde meegenomen; wat eerder geleerd is blijft bewaard als een schijf ontbreekt.
+- Andere uitleesvorm: is uw bestand groter of kleiner dan de voorbeelden (bijv. volledige
+  flash tegenover alleen kalibratie), dan zoekt hij ook daar het meest gelijkende origineel.
+- Versies: elke bijwerking maakt automatisch een nieuwe versie; "Terug naar vorige
+  versie" en "Back-up maken/terugzetten" (om naar een andere pc te verhuizen).
+- Gegevens staan in %LOCALAPPDATA%\OLS Tuner\ en bevatten klantgegevens: lokaal houden.
+
+Integriteit: de app past geen checksum aan. Bij een oranje melding verschijnt de knop
+"Checksum vastleggen..." om per ECU te bevestigen dat AutoTuner de checksum corrigeert.
+
+Problemen melden
+- Klik rechtsonder op "Diagnose opslaan..." en stuur de ZIP. Die bevat alleen logboeken
+  en tellingen (app.log, crash.log, library_worker.log, library_status.json), geen
+  klantbestanden. Na een crash staat de oorzaak in app.log of crash.log.

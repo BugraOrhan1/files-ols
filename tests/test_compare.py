@@ -1,13 +1,73 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from ols_platform.compare import compare_binary_files
+from ols_platform.cli import main
+from ols_platform.compare import byte_similarity, compare_binary_files
 from ols_platform.compare import store_comparison
 from ols_platform.database import IndexDatabase
 
 
 class BinaryComparisonTests(unittest.TestCase):
+    def test_cli_no_store_compares_without_creating_database(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = root / "original.bin"
+            tuned = root / "tuned.bin"
+            database = root / "must-not-exist.sqlite3"
+            output = root / "report.json"
+            original.write_bytes(b"abcd")
+            tuned.write_bytes(b"abXd")
+
+            exit_code = main(
+                [
+                    "--database",
+                    str(database),
+                    "compare",
+                    str(original),
+                    str(tuned),
+                    "--no-store",
+                    "--output",
+                    str(output),
+                ]
+            )
+
+            self.assertEqual(exit_code, 0)
+            self.assertFalse(database.exists())
+            report = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(report["differing_bytes"], 1)
+            self.assertFalse(report["exact_match"])
+            with self.assertRaisesRegex(ValueError, "Refusing to overwrite"):
+                main(
+                    [
+                        "--database",
+                        str(database),
+                        "compare",
+                        str(original),
+                        str(tuned),
+                        "--no-store",
+                        "--output",
+                        str(original),
+                    ]
+                )
+            self.assertEqual(original.read_bytes(), b"abcd")
+            with self.assertRaisesRegex(ValueError, "Refusing to overwrite"):
+                main(
+                    [
+                        "--database",
+                        str(database),
+                        "compare",
+                        str(original),
+                        str(tuned),
+                        "--no-store",
+                        "--output",
+                        str(database),
+                    ]
+                )
+            self.assertFalse(database.exists())
+
     def test_reports_changed_ranges_and_size_difference(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -41,6 +101,116 @@ class BinaryComparisonTests(unittest.TestCase):
             self.assertEqual(result.differing_bytes, 0)
             self.assertEqual(result.changed_ranges, ())
 
+    def test_empty_files_and_empty_vs_nonempty_are_reported_exactly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            empty_a = root / "empty-a.bin"
+            empty_b = root / "empty-b.bin"
+            nonempty = root / "nonempty.bin"
+            empty_a.write_bytes(b"")
+            empty_b.write_bytes(b"")
+            nonempty.write_bytes(b"data")
+
+            identical = compare_binary_files(empty_a, empty_b, chunk_size=2)
+            different = compare_binary_files(empty_a, nonempty, chunk_size=2)
+
+        self.assertTrue(identical.exact_match)
+        self.assertEqual(identical.changed_ranges, ())
+        self.assertEqual(identical.differing_bytes, 0)
+        self.assertFalse(different.exact_match)
+        self.assertEqual(different.differing_bytes, 4)
+        self.assertEqual(
+            [(item.start, item.end_exclusive) for item in different.changed_ranges],
+            [(0, 4)],
+        )
+
+    def test_changed_ranges_are_stable_across_chunk_sizes_and_boundaries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = root / "original.bin"
+            tuned = root / "tuned.bin"
+            original_bytes = bytes(range(64))
+            tuned_bytes = bytearray(original_bytes)
+            tuned_bytes[7:12] = b"\xff" * 5
+            tuned_bytes[33] ^= 0xFF
+            original.write_bytes(original_bytes)
+            tuned.write_bytes(tuned_bytes)
+
+            results = [
+                compare_binary_files(original, tuned, chunk_size=size)
+                for size in (1, 2, 4, 7, 8, 16, 64)
+            ]
+
+        expected = [(7, 12), (33, 34)]
+        for result in results:
+            self.assertEqual(
+                [(item.start, item.end_exclusive) for item in result.changed_ranges],
+                expected,
+            )
+            self.assertEqual(result.differing_bytes, 6)
+        self.assertTrue(all(result == results[0] for result in results[1:]))
+
+    def test_streaming_reads_never_request_more_than_chunk_size(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = root / "original.bin"
+            tuned = root / "tuned.bin"
+            original.write_bytes(b"a" * 10_000)
+            tuned.write_bytes(b"a" * 9_999 + b"b")
+            chunk_size = 257
+            read_sizes = []
+            real_open = Path.open
+
+            class ReadTracker:
+                def __init__(self, file):
+                    self._file = file
+
+                def read(self, size=-1):
+                    read_sizes.append(size)
+                    return self._file.read(size)
+
+                def __enter__(self):
+                    self._file.__enter__()
+                    return self
+
+                def __exit__(self, exc_type, exc_value, traceback):
+                    return self._file.__exit__(exc_type, exc_value, traceback)
+
+                def __getattr__(self, name):
+                    return getattr(self._file, name)
+
+            def tracked_open(path, *args, **kwargs):
+                return ReadTracker(real_open(path, *args, **kwargs))
+
+            with patch.object(Path, "open", tracked_open):
+                result = compare_binary_files(
+                    original, tuned, chunk_size=chunk_size
+                )
+
+        self.assertFalse(result.exact_match)
+        self.assertTrue(read_sizes)
+        self.assertTrue(all(0 < size <= chunk_size for size in read_sizes))
+
+    def test_invalid_limits_and_changed_range_cap_fail_explicitly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = root / "original.bin"
+            tuned = root / "tuned.bin"
+            original.write_bytes(b"aXaXa")
+            tuned.write_bytes(b"aaaaa")
+
+            with self.assertRaisesRegex(ValueError, "must be positive"):
+                compare_binary_files(original, tuned, chunk_size=0)
+            with self.assertRaisesRegex(ValueError, "must be positive"):
+                compare_binary_files(original, tuned, max_ranges=0)
+            with self.assertRaisesRegex(RuntimeError, "changed-range limit"):
+                compare_binary_files(
+                    original,
+                    tuned,
+                    chunk_size=2,
+                    max_ranges=1,
+                )
+
     def test_comparison_is_persisted_idempotently(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -64,6 +234,51 @@ class BinaryComparisonTests(unittest.TestCase):
                 self.assertEqual(count, 1)
             finally:
                 database.close()
+
+    def test_byte_similarity_threshold_and_incomparable_inputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.dat"
+            second = root / "second.dat"
+            first.write_bytes(b"A" * 1000)
+            for matches, expected in ((949, False), (950, True), (951, True)):
+                second.write_bytes(b"A" * matches + b"B" * (1000 - matches))
+                comparison = compare_binary_files(first, second)
+                result = byte_similarity(comparison)
+                self.assertEqual(result["matching_bytes"], matches)
+                self.assertEqual(result["compared_bytes"], 1000)
+                self.assertEqual(result["similarity_percent"], matches / 10)
+                self.assertEqual(result["meets_threshold"], expected)
+                self.assertFalse(byte_similarity(comparison, 96)["meets_threshold"])
+            second.write_bytes(b"A" * 999)
+            self.assertIsNone(byte_similarity(compare_binary_files(first, second))["meets_threshold"])
+            first.write_bytes(b"")
+            second.write_bytes(b"")
+            self.assertEqual(byte_similarity(compare_binary_files(first, second))["status"], "NOT_COMPARABLE")
+            for invalid in (-1, 101, float("nan"), True, "95"):
+                with self.assertRaises(ValueError):
+                    byte_similarity(compare_binary_files(first, second), invalid)
+
+    def test_cli_byte_threshold_does_not_create_database_on_invalid_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first.dat"
+            second = root / "second.dat"
+            first.write_bytes(b"A" * 100)
+            second.write_bytes(b"A" * 95 + b"B" * 5)
+            database = root / "index.sqlite3"
+            output = root / "result.json"
+            self.assertEqual(main([
+                "--database", str(database), "compare", str(first), str(second),
+                "--no-store", "--byte-threshold", "95", "--output", str(output),
+            ]), 0)
+            similarity = json.loads(output.read_text(encoding="utf-8"))["byte_similarity"]
+            self.assertTrue(similarity["meets_threshold"])
+            self.assertEqual(similarity["similarity_percent"], 95)
+            with self.assertRaises(ValueError):
+                main(["--database", str(database), "compare", str(first), str(second),
+                      "--byte-threshold", "nan"])
+            self.assertFalse(database.exists())
 
 
 if __name__ == "__main__":

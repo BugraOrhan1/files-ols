@@ -21,6 +21,7 @@ SAMPLE_NAMES = (
     "10001005.ols",
     "100010054.ols",
 )
+SAMPLE_TESTED_FORMAT_VERSIONS = {503, 597}
 
 
 class ProjectInspector(Protocol):
@@ -43,6 +44,7 @@ def build_sample_report(
     reader: ProjectInspector,
 ) -> dict[str, Any]:
     snapshot = reader.inspect(source)
+    source_size = source.stat().st_size
     metadata_status = snapshot.data_structure.get("metadata_field_status", {})
     if not isinstance(metadata_status, dict):
         metadata_status = {}
@@ -60,6 +62,28 @@ def build_sample_report(
     for item in snapshot.maps:
         map_value = asdict(item)
         map_value["name_status"] = "named" if item.name else "empty_name"
+        cell_count = item.columns * item.rows
+        if item.columns < 0 or item.rows < 0 or cell_count > source_size:
+            map_structure_status = "FAIL"
+            map_structure_reason = (
+                "Negative dimensions or a cell count larger than the source "
+                "file's one-byte-per-cell lower bound."
+            )
+        elif item.columns == 0 or item.rows == 0:
+            map_structure_status = "INCONCLUSIVE"
+            map_structure_reason = "A zero dimension prevents a complete shape check."
+        else:
+            map_structure_status = "NOT_TESTED"
+            map_structure_reason = (
+                "Positive dimensions do not validate the encoding, data extent, "
+                "or version relationship."
+            )
+        map_value["structural_check"] = {
+            "status": map_structure_status,
+            "cell_count": cell_count if item.columns > 0 and item.rows > 0 else None,
+            "reason": map_structure_reason,
+        }
+        map_value["data_offset_status"] = "NOT_TESTED"
         map_value["axes"] = [
             {
                 **asdict(axis),
@@ -80,6 +104,13 @@ def build_sample_report(
 
     errors = [asdict(issue) for issue in snapshot.issues if issue.severity == "error"]
     warnings = [asdict(issue) for issue in snapshot.issues if issue.severity != "error"]
+    format_version_evidence = (
+        "UNRECOGNIZED"
+        if snapshot.format_version <= 0
+        else "OBSERVED_IN_SAMPLE_SET"
+        if snapshot.format_version in SAMPLE_TESTED_FORMAT_VERSIONS
+        else "NOT_TESTED"
+    )
     if errors or snapshot.format_version <= 0:
         parse_status = "FAILED"
     elif warnings:
@@ -92,13 +123,14 @@ def build_sample_report(
         "source": {
             "filename": source.name,
             "path": str(source.resolve()),
-            "size_bytes": source.stat().st_size,
+            "size_bytes": source_size,
             "sha256": sha256_file(source),
         },
         "parser": {
             "name": snapshot.parser_name,
             "version": snapshot.parser_version,
             "format_version": snapshot.format_version,
+            "format_version_evidence": format_version_evidence,
             "status": parse_status,
         },
         "metadata": metadata,
@@ -113,6 +145,13 @@ def build_sample_report(
                 not axis.unit or not axis.identifier
                 for item in snapshot.maps
                 for axis in item.axes
+            ),
+            "structurally_impossible_maps": sum(
+                item["structural_check"]["status"] == "FAIL" for item in maps
+            ),
+            "inconclusive_shape_maps": sum(
+                item["structural_check"]["status"] == "INCONCLUSIVE"
+                for item in maps
             ),
         },
         "versions": [asdict(item) for item in snapshot.versions],

@@ -1,0 +1,150 @@
+name: Windows build
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch py-ols for the real-sample tests (not bundled)
+        shell: pwsh
+        run: |
+          git clone https://github.com/TheFlashBold/py-ols.git $env:RUNNER_TEMP\py-ols
+          git -C $env:RUNNER_TEMP\py-ols checkout 4c283a80161e130b03eb8743c752a689ecda6b78
+          "PY_OLS_PATH=$env:RUNNER_TEMP\py-ols" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Use a long-form temp directory
+        # The runner's default TEMP is an 8.3 short path (C:\Users\RUNNER~1\...).
+        # Existing index code compares resolved and unresolved paths, which
+        # differ for 8.3 aliases; see TUNING_STATUS.md (known Windows issue).
+        shell: pwsh
+        run: |
+          $t = Join-Path $env:RUNNER_TEMP "tests"
+          New-Item -ItemType Directory -Force $t | Out-Null
+          "TEMP=$t" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "TMP=$t" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Run full test suite on Windows
+        run: python -m unittest discover -s tests -v
+
+      - name: Build EXE
+        shell: pwsh
+        run: |
+          python -m pip install pyinstaller==6.11.1
+          python -m PyInstaller packaging/OLSTuner.spec --noconfirm --clean
+          Copy-Item packaging/LEESMIJ.txt dist/OLSTuner/LEESMIJ.txt
+          $zip = "OLSTuner-win64-$($env:GITHUB_SHA.Substring(0,7)).zip"
+          Compress-Archive -Path dist/OLSTuner -DestinationPath $zip
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  $zip" | Out-File -Encoding ascii "$zip.sha256"
+          "ZIP=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Built $zip sha256=$hash"
+
+      - name: Test the distributed archive without Python on PATH
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $root = Join-Path $env:RUNNER_TEMP "schone test ü"
+          New-Item -ItemType Directory $root | Out-Null
+          Expand-Archive $env:ZIP -DestinationPath $root
+          $exe = Join-Path $root "OLSTuner\OLSTuner.exe"
+          $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -notmatch 'Python|hostedtoolcache' }) -join ';'
+          Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue
+          Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+          $env:OLS_TUNER_HOME = Join-Path $root "lege installatie"
+          $env:OLS_TUNER_LOG = Join-Path $root "exe.log"
+          function Run($argsList) {
+            $p = Start-Process -FilePath $exe -ArgumentList $argsList -Wait -PassThru -NoNewWindow
+            return $p.ExitCode
+          }
+          if ((Run @("--selftest")) -ne 0) { if (Test-Path $env:OLS_TUNER_LOG) { Get-Content $env:OLS_TUNER_LOG }; throw "selftest failed" }
+          if ((Run @("--gui-smoke")) -ne 0) { throw "GUI smoke failed" }
+          if ((Run @("packages")) -ne 0) { throw "packages on empty install failed" }
+          if (Test-Path $env:OLS_TUNER_LOG) { Get-Content $env:OLS_TUNER_LOG }
+
+      - name: EXE builds the library and reproduces real samples
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $root = Join-Path $env:RUNNER_TEMP "schone test ü"
+          $exe = Join-Path $root "OLSTuner\OLSTuner.exe"
+          $repo = (Get-Location).Path
+          $env:OLS_TUNER_HOME = Join-Path $root "lege installatie"
+          $env:OLS_TUNER_LOG = Join-Path $root "exe-real.log"
+          $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -notmatch 'Python|hostedtoolcache' }) -join ';'
+          function Run($argsList) {
+            $p = Start-Process -FilePath $exe -ArgumentList $argsList -Wait -PassThru -NoNewWindow
+            return $p.ExitCode
+          }
+          $orig = Join-Path $root "BMW origineel ü.bin"
+          Copy-Item "ols files geextracteert\WinOLS (BMW 7er (Original) - B57D30S0-G1).bin" $orig
+          $out = Join-Path $root "uitvoer map ü"
+          # The EXE updates the library exactly as the app's background job does
+          # (built-in OLS reader, parallel worker processes, no Python, no py-ols).
+          New-Item -ItemType Directory -Force $env:OLS_TUNER_HOME | Out-Null
+          $settings = @{ sources = @("repo=$repo\ols files als ols", "Weg=$repo\bestaat niet"); exports = "$repo\ols files geextracteert" } | ConvertTo-Json
+          Set-Content -Path (Join-Path $env:OLS_TUNER_HOME "settings.json") -Value $settings -Encoding utf8NoBOM
+          $code = Run @("update-library")
+          $status = Get-Content (Join-Path $env:OLS_TUNER_HOME "library_status.json") -Raw | ConvertFrom-Json
+          $status.log | ForEach-Object { Write-Host $_ }
+          if ($code -ne 0 -or $status.state -ne "finished") { throw "EXE library update failed ($code, $($status.state))" }
+          if (-not ($status.log -match "parallel|tegelijk")) { throw "worker count not reported" }
+          if ((Run @("export-package", "`"$env:RUNNER_TEMP\frozen.olstune`"")) -ne 0) { throw "package export failed" }
+          if ((Run @("install-package", "`"$env:RUNNER_TEMP\frozen.olstune`"")) -ne 0) { throw "install failed" }
+          # Explainable matching works in the frozen EXE (read-only, with the transfer check).
+          if ((Run @("explain", "`"$orig`"", "--check", "--json")) -ne 0) { throw "explain failed" }
+          if ((Run @("evaluate-matching")) -ne 0) { throw "evaluate-matching failed" }
+          $code = Run @("generate", "`"$orig`"", "--output-dir", "`"$out`"", "--name", "blocked.bin")
+          if ($code -ne 4) { if (Test-Path $env:OLS_TUNER_LOG) { Get-Content $env:OLS_TUNER_LOG }; throw "expected export block without integrity contract, got $code" }
+          if (Test-Path (Join-Path $out "blocked.bin")) { throw "blocked export left a file" }
+          if ((Run @("contract", "MDG1_MD1CP002|2621440", "--flash-tool-corrects", "--evidence", "`"CI-test, geen voertuigvalidatie`"")) -ne 0) { throw "contract failed" }
+          if ((Run @("generate", "`"$orig`"", "--output-dir", "`"$out`"", "--name", "stage1.bin")) -ne 0) { if (Test-Path $env:OLS_TUNER_LOG) { Get-Content $env:OLS_TUNER_LOG }; throw "generate failed" }
+          $got = (Get-FileHash (Join-Path $out "stage1.bin") -Algorithm SHA256).Hash
+          $ref = (Get-FileHash "ols files geextracteert\WinOLS (BMW 7er (Stage 1) - B57D30S0-G1).bin" -Algorithm SHA256).Hash
+          if ($got -ne $ref) { throw "EXE output differs from WinOLS Stage 1 export" }
+          if ((Run @("contract", "SIMOS18.10|5767168", "--flash-tool-corrects", "--evidence", "`"CI-test, geen voertuigvalidatie`"")) -ne 0) { throw "contract failed" }
+          if ((Run @("generate", "`"ols files geextracteert\WinOLS (VW Golf (Original) - SCG0051000000)`"", "--output-dir", "`"$out`"", "--name", "vw-stage1.bin")) -ne 0) { throw "VW generate failed" }
+          $vw = (Get-FileHash (Join-Path $out "vw-stage1.bin") -Algorithm SHA256).Hash
+          $vwref = (Get-FileHash "ols files geextracteert\WinOLS (VW Golf (Stage 1) - SCG0051000000)" -Algorithm SHA256).Hash
+          if ($vw -ne $vwref) { throw "EXE VW output differs from WinOLS Stage 1 export" }
+          # Other tuning types: Peugeot EGR OFF and Audi Stage 2 + Vmax.
+          if ((Run @("contract", "`"Siemens/Continental PO30052000000|2097152`"", "--flash-tool-corrects", "--evidence", "`"CI-test, geen voertuigvalidatie`"")) -ne 0) { throw "contract failed" }
+          if ((Run @("contract", "EDC17CP44|4194304", "--flash-tool-corrects", "--evidence", "`"CI-test, geen voertuigvalidatie`"")) -ne 0) { throw "contract failed" }
+          foreach ($case in @(
+              @("WinOLS (Peugeot 307 (Original) - PO30052000000).bin", "egr_off", "WinOLS (Peugeot 307 (EGR OFF) - PO30052000000).bin"),
+              @("WinOLS (Audi A8 (Original) - 522813).DTF", "stage2+vmax", "WinOLS (Audi A8 (stage 2 = Vmax 300Km-H) - 522813).DTF"))) {
+            $name = "$($case[1]).bin"
+            if ((Run @("generate", "`"ols files geextracteert\$($case[0])`"", "--profile", $case[1], "--output-dir", "`"$out`"", "--name", $name)) -ne 0) { throw "generate $($case[1]) failed" }
+            $a = (Get-FileHash (Join-Path $out $name) -Algorithm SHA256).Hash
+            $b = (Get-FileHash "ols files geextracteert\$($case[2])" -Algorithm SHA256).Hash
+            if ($a -ne $b) { throw "EXE $($case[1]) output differs from WinOLS export" }
+          }
+          $code = Run @("generate", "`"ols files geextracteert\WinOLS (BMW 7er (Stage 1) - B57D30S0-G1).bin`"", "--output-dir", "`"$out`"", "--name", "x.bin")
+          if ($code -ne 3) { throw "already tuned input was not rejected ($code)" }
+          $code = Run @("generate", "`"ols files geextracteert\WinOLS (Audi A8 (Original) - 522813).DTF`"", "--output-dir", "`"$out`"")
+          if ($code -ne 3) { throw "unsuitable original was not rejected ($code)" }
+          if (Test-Path $env:OLS_TUNER_LOG) { Get-Content $env:OLS_TUNER_LOG }
+          Write-Host "EXE reproduction OK: $got"
+
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: OLSTuner-win64
+          path: |
+            ${{ env.ZIP }}
+            ${{ env.ZIP }}.sha256
+          if-no-files-found: error

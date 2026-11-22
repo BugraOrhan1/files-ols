@@ -186,10 +186,60 @@
       </form>
       <div id="ecu-analysis-result" class="cards" aria-live="polite"></div>
       <pre id="ecu-analysis-report" class="detail" hidden></pre>
+      <h3>Bestaande BIN-kandidaat kiezen en exporteren</h3>
+      <p class="muted">
+        Kandidaten zijn onderzoeksbestanden, geen bewezen ECU-compatibele tuning.
+        Versienamen uit referenties zijn onbevestigde labels; bestandsnamen krijgen geen Stage-label.
+        De bytegelijkenis wordt pas berekend na expliciete selectie en bewijst geen compatibiliteit.
+      </p>
+      <div class="source-actions">
+        <button id="ecu-candidates-relevant" type="button" class="secondary">Relevante referenties</button>
+        <button id="ecu-candidates-all" type="button" class="secondary">Andere geregistreerde referenties</button>
+      </div>
+      <div class="source-form">
+        <label for="ecu-index-directory">Geïndexeerde map met losse BIN/ORI-bestanden</label>
+        <input id="ecu-index-directory" type="text" placeholder="D:\pad\naar\geïndexeerde map">
+        <button id="ecu-index-search" type="button" class="secondary">Zoek in index</button>
+      </div>
+      <div id="ecu-candidate-status" class="notice" aria-live="polite">Importeer eerst een origineel bestand.</div>
+      <label for="ecu-candidate-select">Kies een kandidaat</label>
+      <select id="ecu-candidate-select" disabled>
+        <option value="">Selecteer expliciet een kandidaat</option>
+      </select>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Versie en bron</th><th>Identificaties en grootte</th>
+            <th>Overeenkomsten en conflicten</th><th>Score en validatie</th>
+          </tr></thead>
+          <tbody id="ecu-candidate-table"></tbody>
+        </table>
+      </div>
+      <div class="source-actions">
+        <button id="ecu-candidate-prev" type="button" class="secondary" disabled>Vorige pagina</button>
+        <button id="ecu-candidate-next" type="button" class="secondary" disabled>Volgende pagina</button>
+        <button id="ecu-candidate-preview" type="button" disabled>Controleer geselecteerde kandidaat</button>
+      </div>
+      <pre id="ecu-candidate-details" class="detail" hidden></pre>
+      <div id="ecu-unexportable-slots" class="muted"></div>
+      <div class="search-grid">
+        <label>Uitvoermap (moet bestaan)<input id="ecu-export-directory" type="text" autocomplete="off"></label>
+        <label>Uitvoerbestandsnaam (.bin)<input id="ecu-export-name" type="text" autocomplete="off"></label>
+        <label>Gekozen label (optioneel)<input id="ecu-export-label" type="text" maxlength="200" autocomplete="off"></label>
+      </div>
+      <div class="source-actions">
+        <label class="check"><input id="ecu-export-confirm" type="checkbox">
+          Ik bevestig deze specifieke kopie als onderzoeksbestand, niet als bewezen ECU-compatibel.
+        </label>
+        <button id="ecu-export-button" type="button" disabled>Exporteer geselecteerde BIN</button>
+      </div>
+      <pre id="ecu-export-result" class="detail" hidden></pre>
       <h3>Vergelijk twee geïmporteerde bestanden</h3>
       <p class="muted">
         Selecteer bijvoorbeeld een originele en een getunede BIN. Alleen byteverschillen
         worden vastgesteld; technische betekenis blijft INCONCLUSIVE.
+        Het percentage vergelijkt alleen bytes op dezelfde positie in even grote,
+        niet-lege bestanden en bewijst geen ECU-compatibiliteit.
       </p>
       <div class="source-form">
         <label for="ecu-reference-select">Geïndexeerde binaire referentie</label>
@@ -203,6 +253,8 @@
         <select id="ecu-compare-a"></select>
         <label for="ecu-compare-b">Bestand B</label>
         <select id="ecu-compare-b"></select>
+        <label for="ecu-byte-threshold">Bytedrempel (%)</label>
+        <input id="ecu-byte-threshold" type="number" min="0" max="100" step="any" value="95" required>
         <button id="ecu-compare-button" type="button">Vergelijk bytes</button>
       </div>
       <pre id="ecu-comparison-report" class="detail" hidden></pre>

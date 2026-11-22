@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .json_validation import is_json_integer
+
 
 MANIFEST_VERSION = 1
 ARTIFACT_KINDS = {
@@ -124,11 +126,13 @@ def load_manifest(path: Path) -> tuple[dict[str, Any], str]:
         raise ValueError(f"Invalid reference manifest JSON: {exc}") from exc
     if not isinstance(payload, dict):
         raise ValueError("Reference manifest root must be a JSON object.")
-    if payload.get("schema_version") != MANIFEST_VERSION:
+    schema_version = payload.get("schema_version")
+    if not is_json_integer(schema_version) or schema_version != MANIFEST_VERSION:
         raise ValueError(
-            f"Unsupported reference manifest schema: {payload.get('schema_version')!r}."
+            f"Unsupported reference manifest schema: {schema_version!r}."
         )
-    if not isinstance(payload.get("project_id"), int) or payload["project_id"] <= 0:
+    project_id = payload.get("project_id")
+    if not is_json_integer(project_id) or project_id <= 0:
         raise ValueError("Manifest project_id must be a positive integer.")
     source = payload.get("source")
     if not isinstance(source, dict) or not isinstance(source.get("sha256"), str):

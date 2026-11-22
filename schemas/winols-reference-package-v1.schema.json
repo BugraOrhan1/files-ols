@@ -1,0 +1,233 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WinOLS reference package manifest, version 1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "package_type",
+    "project_id",
+    "source",
+    "winols",
+    "export_method",
+    "project_identity",
+    "export_settings",
+    "project_relation",
+    "manual_review",
+    "coverage_complete",
+    "exported_versions",
+    "artifacts"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "package_type": {
+      "const": "winols-reference-package"
+    },
+    "project_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "path",
+        "filename",
+        "sha256",
+        "size_bytes",
+        "format_version"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "filename": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "format_version": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": true
+    },
+    "winols": {
+      "type": "object",
+      "required": ["version"],
+      "properties": {
+        "version": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": true
+    },
+    "export_method": {
+      "type": "string",
+      "minLength": 1
+    },
+    "project_identity": {
+      "type": "object",
+      "required": ["project_name", "project_id", "status", "evidence"],
+      "properties": {
+        "project_name": {
+          "type": "string"
+        },
+        "project_id": {
+          "type": "string"
+        },
+        "status": {
+          "enum": ["confirmed", "unknown", "NOT_TESTED"]
+        },
+        "evidence": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "export_settings": {
+      "type": "object"
+    },
+    "project_relation": {
+      "type": "object",
+      "required": ["status", "evidence"],
+      "properties": {
+        "status": {
+          "enum": ["confirmed", "suggested", "unknown"]
+        },
+        "evidence": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "manual_review": {
+      "type": "object",
+      "required": [
+        "status",
+        "reviewer",
+        "reviewed_at",
+        "method",
+        "evidence",
+        "confirmed_fields",
+        "missing_evidence"
+      ],
+      "properties": {
+        "status": {
+          "enum": ["confirmed", "unknown", "NOT_TESTED"]
+        },
+        "reviewer": {
+          "type": "string"
+        },
+        "reviewed_at": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "string"
+        },
+        "confirmed_fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "missing_evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "coverage_complete": {
+      "type": "boolean"
+    },
+    "exported_versions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["version_key", "version_name"],
+        "properties": {
+          "version_key": {
+            "type": "string",
+            "minLength": 1
+          },
+          "version_name": {
+            "type": "string"
+          },
+          "source_slot_index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "relation_status": {
+            "enum": ["confirmed", "suggested", "unknown"]
+          },
+          "relation_evidence": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "path", "size_bytes", "sha256"],
+        "properties": {
+          "kind": {
+            "enum": ["binary_version", "map_metadata", "project_metadata"]
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sha256": {
+            "$ref": "#/$defs/sha256"
+          },
+          "version_key": {
+            "type": "string"
+          },
+          "source_slot_index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "relation_status": {
+            "enum": ["confirmed", "suggested", "unknown"]
+          },
+          "artifact_source": {
+            "enum": ["winols_export", "winols_manual_observation"]
+          },
+          "representation": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[A-Fa-f0-9]{64}$"
+    }
+  }
+}

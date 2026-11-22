@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "status": "MATCHING_PARTIALLY_VALIDATED",
+  "dataset": "Synthetic unit tests and isolated parser tests; no independently labelled ECU compatibility dataset.",
+  "score": {
+    "name": "rank_score",
+    "meaning": "Deterministic retrieval points; not normalized, not probability and not ECU compatibility.",
+    "percentage_threshold_implemented": false,
+    "reason": "The existing points combine different kinds of evidence and cannot responsibly be represented as a normalized similarity percentage.",
+    "precision_recall_false_positive_false_negative": "NOT_MEASURED: no sufficiently sized independently labelled dataset."
+  },
+  "executed_cases": [
+    {
+      "case": "Exact source hash, parser slot evidence, conflicting ECU identity and stale snapshots",
+      "test": "test_project_matching_reports_evidence_without_promoting_parser_slots",
+      "result": "PASS"
+    },
+    {
+      "case": "Synthetic 100-byte sequences differ at five positions; candidate satisfies two metadata criteria",
+      "test": "test_partial_candidate_keeps_evidence_and_warnings_on_reanalysis",
+      "result": "PASS",
+      "limitation": "95 percent byte agreement was measured by the byte comparison, not calculated or used as a matching threshold."
+    },
+    {
+      "case": "Partial metadata evidence, missing information and reproducible explanations",
+      "test": "test_partial_metadata_search_reports_only_actual_matches",
+      "result": "PASS"
+    },
+    {
+      "case": "Ranked candidates and equal-score ties remain correctly ordered across pages",
+      "test": "test_partial_metadata_ranking_is_stable_across_pages",
+      "result": "PASS"
+    },
+    {
+      "case": "Conflicting and stale metadata do not promote workbench candidates",
+      "test": "test_parser_slot_match_stays_inconclusive_and_stale_metadata_is_not_likely",
+      "result": "PASS"
+    }
+  ],
+  "ecu_compatibility": "ECU_COMPATIBILITY_NOT_VALIDATED"
+}
