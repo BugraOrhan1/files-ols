@@ -38,7 +38,7 @@ from .ecu_fingerprint import (
     ALGORITHM_VERSION, Identifier, block_digests, compare_blocks, compare_ids, extract_identifiers,
     identifiers_by_field, normalize_id, vag_base,
 )
-from .identity import _useful, classify_input
+from .identity import _useful, classify_input, token_in
 
 ENGINE_VERSION = "explain/1"
 CANDIDATE_MIN_SIMILARITY = 0.30   # show weak candidates too, they are labelled as such
@@ -116,7 +116,7 @@ def _identity_fields(variant: dict[str, Any], family: dict[str, Any], data: byte
     for field_name, values in sorted(tokens.items()):
         for token in values:
             raw = token.encode("latin-1", "ignore")
-            offset = data.find(raw)
+            offset = data.find(raw) if token_in(token, data) else -1
             if offset >= 0:
                 matched.append({"field": field_name, "reference": token, "input": token, "input_offset": offset,
                                 "provenance": "token uit WinOLS-projectgegevens, letterlijk in referentie-origineel "
@@ -271,7 +271,7 @@ def explain(data: bytes, package, *, store_root: Path | None = None, hint: str =
         if variant is None or entry["original_sha256"] in seen:
             continue
         tokens = [t for v in variant.get("identity", {}).values() for t in v if _useful(t)]
-        if tokens and all(t.encode("latin-1", "ignore") in data for t in tokens):
+        if tokens and all(token_in(t, data) for t in tokens):
             donors.append(dict(entry, similarity=0.0, same_offset_similarity=0.0, hint_overlap=0,
                                via="identity_tokens"))
             seen.add(entry["original_sha256"])

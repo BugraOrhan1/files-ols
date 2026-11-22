@@ -164,8 +164,67 @@ def _rank_donors(package, data: bytes, hint: str = "", profile: str | None = Non
         if best >= floor:
             ranked.append(dict(entry, similarity=best, same_offset_similarity=0.0, hint_overlap=overlap,
                                cross_size=True))
-    ranked.sort(key=lambda e: (-(e["similarity"] + 0.004 * min(e["hint_overlap"], 5)), e["original_sha256"]))
+    # Same software, other read form: every identification token of the
+    # reference (part number with revision index, hardware code ...) occurs
+    # literally in this file. Whole-image similarity says little here (a 4 MB
+    # OBD read vs a 5.5 MB bench read share few same-offset bytes), so such a
+    # donor is tried regardless of its score; transfer() then only accepts it
+    # when every change lands on identical original bytes.
+    confirmed = _identity_confirmed_variants(package, data)
+    if confirmed:
+        listed = {e["original_sha256"]: e for e in ranked}
+        for entry in package.fingerprints():
+            if entry["variant_id"] not in confirmed or entry["original_sha256"] in exclude:
+                continue
+            if profile and profile not in entry.get("profiles", []):
+                continue
+            if entry["original_sha256"] in listed:
+                listed[entry["original_sha256"]]["identity_confirmed"] = True
+                continue
+            ratio = entry["size"] / len(data) if data else 0
+            if entry["size"] != len(data) and not (
+                    1 / CROSS_SIZE_RATIO <= ratio <= CROSS_SIZE_RATIO
+                    and len(data) % CROSS_SIZE_ALIGN == 0 and entry["size"] % CROSS_SIZE_ALIGN == 0):
+                continue  # a cut-off read is never "another read form"
+            score = 0.0
+            if entry.get("anchors"):
+                score = shifted_similarity(data, base64.b64decode(entry["anchors"]))
+            item = dict(entry, similarity=score, same_offset_similarity=0.0, hint_overlap=0,
+                        identity_confirmed=True, cross_size=entry["size"] != len(data))
+            ranked.append(item)
+            listed[entry["original_sha256"]] = item
+    ranked.sort(key=lambda e: (not e.get("identity_confirmed", False),
+                               -(e["similarity"] + 0.004 * min(e["hint_overlap"], 5)), e["original_sha256"]))
     return ranked
+
+
+IDENTITY_SW_FIELDS = ("sw_number", "sw_version")
+
+
+def _identity_confirmed_variants(package, data: bytes) -> set[str]:
+    """Variants whose identification is fully present in ``data``: at least
+    two distinct tokens, one of them a software number, all found as whole
+    numbers (see :func:`token_in`)."""
+
+    from .identity import _useful, token_in
+
+    out: set[str] = set()
+    cache: dict[str, bool] = {}
+    for _family, variant in package.variants():
+        identity = {k: [t for t in v if _useful(t)] for k, v in (variant.get("identity") or {}).items()}
+        tokens = {t for v in identity.values() for t in v}
+        if len(tokens) < 2 or not any(identity.get(f) for f in IDENTITY_SW_FIELDS):
+            continue
+        ok = True
+        for token in tokens:
+            if token not in cache:
+                cache[token] = token_in(token, data)
+            if not cache[token]:
+                ok = False
+                break
+        if ok:
+            out.add(variant["variant_id"])
+    return out
 
 
 def transfer_profiles(package, data: bytes, hint: str = "", min_similarity: float = DEFAULT_MIN_SIMILARITY,
@@ -508,6 +567,11 @@ def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set
                     "reason": f"Dit bestand bevat al de wijzigingen van {pair.get('tuned_version_name') or profile} "
                               f"(zoals in project {pair.get('project_name', '')}). Open het originele bestand."}
         output, placed, missing = place_edits(data, pair["edits"])
+        if donor.get("identity_confirmed") and donor["similarity"] < min_similarity:
+            # Accepted on identity alone: only byte-identical placement of
+            # every change counts (no recalculated maps, nothing missing).
+            if missing or any(p["how"] == "omgerekend" for p in placed):
+                continue
         present = [m for m in missing if m.get("present")]
         if not decides:
             missing = [m for m in missing if not m.get("present")] + [

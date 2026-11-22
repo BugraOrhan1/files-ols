@@ -84,6 +84,32 @@ def _useful(token: str) -> bool:
             and len(set(token)) >= 3 and token.upper() not in _GENERIC)
 
 
+_VAG_PART = re.compile(r"\d[A-Z0-9]{2}9\d{5}[A-Z]{0,3}")
+_ALNUM = frozenset(b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
+
+
+def token_in(token: str, image: bytes) -> bool:
+    """True when ``token`` literally occurs in ``image``.
+
+    VAG part numbers must occur as a whole number: '8V0906259' is NOT found in
+    '8V0906259R' (another revision index, other software). Plain substring
+    search made such prefixes match and selected unrelated variants."""
+
+    raw = token.encode("latin-1", "ignore")
+    if not raw:
+        return False
+    if not _VAG_PART.fullmatch(token.upper()):
+        return raw in image
+    pos = image.find(raw)
+    while pos >= 0:
+        before = image[pos - 1] if pos > 0 else None
+        after = image[pos + len(raw)] if pos + len(raw) < len(image) else None
+        if before not in _ALNUM and after not in _ALNUM:
+            return True
+        pos = image.find(raw, pos + 1)
+    return False
+
+
 def tokens_for(value: str) -> list[str]:
     tokens = []
     for token in _TOKEN_SPLIT.split(value):
@@ -99,7 +125,7 @@ def learn_identity(metadata: dict[str, str], image: bytes) -> dict[str, list[str
     found: dict[str, list[str]] = {}
     for field_name in IDENTITY_FIELDS:
         value = metadata.get(field_name, "")
-        present = [t for t in tokens_for(value) if t.encode("latin-1", "ignore") in image]
+        present = [t for t in tokens_for(value) if token_in(t, image)]
         if present:
             found[field_name] = present
     return found
@@ -108,7 +134,7 @@ def learn_identity(metadata: dict[str, str], image: bytes) -> dict[str, list[str
 def match_identity(identity: dict[str, list[str]], image: bytes) -> dict[str, dict[str, list[str]]]:
     result: dict[str, dict[str, list[str]]] = {}
     for field_name, tokens in identity.items():
-        hit = [t for t in tokens if t.encode("latin-1", "ignore") in image]
+        hit = [t for t in tokens if token_in(t, image)]
         miss = [t for t in tokens if t not in hit]
         result[field_name] = {"found": hit, "missing": miss}
     return result

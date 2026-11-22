@@ -12,7 +12,7 @@ import struct
 from dataclasses import dataclass, field
 from typing import Any
 
-from .identity import _useful, classify_input
+from .identity import _useful, classify_input, token_in
 from .ols_versions import profile_label
 
 
@@ -64,7 +64,7 @@ def _select_variant(package, data: bytes) -> tuple[dict, dict, dict]:
 
     def has(token: str) -> bool:
         if token not in cache:
-            cache[token] = token.encode("latin-1", "ignore") in data
+            cache[token] = token_in(token, data)
         return cache[token]
 
     def check(identity: dict[str, list[str]]) -> dict[str, dict[str, list[str]]]:
