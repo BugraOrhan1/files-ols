@@ -141,10 +141,11 @@ jobs:
           Write-Host "EXE reproduction OK: $got"
 
       - name: Upload Windows build
+        # Upload the folder itself: GitHub zips it once, so the download holds
+        # OLSTuner\ directly (a zip inside a zip led to half-extracted installs
+        # missing _internal\_tcl_data).
         uses: actions/upload-artifact@v4
         with:
           name: OLSTuner-win64
-          path: |
-            ${{ env.ZIP }}
-            ${{ env.ZIP }}.sha256
+          path: dist/
           if-no-files-found: error
