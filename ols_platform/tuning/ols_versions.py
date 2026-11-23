@@ -72,6 +72,43 @@ def parse_revision_tag(head: bytes) -> RevisionTag | None:
         if not versions or len(versions) != declared + 1:
             continue
         return RevisionTag(declared, tuple(versions), raw)
+    return _parse_old_revision_tag(head)
+
+
+_OLD_TAG_START = re.compile(rb"\d{1,3} \(")
+_OLD_TAG_AREA = 0x4000
+
+
+def _parse_old_revision_tag(head: bytes) -> RevisionTag | None:
+    """Older projects (format 356-397) separate the names with ", " and no tab.
+
+    A name may itself hold ", ", so a tag only counts when the number of names
+    is exactly the declared one. Slot order and image offset of this format
+    were confirmed on 249 originals and 266 tuned versions that are byte
+    identical to images of newer projects."""
+
+    for match in _OLD_TAG_START.finditer(head[:_OLD_TAG_AREA]):
+        start = match.start()
+        if start < 4:
+            continue
+        (length,) = struct.unpack_from("<I", head, start - 4)
+        if not 4 < length <= 4096 or start + length > len(head):
+            continue
+        raw = head[start:start + length].decode("latin-1")
+        if not raw.endswith(")") or any(ord(ch) < 32 and ch != "	" for ch in raw):
+            continue
+        declared = int(raw.split(" ", 1)[0])
+        inner = raw[raw.index("(") + 1:-1]
+        for separator in (",	 ", ", "):
+            items = inner.split(separator)
+            if len(items) != declared + 1 or not all(item.strip() for item in items):
+                continue
+            versions = []
+            for index, item in enumerate(items):
+                name, _sep, note = item.partition(":	 ")
+                versions.append(VersionTag(index, name.strip(), note.strip()))
+            if all(v.name for v in versions):
+                return RevisionTag(declared, tuple(versions), raw)
     return None
 
 

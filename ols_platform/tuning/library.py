@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS runs (
 DONE_STATES = ("parsed_no_pairs", "parsed_with_pairs", "rejected", "too_large")
 # Bump when extraction rules change: rejected / no-pair files from older scans
 # are then looked at again (unchanged files with pairs are still skipped).
-SCAN_VERSION = 3  # 3: version names with commas / long names, re-read earlier rejects
+SCAN_VERSION = 4  # 4: older projects (names without tabs) and 16-64 KB memories; 3: version names with commas / long names, re-read earlier rejects
 STATUS_TEXT = {
     "parsed_with_pairs": "gelezen, voorbeelden gevonden",
     "parsed_no_pairs": "gelezen, geen bruikbare versies",

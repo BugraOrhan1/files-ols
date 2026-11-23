@@ -28,6 +28,8 @@ HEADER_FIELDS = (
 )
 VERSION_MARKER = struct.pack("<I", 0x42007899)
 IMAGE_SHIFT = 4
+TERMINATED_STRINGS_BEFORE = 440  # older formats end every non-empty header string with a NUL
+MIN_BLOB = 0x4000  # 16 KB: older ECUs keep their data in 32 KB memories
 
 
 @dataclass
@@ -84,6 +86,8 @@ def parse_header_and_layout(head: bytes, file_size: int) -> NativeSnapshot:
             break
         metadata[name] = value
         pos += consumed
+        if format_version < TERMINATED_STRINGS_BEFORE and consumed > 4:
+            pos += 1
     issues: list[str] = []
     slots: list[NativeSlot] = []
     search = 0x100
@@ -97,7 +101,7 @@ def parse_header_and_layout(head: bytes, file_size: int) -> NativeSnapshot:
         if start < 0:
             continue
         index, base, blob, _m, count = struct.unpack_from("<5I", head, start)
-        if not (0 < count <= 20 and index < count and 0x10000 <= blob <= 0x10000000):
+        if not (0 < count <= 20 and index < count and MIN_BLOB <= blob <= 0x10000000):
             continue
         if base + count * blob > file_size + 4:
             continue
