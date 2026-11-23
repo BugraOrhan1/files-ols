@@ -24,7 +24,7 @@ from .diagnostics import app_logger, close_logger, create_bundle
 from .practice import family_line, read_stats, summary_line
 from .generate import GenerationRejected, GenerationResult, available_profiles, generate
 from .ols_versions import profile_label
-from .package import PackageStore, write_package
+from .package import PackageStore, contract_for, write_package
 
 DEFAULT_SOURCES = [
     "Database 1=\\\\Dell\\d\\Database 1",
@@ -1040,7 +1040,7 @@ class LibraryWindow:
         self.summary_var.set(f"{len(package['training_selection'])} voorbeelden · {variants} softwarevarianten · "
                              f"{len(package['families'])} ECU-families")
         for family in package["families"]:
-            contract = contracts.get(family["family_key"], {}).get("contract", "UNKNOWN")
+            contract = contract_for(contracts, family["family_key"]).get("contract", "UNKNOWN")
             check = "vastgelegd" if contract == "FLASH_TOOL_CORRECTS_ON_WRITE" else "niet vastgelegd"
             projects = len({p for v in family["variants"] for p in v["projects"]})
             pairs = sum(len(v["pairs"]) for v in family["variants"])

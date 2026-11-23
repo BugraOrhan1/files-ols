@@ -14,6 +14,7 @@ from typing import Any
 
 from .identity import _useful, classify_input, token_in
 from .ols_versions import profile_label
+from .package import contract_for
 
 
 class GenerationRejected(Exception):
@@ -342,7 +343,7 @@ def available_profiles(data: bytes, package, hint: str = "", min_similarity: flo
 
 
 def _integrity(family: dict[str, Any], contracts: dict | None) -> dict[str, Any]:
-    contract = (contracts or {}).get(family["family_key"], {"contract": "UNKNOWN"})
+    contract = contract_for(contracts, family["family_key"])
     ready = contract.get("contract") == "FLASH_TOOL_CORRECTS_ON_WRITE"
     return {
         "reference_checksum_states": family["integrity"]["reference_checksum_states"],
@@ -529,9 +530,12 @@ def _by_transfer(data: bytes, profile_name: str, package, contracts: dict | None
                      f"({outcome['coverage']:.1%} overgezet) – volgens uw ingestelde minimum toegestaan.")
     if how_counts.get("omgerekend"):
         notes.append("Omgerekende kaarten: waarden van uw bestand met dezelfde verhouding aangepast als in het voorbeeld.")
+    if how_counts.get("kaart via assen"):
+        notes.append(f"{how_counts['kaart via assen']} kaart(en) gevonden via hun assen (andere plek of andere "
+                     "omgeving dan in het voorbeeld) en met dezelfde verhouding per cel aangepast.")
     changes = [{
         "start": item["start"], "end": item["end"], "kind": "transfer", "method": item["how"],
-        "changed_bytes": item["changed_bytes"], "changed_cells": None, "map": None,
+        "changed_bytes": item["changed_bytes"], "changed_cells": None, "map": item.get("map"),
         "label": f"Wijziging 0x{item['start']:X}" + (f" (voorbeeld 0x{item['donor_start']:X})"
                                                      if item["start"] != item["donor_start"] else ""),
     } for item in outcome["placed"]]

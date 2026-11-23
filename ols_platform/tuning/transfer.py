@@ -27,6 +27,7 @@ from array import array
 from typing import Any
 
 from .learn import _roughness, _words
+from .maps import load_records, locate, store_root_of
 from .package import ANCHOR_SIZE, FP_SAMPLES, fingerprint
 
 DEFAULT_MIN_SIMILARITY = 0.70
@@ -295,12 +296,13 @@ def _endian(orig: bytes) -> str:
     return min(rough, key=lambda e: (rough[e], e))
 
 
-def _recalculate(current: bytes, orig: bytes, tuned: bytes) -> bytes | None:
-    """Apply the donor's per-cell change to this file's own values."""
+def _recalculate(current: bytes, orig: bytes, tuned: bytes, width: int = 0) -> bytes | None:
+    """Apply the donor's per-cell change to this file's own values.
+    ``width`` 1 forces byte cells (known from a map definition)."""
 
     if len(current) != len(orig):
         return None
-    if len(orig) % 2:
+    if width == 1 or len(orig) % 2:
         cells = [(c, o, t) for c, o, t in zip(current, orig, tuned)]
         out = bytearray()
         for c, o, t in cells:
@@ -490,6 +492,53 @@ def place_edits(data: bytes, edits: list[list[Any]], exact_only: bool = False,
     return output, placed, missing
 
 
+def place_by_maps(data: bytes, output: bytearray, placed: list[dict[str, Any]], missing: list[dict[str, Any]],
+                  records: list[dict[str, Any]]) -> tuple[bytearray, list[dict[str, Any]], list[dict[str, Any]]]:
+    """Place donor changes that byte anchoring could not place, by finding
+    the changed map through its axes (see ``maps``). Only maps covering a
+    missing change are tried; present (already tuned) findings are kept."""
+
+    open_items = [m for m in missing if not m.get("present")]
+    kept = [m for m in missing if m.get("present")]
+    if not open_items:
+        return output, placed, missing
+    shifts = sorted((p["donor_start"], p["start"] - p["donor_start"]) for p in placed)
+    taken = [(p["start"], p["end"]) for p in placed]
+    placed = list(placed)
+    for record in records:
+        size = len(record["orig"]) // 2
+        r0, r1 = record["start"], record["start"] + size
+        covered = [m for m in open_items if r0 <= m["start"] and m["start"] + m["length"] <= r1]
+        if not covered:
+            continue
+        before = [d for s, d in shifts if s <= r0][-1:]
+        near = r0 + (before[0] if before else 0)
+        offset = locate(data, record, near)
+        if offset is None or any(offset < e and s < offset + size for s, e in taken):
+            continue
+        current = data[offset:offset + size]
+        orig, tuned = bytes.fromhex(record["orig"]), bytes.fromhex(record["tuned"])
+        if current == tuned:
+            kept.extend(dict(m, present=True) for m in covered)
+            open_items = [m for m in open_items if m not in covered]
+            continue
+        new = _recalculate(current, orig, tuned, record["width"])
+        if new is ALREADY_TUNED:
+            kept.extend(dict(m, present=True) for m in covered)
+            open_items = [m for m in open_items if m not in covered]
+            continue
+        if new is None:
+            continue
+        output[offset:offset + size] = new
+        taken.append((offset, offset + size))
+        placed.append({"start": offset, "end": offset + size, "donor_start": r0, "how": "kaart via assen",
+                       "map": record.get("name", ""),
+                       "changed_bytes": sum(1 for a, b in zip(new, current) if a != b)})
+        open_items = [m for m in open_items if m not in covered]
+    placed.sort(key=lambda p: p["start"])
+    return output, placed, open_items + kept
+
+
 def tuned_presence(data: bytes, edits: list[list[Any]]) -> tuple[float, int]:
     """(fraction of donor edits already present, number of present edits of
     at least 8 bytes). Found with the same anchoring as placement."""
@@ -584,6 +633,7 @@ def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set
                 "reason": f"Geen vergelijkbaar origineel met '{profile}' in de bibliotheek "
                           f"(minimaal {min_similarity:.0%} gelijk)."}
     donors = _prefer_closest_values(data, profile, package, donors)
+    maps_root = store_root_of(package)
     best = None
     suspect = None  # partial-presence finding from a donor with other software
     for rank, donor in enumerate(donors[:MAX_DONORS_TRIED]):
@@ -598,6 +648,10 @@ def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set
                     "reason": f"Dit bestand bevat al de wijzigingen van {pair.get('tuned_version_name') or profile} "
                               f"(zoals in project {pair.get('project_name', '')}). Open het originele bestand."}
         output, placed, missing = place_edits(data, pair["edits"])
+        if missing and not donor.get("exact_required"):
+            records = load_records(maps_root, donor["original_sha256"], pair.get("tuned_sha256", ""))
+            if records:
+                output, placed, missing = place_by_maps(data, output, placed, missing, records)
         if donor.get("exact_required"):
             # Accepted on identity or partial-read similarity alone: only
             # byte-identical placement of every change counts (no

@@ -115,6 +115,24 @@ class _Status:
         _write_status(self.root, data)
 
 
+def publish_due(total: int, published: int, since: float, took: float,
+                every_pairs: int, every_seconds: int) -> bool:
+    """Whether an intermediate package is due.
+
+    Training time grows with the library; publishing every few hundred
+    pairs would spend most of a long run re-learning instead of scanning.
+    So both thresholds scale: at least ``every_pairs`` or a quarter of the
+    already published examples, and never sooner than four times the last
+    training run took (scanning stays at least ~80% of the time)."""
+
+    new = total - published
+    if new <= 0:
+        return False
+    if since < 4 * took:
+        return False
+    return new >= max(every_pairs, published // 4) or since >= max(every_seconds, 4 * took)
+
+
 def run_update(root: Path, *, publish_every_pairs: int = 500, publish_every_seconds: int = 1800,
                workers: int | None = None, practice: bool = True, practice_only: bool = False,
                continuous: bool = False, pause_minutes: int = 30) -> int:
@@ -152,17 +170,20 @@ def run_update(root: Path, *, publish_every_pairs: int = 500, publish_every_seco
     beat.start()
     store = PackageStore(root)
     library = Library(store)
-    last_publish = {"time": time.time(), "pairs": 0}
+    last_publish = {"time": time.time(), "pairs": 0, "took": 0.0}
 
     def publish(reason: str) -> None:
         status.update(phase="leren")
         status.say(f"Leren en publiceren ({reason})…")
+        started = time.time()
         try:
             result = library.train(progress=status.say)
         except ValueError as exc:
             status.say(str(exc))
             status.update(phase="scannen")
             return
+        finally:
+            last_publish["took"] = time.time() - started
         if result["installed"]:
             status.say(f"Nieuwe versie actief: {result['pairs_used']} voorbeelden, "
                        f"{len(result['families'])} ECU-families.")
@@ -171,10 +192,11 @@ def run_update(root: Path, *, publish_every_pairs: int = 500, publish_every_seco
         status.update(phase="scannen")
 
     def on_pairs(new_total: int) -> None:
-        if (new_total - last_publish["pairs"] >= publish_every_pairs
-                or time.time() - last_publish["time"] >= publish_every_seconds):
-            last_publish.update(time=time.time(), pairs=new_total)
-            publish("tussentijds")
+        if not publish_due(new_total, last_publish["pairs"], time.time() - last_publish["time"],
+                           last_publish["took"], publish_every_pairs, publish_every_seconds):
+            return
+        last_publish.update(time=time.time(), pairs=new_total)
+        publish("tussentijds")
 
     def on_file(source: str, done_count: int, found: int) -> None:
         status.update(current={"source": source, "done": done_count, "found": found})
@@ -222,6 +244,16 @@ def run_update(root: Path, *, publish_every_pairs: int = 500, publish_every_seco
                     else:
                         status.say(f"{key}: {st['found']} projecten, {st.get('total_pairs', st['confirmed_pairs'])} "
                                    f"voorbeelden ({st['new_pairs']} nieuw)")
+            maps_reader = settings.get("py_ols_maps") or settings.get("py_ols")
+            if maps_reader and not stop.is_set():
+                from .maps import learn_maps
+
+                status.update(phase="kaarten", current=None)
+                try:
+                    learn_maps(root, Path(maps_reader), workers=workers or 4, progress=status.say,
+                               stop=stop.is_set)
+                except Exception as exc:  # map knowledge is extra: never fails the update
+                    status.say(f"Kaartkennis overgeslagen: {exc}")
             if round_no == 1 or new_pairs or stop.is_set():
                 publish("gestopt – wat al gescand is" if stop.is_set() else "klaar")
             else:

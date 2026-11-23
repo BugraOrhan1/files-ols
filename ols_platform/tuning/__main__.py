@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 from .export import ExportBlocked, export_result
+from .fileio import read_json
 from .generate import GenerationRejected, generate
 from .library import Library
 from .package import PackageStore, read_package, write_package
@@ -86,6 +88,14 @@ def build_parser() -> argparse.ArgumentParser:
     upd.add_argument("--pause-minutes", type=int, default=30, help="Pauze tussen rondes bij --continuous.")
     prc = sub.add_parser("practice", help="Oefenen: elk voorbeeld verbergen, opnieuw tunen en vergelijken.")
     prc.add_argument("--workers", type=int)
+    lmp = sub.add_parser("learn-maps", help="Kaartkennis: kaartdefinities (assen) van alle tune-voorbeelden "
+                                            "lezen, zodat kaarten ook in andere software gevonden worden.")
+    lmp.add_argument("--py-ols", type=Path, help="Map met py-ols (standaard: instelling py_ols).")
+    lmp.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) // 2))
+    lmp.add_argument("--max-files", type=int)
+    rules = sub.add_parser("map-rules", help="Regels per kaarttype: hoe tuners elke soort kaart aanpassen.")
+    rules.add_argument("--min-examples", type=int, default=3)
+    rules.add_argument("--json", action="store_true")
     sub.add_parser("packages", help="Toon pakketten.")
     sub.add_parser("rollback", help="Activeer de vorige pakketversie.")
     inst = sub.add_parser("install-package")
@@ -187,6 +197,30 @@ def main(argv: list[str] | None = None) -> int:
         from .background import run_update
 
         return run_update(store.root, workers=args.workers, practice_only=True)
+    if args.command == "learn-maps":
+        from .maps import learn_maps
+
+        settings = read_json(store.root / "settings.json", {}) or {}
+        py_ols = args.py_ols or Path(settings.get("py_ols_maps") or settings.get("py_ols") or ".")
+        if not (py_ols / "ols_reader.py").exists():
+            print("py-ols niet gevonden; geef --py-ols <map> op.")
+            return 2
+        print(json.dumps(learn_maps(store.root, py_ols, workers=args.workers, max_files=args.max_files)))
+        return 0
+    if args.command == "map-rules":
+        from .maps import map_rules
+
+        found = map_rules(store.root, args.min_examples)
+        if args.json:
+            print(json.dumps(found, indent=2))
+            return 0
+        for rule in found:
+            low, high = rule["spread"]
+            extra = f", {rule['to_max_share']:.0%} naar maximum" if rule["to_max_share"] else ""
+            print(f"{rule['map'][:60]:60} {rule['profile']:18} {rule['median_change']:+7.1%} "
+                  f"(meestal {low:+.0%} tot {high:+.0%}{extra}; {rule['examples']} voorbeelden, "
+                  f"{len(rule['ecu_families'])} ECU-families)")
+        return 0
     if args.command == "packages":
         print(json.dumps({"active": store.active_id(), "packages": store.list_packages()}, indent=2))
         return 0

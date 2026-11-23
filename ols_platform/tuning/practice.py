@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Callable
 from .fileio import read_json, write_json
 
-PRACTICE_VERSION = 2  # 2: placement/direction measured next to the byte score
+PRACTICE_VERSION = 3  # 2: placement/direction measured; 3: maps located by their axes
 STATS_FILE = "practice_stats.json"
 GOOD_SCORE = 0.99
 TEST_MIN_SIMILARITY = 0.30  # practise over a wide range so the safe floor can be learned

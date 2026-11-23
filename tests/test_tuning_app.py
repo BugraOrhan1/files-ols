@@ -34,8 +34,14 @@ class AppTests(unittest.TestCase):
         self.app.settings.data["output_dir"] = str(self.root_dir / "uit")
 
     def tearDown(self):
+        import gc
+
         self.app.close()
         self.tk.destroy()
+        # Free Tk variables here, on the main thread: if a later garbage
+        # collection runs them down in a worker thread, Tcl aborts the process.
+        self.app = None
+        gc.collect()
         self.tmp.cleanup()
 
     def test_first_start_explains_what_to_do(self):

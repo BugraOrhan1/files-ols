@@ -17,6 +17,7 @@ library holds thousands of projects.
 from __future__ import annotations
 
 import base64
+import fnmatch
 import hashlib
 import io
 import json
@@ -49,6 +50,35 @@ def normalize_family_label(label: str) -> str:
     if not cleaned or cleaned == "onbekend":
         return "onbekend"
     return cleaned.upper()
+
+
+def contract_for(contracts: dict[str, Any] | None, family_key: str) -> dict[str, Any]:
+    """Integrity contract of one family.
+
+    An exact family key wins. Otherwise a rule with wildcards applies, e.g.
+    ``MG1*`` (every MG1 family, every read size) or ``EDC17C*|4194304``:
+    "this flash tool corrects checksums for these ECUs", recorded once per
+    flash tool instead of once per family. The most specific rule (longest
+    pattern without wildcards) wins."""
+
+    contracts = contracts or {}
+    key = normalize_family_key(family_key)
+    if key in contracts:
+        return contracts[key]
+    label, _sep, size = key.rpartition("|")
+    best: tuple[int, dict[str, Any]] | None = None
+    for pattern, value in contracts.items():
+        if "*" not in pattern and "?" not in pattern:
+            continue
+        p_label, p_sep, p_size = pattern.rpartition("|")
+        if not p_sep:
+            p_label, p_size = pattern, "*"
+        if not fnmatch.fnmatchcase(label, p_label) or not fnmatch.fnmatchcase(size, p_size):
+            continue
+        weight = len(pattern.replace("*", "").replace("?", ""))
+        if best is None or weight > best[0]:
+            best = (weight, dict(value, rule=pattern))
+    return best[1] if best else {"contract": "UNKNOWN"}
 
 
 def normalize_family_key(key: str) -> str:
