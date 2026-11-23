@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Callable
 from .fileio import read_json, write_json
 
-PRACTICE_VERSION = 1
+PRACTICE_VERSION = 2  # 2: placement/direction measured next to the byte score
 STATS_FILE = "practice_stats.json"
 GOOD_SCORE = 0.99
 TEST_MIN_SIMILARITY = 0.30  # practise over a wide range so the safe floor can be learned
@@ -54,6 +54,16 @@ CREATE TABLE IF NOT EXISTS practice (
     tested_at TEXT NOT NULL
 );
 """
+# Added in practice version 2; older databases get them through ALTER TABLE.
+PLACEMENT_COLUMNS = ("placement_precision", "placement_recall", "direction_agreement")
+
+
+def _ensure_columns(db: sqlite3.Connection) -> None:
+    have = {r[1] for r in db.execute("PRAGMA table_info(practice)")}
+    for column in PLACEMENT_COLUMNS:
+        if column not in have:
+            db.execute(f"ALTER TABLE practice ADD COLUMN {column} REAL")
+    db.commit()
 
 
 def _now() -> str:
@@ -112,6 +122,50 @@ def cell_score(original: bytes, ours: bytes, real: bytes) -> tuple[int, int, int
     return len(real_cells), reproduced, len(our_cells - real_cells)
 
 
+def placement_score(original: bytes, ours: bytes, real: bytes) -> dict[str, float | int]:
+    """Did the transfer change the right *places*, independent of the tuner's values?
+
+    Two Stage 1 files from different tuners rarely share exact values, so the
+    byte score above mostly measures "same tuner". A wrongly placed map is what
+    makes a transfer dangerous; this measures that separately:
+
+    - ``placement_precision``: share of our changed 16-bit cells that the real
+      tune also changes (low = we wrote where nobody tunes).
+    - ``placement_recall``: share of the real tune's cells we also changed.
+    - ``direction_agreement``: in the shared cells, share moved in the same
+      direction (up/down) as the real tune, judged in the byte order that
+      agrees more often (maps are stored in one order per ECU).
+    """
+
+    import struct
+
+    from .learn import diff_regions
+
+    real_cells = {i - i % 2 for s, e in diff_regions(original, real, 0) for i in range(s, e)}
+    our_cells = {i - i % 2 for s, e in diff_regions(original, ours, 0) for i in range(s, e)}
+    shared = sorted(c for c in our_cells & real_cells if c + 2 <= len(original))
+    best_agree = 0
+    for fmt in ("<H", ">H"):
+        agree = 0
+        for cell in shared:
+            o = struct.unpack_from(fmt, original, cell)[0]
+            a = struct.unpack_from(fmt, ours, cell)[0]
+            b = struct.unpack_from(fmt, real, cell)[0]
+            if (a > o) == (b > o) and (a < o) == (b < o):
+                agree += 1
+        best_agree = max(best_agree, agree)
+    return {
+        "our_changed": len(our_cells),
+        "shared": len(shared),
+        "placement_precision": round(len(shared) / len(our_cells), 4) if our_cells else 1.0,
+        "placement_recall": round(len(shared) / len(real_cells), 4) if real_cells else 1.0,
+        "direction_agreement": round(best_agree / len(shared), 4) if shared else 0.0,
+    }
+
+
+SAFE_PLACEMENT = 0.90  # precision and direction agreement for a "safely placed" transfer
+
+
 _WORKER: dict[str, Any] = {}
 
 
@@ -146,6 +200,7 @@ def practice_pair(task: dict[str, Any]) -> dict[str, Any]:
         cmp = compare_to_reference(pair.original, outcome["output"], pair.tuned)
         changed, reproduced, unexpected = cell_score(pair.original, outcome["output"], pair.tuned)
         result["byte_exact"] = round(cmp["reproduction_ratio"], 4)
+        result.update(placement_score(pair.original, outcome["output"], pair.tuned))
         donor = outcome["donor"]
         result.update(
             status="ok", code=None, donor_project=donor.get("project"),
@@ -170,6 +225,7 @@ def run_practice(library, *, max_tests: int | None = None, workers: int | None =
     say = progress or (lambda message: None)
     db = library.db
     db.executescript(SCHEMA)
+    _ensure_columns(db)
     package = library.store.load_active()
     if package is None:
         return {"tested": 0, "reason": "Nog geen bibliotheekversie."}
@@ -198,11 +254,13 @@ def run_practice(library, *, max_tests: int | None = None, workers: int | None =
         db.execute(
             "INSERT OR REPLACE INTO practice(pair_id,package_id,version,family_key,variant_key,profile,status,code,"
             "donor_project,donor_variant_key,same_variant,similarity,coverage,real_changed,reproduced,unexpected,"
-            "score,seconds,tested_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "score,seconds,tested_at,placement_precision,placement_recall,direction_agreement) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (res["pair_id"], package.package_id, PRACTICE_VERSION, res["family_key"], res.get("variant_key"),
              res["profile"], res["status"], res.get("code"), res.get("donor_project"), res.get("donor_variant_key"),
              res.get("same_variant"), res.get("similarity"), res.get("coverage"), res.get("real_changed"),
-             res.get("reproduced"), res.get("unexpected"), res.get("score"), res.get("seconds"), _now()))
+             res.get("reproduced"), res.get("unexpected"), res.get("score"), res.get("seconds"), _now(),
+             res.get("placement_precision"), res.get("placement_recall"), res.get("direction_agreement")))
         db.commit()
         tested += 1
         if on_test:
@@ -260,20 +318,27 @@ def _floor(results: list[tuple[float, float]]) -> float | None:
 def write_stats(root: Path, db: sqlite3.Connection, package_id: str | None = None) -> dict[str, Any]:
     families: dict[str, dict[str, Any]] = {}
     per_family: dict[str, list[tuple[float, float]]] = defaultdict(list)
-    for fk, status, score, sim, same in db.execute(
-            "SELECT family_key,status,score,similarity,same_variant FROM practice WHERE version=?", (PRACTICE_VERSION,)):
+    _ensure_columns(db)
+    for fk, status, score, sim, same, direction in db.execute(
+            "SELECT family_key,status,score,similarity,same_variant,direction_agreement FROM practice WHERE version=?",
+            (PRACTICE_VERSION,)):
         f = families.setdefault(fk, {"tests": 0, "ok": 0, "good": 0, "score_sum": 0.0, "other_software": 0,
-                                     "other_software_good": 0})
+                                     "other_software_good": 0, "placed": 0, "other_software_placed": 0})
         f["tests"] += 1
         if status == "ok":
             f["ok"] += 1
             f["score_sum"] += score or 0.0
-            per_family[fk].append((sim, score or 0.0))
             good = (score or 0) >= GOOD_SCORE
+            # Placement, not the tuner's exact values, decides whether a transfer is safe:
+            # a byte-exact copy is always correctly placed.
+            placed = good or (direction or 0) >= SAFE_PLACEMENT
+            per_family[fk].append((sim, 1.0 if placed else 0.0))
             f["good"] += good
+            f["placed"] += placed
             if not same:
                 f["other_software"] += 1
                 f["other_software_good"] += good
+                f["other_software_placed"] += placed
     floors = {}
     for fk, f in families.items():
         f["average_score"] = round(f["score_sum"] / f["ok"], 4) if f["ok"] else 0.0
@@ -284,7 +349,8 @@ def write_stats(root: Path, db: sqlite3.Connection, package_id: str | None = Non
             floors[fk] = floor
     stats = {"updated_at": _now(), "package_id": package_id, "families": families, "floors": floors,
              "total_tests": sum(f["tests"] for f in families.values()),
-             "total_good": sum(f["good"] for f in families.values())}
+             "total_good": sum(f["good"] for f in families.values()),
+             "total_placed": sum(f["placed"] for f in families.values())}
     try:
         write_json(root / STATS_FILE, stats, indent=1)
     except OSError:
@@ -304,7 +370,11 @@ def summary_line(stats: dict[str, Any]) -> str:
     if not total:
         return "Nog geen oefenresultaten."
     good = stats.get("total_good", 0)
-    return f"{good} van {total} oefentests ({good / total:.0%}) gaven ≥99% dezelfde bytes als de echte tune."
+    text = f"{good} van {total} oefentests ({good / total:.0%}) gaven ≥99% dezelfde bytes als de echte tune"
+    if "total_placed" in stats:
+        placed = stats["total_placed"]
+        text += f"; {placed} ({placed / total:.0%}) op de juiste kaarten in de juiste richting"
+    return text + "."
 
 
 def family_line(stats: dict[str, Any], family_key: str) -> str | None:
@@ -315,4 +385,8 @@ def family_line(stats: dict[str, Any], family_key: str) -> str | None:
             f"gemiddeld {f['average_score']:.1%}")
     if f.get("other_software"):
         text += f"; met andere software {f['other_software_good']} van {f['other_software']}"
+    if "placed" in f:
+        text += f"; juist geplaatst: {f['placed']} van {f['tests']}"
+        if f.get("other_software"):
+            text += f" (andere software {f['other_software_placed']} van {f['other_software']})"
     return text + "."

@@ -28,7 +28,9 @@ from . import SOFTWARE_VERSION
 from .identity import learn_identity
 from .learn import DEFAULT_SETTINGS, TrainingPair, diff_regions
 from .ols_versions import checksum_state, classify_profile, inspect_project, read_slot
-from .package import MAX_LEARNING_PAIRS, PackageBuilder, PackageStore, prepare_variant
+from .package import (MAX_LEARNING_PAIRS, PackageBuilder, PackageStore, normalize_family_key,
+                      normalize_family_label,
+                      prepare_variant)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
@@ -205,7 +207,7 @@ def load_pair(root: Path, pair_id: str, originals_cache: dict[str, bytes] | None
         chunk = bytes.fromhex(hex_bytes)
         tuned[start:start + len(chunk)] = chunk
     pair = TrainingPair(
-        pair_id=payload["pair_id"], family_key=payload["family_key"],
+        pair_id=payload["pair_id"], family_key=normalize_family_key(payload["family_key"]),
         variant_key=payload["variant_key"], identity=payload["identity"],
         original=original, tuned=bytes(tuned), profile=payload["profile"],
         maps=payload["maps"], record=payload["record"],
@@ -236,7 +238,7 @@ def extract_pairs(path: Path, reader: Any, project_sha: str, export_hashes: set[
         meta.get("ecu_type")
         or " ".join(x for x in (meta.get("ecu_manufacturer", ""), meta.get("hw_code") or meta.get("hw_number", "")) if x)
         or "onbekend")
-    family_key = f"{family_label}|{len(original)}"
+    family_key = f"{normalize_family_label(family_label)}|{len(original)}"
     original_sha = hashlib.sha256(original).hexdigest()
     if identity:
         variant_key = "|".join(f"{k}={'+'.join(v)}" for k, v in sorted(identity.items()) if k != "ecu_type") or "ecu_only"

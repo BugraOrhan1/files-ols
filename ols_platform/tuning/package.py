@@ -39,6 +39,24 @@ MAX_LEARNING_PAIRS = 32  # per variant; all pairs stay available as known pairs
 _ZIP_DATE = (2020, 1, 1, 0, 0, 0)
 
 
+def normalize_family_label(label: str) -> str:
+    """One spelling per ECU family: WinOLS headers mix 'mg1cs002', 'MG1CS002 ' etc.
+
+    Without this, the same ECU is split into separate families that each learn
+    from fewer examples and need their own checksum confirmation.
+    """
+    cleaned = " ".join(str(label).split())
+    if not cleaned or cleaned == "onbekend":
+        return "onbekend"
+    return cleaned.upper()
+
+
+def normalize_family_key(key: str) -> str:
+    """Normalize the label part of a 'label|size' family key."""
+    label, sep, size = str(key).rpartition("|")
+    return f"{normalize_family_label(label)}|{size}" if sep else normalize_family_label(key)
+
+
 def default_store_root() -> Path:
     override = os.environ.get("OLS_TUNER_HOME")
     if override:
@@ -534,7 +552,13 @@ class PackageStore:
         if not self.contracts_path.exists():
             return {}
         data = read_json(self.contracts_path, {})
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            return {}
+        # Contracts recorded before family keys were normalized keep working.
+        normalized: dict[str, Any] = {}
+        for key, value in data.items():
+            normalized.setdefault(normalize_family_key(key), value)
+        return normalized
 
     def set_contract(self, family_key: str, contract: str, evidence: str) -> None:
         if contract not in ("FLASH_TOOL_CORRECTS_ON_WRITE", "UNKNOWN"):
@@ -542,7 +566,7 @@ class PackageStore:
         if contract != "UNKNOWN" and len(evidence.strip()) < 10:
             raise ValueError("Leg vast waarop het contract berust (minimaal 10 tekens).")
         data = self.contracts()
-        data[family_key] = {
+        data[normalize_family_key(family_key)] = {
             "contract": contract,
             "evidence": evidence.strip(),
             "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),

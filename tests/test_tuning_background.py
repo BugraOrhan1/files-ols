@@ -184,21 +184,28 @@ class PracticeTests(unittest.TestCase):
     def test_learned_floor_blocks_unreliable_similarity(self):
         import sqlite3
 
-        from ols_platform.tuning.practice import SCHEMA, write_stats
+        from ols_platform.tuning.practice import PRACTICE_VERSION, SCHEMA, _ensure_columns, write_stats
 
         with tempfile.TemporaryDirectory() as tmp:
             db = sqlite3.connect(Path(tmp) / "x.sqlite3")
             db.executescript(SCHEMA)
-            results = [(0.75, 0.4), (0.78, 0.6), (0.80, 0.7)] + [(0.90 + i * 0.01, 1.0) for i in range(8)]
-            for i, (sim, score) in enumerate(results):
+            _ensure_columns(db)
+            # (similarity, byte score, direction agreement); low byte score with the right direction is
+            # another tuner's values on the right maps and counts as placed.
+            results = ([(0.75, 0.4, 0.5), (0.78, 0.6, 0.6), (0.80, 0.7, 0.4)]
+                       + [(0.90 + i * 0.01, 1.0, None) for i in range(8)]
+                       + [(0.95, 0.1, 0.97)])
+            for i, (sim, score, direction) in enumerate(results):
                 db.execute("INSERT INTO practice(pair_id,package_id,version,family_key,profile,status,similarity,"
-                           "score,same_variant,tested_at) VALUES(?,?,1,'ECU|1',?, 'ok', ?, ?, 0, 'x')",
-                           (f"p{i}", "pkg", "stage1", sim, score))
+                           "score,same_variant,tested_at,direction_agreement) "
+                           "VALUES(?,?,?,'ECU|1',?, 'ok', ?, ?, 0, 'x', ?)",
+                           (f"p{i}", "pkg", PRACTICE_VERSION, "stage1", sim, score, direction))
             db.commit()
             stats = write_stats(Path(tmp), db, "pkg")
             db.close()  # Windows cannot remove an open database file
             self.assertEqual(stats["floors"], {"ECU|1": 0.9})
             self.assertEqual(stats["families"]["ECU|1"]["good"], 8)
+            self.assertEqual(stats["families"]["ECU|1"]["placed"], 9)
 
     def test_background_practice_mode(self):
         from ols_platform.tuning.practice import read_stats

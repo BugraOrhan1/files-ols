@@ -81,7 +81,7 @@ COMPONENTS: list[tuple[str, str, re.Pattern]] = [
         ("egr_off", "EGR OFF", r"\b(egr|agr)\b|egr[ _-]?off"),
         ("dpf_off", "DPF OFF", r"\b(dpf|fap|opf|gpf)\b|partikel"),
         ("adblue_off", "AdBlue OFF", r"adblue|\bscr\b|\bnox\b"),
-        ("cat_off", "Lambda/KAT OFF", r"lambda|\bo2\b|\bcat\b|\bkat\b|decat"),
+        ("cat_off", "Lambda/KAT OFF", r"lambda|\bo2\b|\bcat\b|\bkat\b|decat|catalyst|katalysator|kat ?off|cat ?off"),
         ("dtc_off", "DTC OFF", r"\bdtc"),
         ("pop_bang", "Pop & Bang", r"pop|bang|burble|crackle|\bp ?& ?b\b|\bpnb\b"),
         ("vmax", "Vmax", r"v ?-?max|speed ?limit|limiter"),
@@ -110,7 +110,8 @@ def classify_profile(name: str) -> str:
     order), or ``other`` when nothing recognisable is named.
     """
 
-    normalized = re.sub(r"\s+", " ", name.strip().lower())
+    # '_' is a regex word character, so 'dpf_off' or 'catalyst_off' would slip past \b patterns.
+    normalized = re.sub(r"\s+", " ", name.replace("_", " ").strip().lower())
     if normalized in _ORIGINAL:
         return "original"
     core = re.sub(r"\b\d{2,4} ?(ps|hp|pk|cv|kw|nm|bhp)\b", " ", normalized)
