@@ -122,5 +122,65 @@ class RealSimos1810Tests(unittest.TestCase):
         self.assertEqual(result.output, bytes(expected))
 
 
+S5_OTHER_HW = Variant(ecu="MG1CS002", hw="8W0907559G", sw="031471")
+S5_INPUT = Variant(ecu="MG1CS002", hw="80A907559B", sw="031471")
+
+
+class SameSoftwareOtherHardwareTests(unittest.TestCase):
+    """Audi S5 B9 MG1CS002: WinOLS shows files with hardware 80A907559B,
+    8W0907559G and 06M907309D that all carry software 031471/0005 with the
+    same calibration. A tune of one must transfer to the others."""
+
+    @classmethod
+    def setUpClass(cls):
+        rng = random.Random(4)
+        cls.prefix = bytes(rng.randrange(256) for _ in range(0x20000))
+        cls.body = make_original(41, S5_OTHER_HW)
+        bench = cls.prefix + cls.body
+        cls.package = build_package([_pair(bench, cls.prefix + make_stage1(cls.body), S5_OTHER_HW, 41)])
+
+    def _input(self, variant):
+        data = bytearray(_other_code(self.body))
+        pos = data.find(S5_OTHER_HW.hw.encode())
+        data[pos:pos + len(variant.hw)] = variant.hw.encode()
+        return bytes(data)
+
+    def test_same_software_other_hardware_transfers_exactly(self):
+        data = self._input(S5_INPUT)
+        result = generate(data, "stage1", self.package)
+        self.assertEqual(result.output, make_stage1(data))
+        self.assertTrue(any("ander hardwarenummer" in n for n in result.notes))
+
+    def test_software_number_must_be_whole(self):
+        self.assertFalse(token_in("031471", b"x1031471x"))
+        self.assertTrue(token_in("031471", b"x 031471 0005"))
+
+    def test_other_software_number_is_refused(self):
+        data = bytearray(self._input(S5_INPUT))
+        pos = data.find(b"031471")
+        data[pos:pos + 6] = b"041612"
+        with self.assertRaises(GenerationRejected):
+            generate(bytes(data), "stage1", self.package)
+
+
+class LargerReadContainmentTests(unittest.TestCase):
+    """Library holds a larger read (e.g. 8 MB) with unknown identity tokens;
+    the input is a smaller read holding the same calibration."""
+
+    def test_larger_read_donor_used_with_identical_bytes_only(self):
+        body = make_original(51, Variant(ecu="X", hw="Y", sw="Z"))  # tokens too short to be used
+        rng = random.Random(6)
+        tail = bytes(rng.randrange(256) for _ in range(len(body)))
+        package = build_package([_pair(body + tail, make_stage1(body) + tail, Variant(), 51)])
+        result = generate(body, "stage1", package)
+        self.assertEqual(result.output, make_stage1(body))
+        changed = bytearray(body)
+        first = min(MAPS)
+        for k in range(8):
+            struct.pack_into("<H", changed, first + 2 * k, struct.unpack_from("<H", changed, first + 2 * k)[0] + 41)
+        with self.assertRaises(GenerationRejected):
+            generate(bytes(changed), "stage1", package)
+
+
 if __name__ == "__main__":
     unittest.main()

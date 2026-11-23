@@ -98,6 +98,16 @@ def token_in(token: str, image: bytes) -> bool:
     raw = token.encode("latin-1", "ignore")
     if not raw:
         return False
+    if token.isdigit():
+        # Software numbers such as 031471 must not be part of a longer number.
+        pos = image.find(raw)
+        while pos >= 0:
+            before = image[pos - 1] if pos > 0 else None
+            after = image[pos + len(raw)] if pos + len(raw) < len(image) else None
+            if not (before is not None and 48 <= before <= 57) and not (after is not None and 48 <= after <= 57):
+                return True
+            pos = image.find(raw, pos + 1)
+        return False
     if not _VAG_PART.fullmatch(token.upper()):
         return raw in image
     pos = image.find(raw)

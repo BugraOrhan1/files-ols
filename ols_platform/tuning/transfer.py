@@ -35,6 +35,7 @@ MAX_SHIFT_CHECKS = 24
 CROSS_SIZE_CHECKS = 200     # donors of another file size (full read vs calibration-only) checked by anchors
 CROSS_SIZE_RATIO = 4.0      # ... only when the sizes differ at most this factor
 CROSS_SIZE_ALIGN = 0x10000  # ... and both are whole 64 KB sectors (a cut-off read is never "another form")
+CROSS_SIZE_HEADER = 0x400   # ... apart from a small tool header/trailer (e.g. 0x840010 = 8.25 MB + 16 bytes)
 _RANK_CACHE: dict[tuple, list[dict[str, Any]]] = {}
 DEFAULT_MIN_COVERAGE = 1.0
 MAX_DONORS_TRIED = 8
@@ -67,7 +68,19 @@ def hint_tokens(text: str) -> set[str]:
             if (len(t) >= 3 and not t.isdigit()) or (t.isdigit() and len(t) == 4)}
 
 
-def shifted_similarity(data: bytes, anchor_blob: bytes) -> float:
+def sizes_compatible(a: int, b: int) -> bool:
+    """Two reads of the same ECU in another form: at most CROSS_SIZE_RATIO
+    apart and both whole 64 KB sectors (plus at most a small header). A
+    cut-off read (e.g. 1 KB short) is never another read form."""
+
+    if a == b:
+        return True
+    if not a or not b or not 1 / CROSS_SIZE_RATIO <= a / b <= CROSS_SIZE_RATIO:
+        return False
+    return all(n % CROSS_SIZE_ALIGN <= CROSS_SIZE_HEADER for n in (a, b))
+
+
+def shifted_similarity(data: bytes, anchor_blob: bytes, early_stop: bool = True) -> float:
     """Fraction of the donor's anchor snippets found anywhere in ``data``.
     Stops early when the first quarter already shows the donor is unrelated."""
 
@@ -79,7 +92,7 @@ def shifted_similarity(data: bytes, anchor_blob: bytes) -> float:
     for index, snippet in enumerate(snippets, 1):
         if snippet in data:
             found += 1
-        if index == quarter and found / quarter < 0.3:
+        if early_stop and index == quarter and found / quarter < 0.3:
             return found / len(snippets)
     return found / len(snippets)
 
@@ -132,9 +145,7 @@ def _rank_donors(package, data: bytes, hint: str = "", profile: str | None = Non
             # Same ECU read in another form (e.g. full flash vs calibration
             # only, or another dump size). Same-offset sampling says nothing
             # here; the donor's anchor snippets are searched anywhere instead.
-            ratio = entry["size"] / len(data) if data else 0
-            if (entry.get("anchors") and 1 / CROSS_SIZE_RATIO <= ratio <= CROSS_SIZE_RATIO
-                    and len(data) % CROSS_SIZE_ALIGN == 0 and entry["size"] % CROSS_SIZE_ALIGN == 0):
+            if entry.get("anchors") and sizes_compatible(entry["size"], len(data)):
                 donor_tokens = hint_tokens(" ".join((entry.get("vehicle", ""), entry.get("ecu", ""),
                                                      entry.get("project", ""))))
                 cross_size.append((len(tokens & donor_tokens), entry))
@@ -159,17 +170,31 @@ def _rank_donors(package, data: bytes, hint: str = "", profile: str | None = Non
             ranked.append(dict(entry, similarity=best, same_offset_similarity=score, hint_overlap=overlap))
     cross_size.sort(key=lambda item: (-item[0], abs(item[1]["size"] - len(data)), item[1]["original_sha256"]))
     for overlap, entry in cross_size[:CROSS_SIZE_CHECKS]:
-        best = shifted_similarity(data, base64.b64decode(entry["anchors"]))
+        larger = entry["size"] > len(data)
+        anchors_blob = base64.b64decode(entry["anchors"])
+        best = shifted_similarity(data, anchors_blob, early_stop=not larger)
         floor = max(min_similarity, (family_floor or {}).get(entry.get("family_key", ""), 0.0))
         if best >= floor:
             ranked.append(dict(entry, similarity=best, same_offset_similarity=0.0, hint_overlap=overlap,
                                cross_size=True))
-    # Same software, other read form: every identification token of the
-    # reference (part number with revision index, hardware code ...) occurs
-    # literally in this file. Whole-image similarity says little here (a 4 MB
-    # OBD read vs a 5.5 MB bench read share few same-offset bytes), so such a
-    # donor is tried regardless of its score; transfer() then only accepts it
-    # when every change lands on identical original bytes.
+        elif larger:
+            # A larger read (e.g. 8 MB full flash vs a 6 MB read) can at most
+            # hold len(data)/size of its anchors in this file. Measured on the
+            # part that can be present, it may still be the same software;
+            # such a donor is only used when every change lands on identical
+            # original bytes (see transfer()).
+            contained = min(1.0, best / (len(data) / entry["size"]))
+            if contained >= floor:
+                ranked.append(dict(entry, similarity=contained, same_offset_similarity=0.0,
+                                   hint_overlap=overlap, cross_size=True, exact_required=True,
+                                   raw_similarity=best))
+    # Same software, other read form or other hardware number: the
+    # reference's software number(s) occur literally in this file (and for
+    # "full" also every hardware token). Whole-image similarity says little
+    # here (a 4 MB OBD read vs a 5.5 MB bench read share few same-offset
+    # bytes; 80A907559B and 8W0907559G carry the same software 031471), so
+    # such a donor is tried regardless of its score; transfer() then only
+    # accepts it when every change lands on identical original bytes.
     confirmed = _identity_confirmed_variants(package, data)
     if confirmed:
         listed = {e["original_sha256"]: e for e in ranked}
@@ -178,52 +203,55 @@ def _rank_donors(package, data: bytes, hint: str = "", profile: str | None = Non
                 continue
             if profile and profile not in entry.get("profiles", []):
                 continue
+            level = confirmed[entry["variant_id"]]
             if entry["original_sha256"] in listed:
-                listed[entry["original_sha256"]]["identity_confirmed"] = True
+                listed[entry["original_sha256"]]["identity_confirmed"] = level
                 continue
-            ratio = entry["size"] / len(data) if data else 0
-            if entry["size"] != len(data) and not (
-                    1 / CROSS_SIZE_RATIO <= ratio <= CROSS_SIZE_RATIO
-                    and len(data) % CROSS_SIZE_ALIGN == 0 and entry["size"] % CROSS_SIZE_ALIGN == 0):
+            if not sizes_compatible(entry["size"], len(data)):
                 continue  # a cut-off read is never "another read form"
             score = 0.0
             if entry.get("anchors"):
                 score = shifted_similarity(data, base64.b64decode(entry["anchors"]))
             item = dict(entry, similarity=score, same_offset_similarity=0.0, hint_overlap=0,
-                        identity_confirmed=True, cross_size=entry["size"] != len(data))
+                        identity_confirmed=level, exact_required=True, cross_size=entry["size"] != len(data))
             ranked.append(item)
             listed[entry["original_sha256"]] = item
-    ranked.sort(key=lambda e: (not e.get("identity_confirmed", False),
+    ranked.sort(key=lambda e: (_IDENTITY_ORDER.get(e.get("identity_confirmed"), 2),
                                -(e["similarity"] + 0.004 * min(e["hint_overlap"], 5)), e["original_sha256"]))
     return ranked
 
 
 IDENTITY_SW_FIELDS = ("sw_number", "sw_version")
+_IDENTITY_ORDER = {"full": 0, "software": 1}
 
 
-def _identity_confirmed_variants(package, data: bytes) -> set[str]:
-    """Variants whose identification is fully present in ``data``: at least
-    two distinct tokens, one of them a software number, all found as whole
-    numbers (see :func:`token_in`)."""
+def _identity_confirmed_variants(package, data: bytes) -> dict[str, str]:
+    """Variants whose software is present in ``data`` (found as whole numbers,
+    see :func:`token_in`):
+
+    ``full``      every identification token (>= 2, one a software number)
+    ``software``  every software-number token, but another hardware number
+                  (same software on other hardware, e.g. 80A907559B vs
+                  8W0907559G both with software 031471)
+    """
 
     from .identity import _useful, token_in
 
-    out: set[str] = set()
+    out: dict[str, str] = {}
     cache: dict[str, bool] = {}
+
+    def present(token: str) -> bool:
+        if token not in cache:
+            cache[token] = token_in(token, data)
+        return cache[token]
+
     for _family, variant in package.variants():
         identity = {k: [t for t in v if _useful(t)] for k, v in (variant.get("identity") or {}).items()}
-        tokens = {t for v in identity.values() for t in v}
-        if len(tokens) < 2 or not any(identity.get(f) for f in IDENTITY_SW_FIELDS):
+        sw_tokens = {t for f in IDENTITY_SW_FIELDS for t in identity.get(f, [])}
+        if not sw_tokens or not all(present(t) for t in sw_tokens):
             continue
-        ok = True
-        for token in tokens:
-            if token not in cache:
-                cache[token] = token_in(token, data)
-            if not cache[token]:
-                ok = False
-                break
-        if ok:
-            out.add(variant["variant_id"])
+        tokens = {t for v in identity.values() for t in v}
+        out[variant["variant_id"]] = "full" if len(tokens) >= 2 and all(present(t) for t in tokens) else "software"
     return out
 
 
@@ -567,9 +595,10 @@ def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set
                     "reason": f"Dit bestand bevat al de wijzigingen van {pair.get('tuned_version_name') or profile} "
                               f"(zoals in project {pair.get('project_name', '')}). Open het originele bestand."}
         output, placed, missing = place_edits(data, pair["edits"])
-        if donor.get("identity_confirmed") and donor["similarity"] < min_similarity:
-            # Accepted on identity alone: only byte-identical placement of
-            # every change counts (no recalculated maps, nothing missing).
+        if donor.get("exact_required"):
+            # Accepted on identity or partial-read similarity alone: only
+            # byte-identical placement of every change counts (no
+            # recalculated maps, nothing missing).
             if missing or any(p["how"] == "omgerekend" for p in placed):
                 continue
         present = [m for m in missing if m.get("present")]

@@ -509,6 +509,15 @@ def _by_transfer(data: bytes, profile_name: str, package, contracts: dict | None
         f"{len(outcome['placed'])} van {len(pair['edits'])} wijzigingen geplaatst ("
         + ", ".join(f"{n} {how}" for how, n in sorted(how_counts.items())) + ").",
     ]
+    if donor.get("identity_confirmed") == "full":
+        notes.append("Zelfde software- en hardwarenummers als het voorbeeld (andere uitleesvorm); "
+                     "alle wijzigingen op identieke originele bytes geplaatst.")
+    elif donor.get("identity_confirmed") == "software":
+        notes.append("Zelfde softwarenummer als het voorbeeld, ander hardwarenummer; "
+                     "alle wijzigingen op identieke originele bytes geplaatst.")
+    elif donor.get("exact_required"):
+        notes.append(f"Grotere uitlezing als voorbeeld ({donor['size']} bytes); het gedeelte dat in uw "
+                     "bestand kan staan komt overeen en alle wijzigingen staan op identieke originele bytes.")
     if outcome["missing"]:
         notes.append(f"Let op: {len(outcome['missing'])} wijzigingen niet geplaatst "
                      f"({outcome['coverage']:.1%} overgezet) – volgens uw ingestelde minimum toegestaan.")
