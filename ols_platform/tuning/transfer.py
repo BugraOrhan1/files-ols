@@ -27,7 +27,7 @@ from array import array
 from typing import Any
 
 from .learn import _roughness, _words
-from .maps import load_records, locate, store_root_of
+from .maps import load_records, locate, store_root_of, uses_map_knowledge
 from .package import ANCHOR_SIZE, FP_SAMPLES, fingerprint
 
 DEFAULT_MIN_SIMILARITY = 0.70
@@ -648,7 +648,7 @@ def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set
                     "reason": f"Dit bestand bevat al de wijzigingen van {pair.get('tuned_version_name') or profile} "
                               f"(zoals in project {pair.get('project_name', '')}). Open het originele bestand."}
         output, placed, missing = place_edits(data, pair["edits"])
-        if missing and not donor.get("exact_required"):
+        if missing and not donor.get("exact_required") and uses_map_knowledge(profile):
             records = load_records(maps_root, donor["original_sha256"], pair.get("tuned_sha256", ""))
             if records:
                 output, placed, missing = place_by_maps(data, output, placed, missing, records)

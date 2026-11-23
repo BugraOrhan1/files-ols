@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ols_platform.tuning.maps import load_records, locate, map_change, map_records, save_records
+from ols_platform.tuning.maps import load_records, locate, map_change, map_records, save_records, uses_map_knowledge
 from ols_platform.tuning.transfer import place_by_maps
 
 RPM = [800, 1000, 1250, 1500, 2000, 2500, 3000, 3500, 4000, 5000]
@@ -90,6 +90,11 @@ class MapKnowledgeTests(unittest.TestCase):
         change = map_change(self.records[0])
         self.assertAlmostEqual(change["median"], 1.2, places=2)
         self.assertFalse(change["to_max"])
+
+    def test_emission_profiles_never_use_map_knowledge(self):
+        for profile in ("egr_off", "stage1+cat_off+vmax", "stage1+dpf_off", "adblue_off"):
+            self.assertFalse(uses_map_knowledge(profile), profile)
+        self.assertTrue(uses_map_knowledge("stage1+pop_bang+vmax"))
 
     def test_records_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:

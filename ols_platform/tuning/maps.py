@@ -30,6 +30,13 @@ MAX_AXIS_DISTANCE = 0x400   # an axis this close to its data moves with it (Bosc
 MIN_AXIS_BYTES = 6          # shorter axes are too common to locate anything
 MAX_HITS = 64               # occurrences of one axis that are checked
 MAPS_DIR = "maps"
+# Map knowledge is never learned from, summarised for or applied to tunes that
+# disable emission systems.
+EMISSION_PARTS = frozenset({"egr_off", "dpf_off", "adblue_off", "cat_off", "evap_off"})
+
+
+def uses_map_knowledge(profile: str) -> bool:
+    return not EMISSION_PARTS.intersection(profile.split("+"))
 
 
 def _ranges_overlap(a0: int, a1: int, b0: int, b1: int) -> bool:
@@ -244,10 +251,10 @@ def learn_maps(root: Path, py_ols: Path, *, workers: int = 4, max_files: int | N
     done = set(done_path.read_text(encoding="utf-8").split()) if done_path.exists() else set()
     db = sqlite3.connect(f"file:{root / 'library.sqlite3'}?mode=ro", uri=True, timeout=60)
     wanted: dict[str, tuple[str, list[tuple[str, str]]]] = {}
-    for path, project_sha, original_sha, tuned_sha in db.execute(
-            "SELECT f.path, f.sha256, p.original_sha256, p.tuned_sha256 FROM files f "
+    for path, project_sha, original_sha, tuned_sha, profile in db.execute(
+            "SELECT f.path, f.sha256, p.original_sha256, p.tuned_sha256, p.profile FROM files f "
             "JOIN pairs p ON p.project_sha256 = f.sha256 WHERE f.status = 'parsed_with_pairs'"):
-        if project_sha in done:
+        if project_sha in done or not uses_map_knowledge(profile):
             continue
         entry = wanted.setdefault(project_sha, (path, []))
         if (original_sha, tuned_sha) not in entry[1]:
@@ -352,6 +359,8 @@ def map_rules(root: Path, min_examples: int = 3) -> list[dict[str, Any]]:
         original_sha = path.name.split(".")[0]
         for tuned_sha, records in load_all(root, original_sha).items():
             profile, family = profiles.get((original_sha, tuned_sha), ("other", "onbekend"))
+            if not uses_map_knowledge(profile):
+                continue
             profile = next((part for part in profile.split("+") if part.startswith("stage")), profile)
             for record in records:
                 name = normalize_map_name(record.get("name", ""))
