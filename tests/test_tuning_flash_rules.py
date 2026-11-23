@@ -44,6 +44,14 @@ class PublishScheduleTests(unittest.TestCase):
         self.assertFalse(publish_due(40_000, 20_000, 30 * 60, 600, 500, 1800))
         self.assertTrue(publish_due(40_000, 20_000, 41 * 60, 600, 500, 1800))
 
+    def test_restart_on_a_large_library_does_not_retrain_at_once(self):
+        from ols_platform.tuning.background import TRAIN_SECONDS_PER_PAIR
+
+        known = 35_000
+        took = TRAIN_SECONDS_PER_PAIR * (known + 600)
+        self.assertFalse(publish_due(known + 600, known, 60, took, 500, 1800))
+        self.assertTrue(publish_due(known + 600, known, 4 * took + 1, took, 500, 1800))
+
     def test_nothing_new_never_publishes(self):
         self.assertFalse(publish_due(100, 100, 10_000, 0, 500, 1800))
 

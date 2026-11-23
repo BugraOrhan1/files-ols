@@ -115,6 +115,13 @@ class _Status:
         _write_status(self.root, data)
 
 
+TRAIN_SECONDS_PER_PAIR = 0.06  # measured: ~30 min for 30 000 examples; used until a run was timed
+
+
+def _pair_count(library: Any) -> int:
+    return library.db.execute("SELECT COUNT(*) FROM pairs").fetchone()[0]
+
+
 def publish_due(total: int, published: int, since: float, took: float,
                 every_pairs: int, every_seconds: int) -> bool:
     """Whether an intermediate package is due.
@@ -171,6 +178,7 @@ def run_update(root: Path, *, publish_every_pairs: int = 500, publish_every_seco
     store = PackageStore(root)
     library = Library(store)
     last_publish = {"time": time.time(), "pairs": 0, "took": 0.0}
+    known = {"pairs": _pair_count(library)}  # examples from earlier runs count for the schedule
 
     def publish(reason: str) -> None:
         status.update(phase="leren")
@@ -192,8 +200,9 @@ def run_update(root: Path, *, publish_every_pairs: int = 500, publish_every_seco
         status.update(phase="scannen")
 
     def on_pairs(new_total: int) -> None:
-        if not publish_due(new_total, last_publish["pairs"], time.time() - last_publish["time"],
-                           last_publish["took"], publish_every_pairs, publish_every_seconds):
+        took = max(last_publish["took"], TRAIN_SECONDS_PER_PAIR * (known["pairs"] + new_total))
+        if not publish_due(known["pairs"] + new_total, known["pairs"] + last_publish["pairs"],
+                           time.time() - last_publish["time"], took, publish_every_pairs, publish_every_seconds):
             return
         last_publish.update(time=time.time(), pairs=new_total)
         publish("tussentijds")
@@ -228,6 +237,7 @@ def run_update(root: Path, *, publish_every_pairs: int = 500, publish_every_seco
                 status.update(phase="scannen")
             new_pairs = 0
             last_publish["pairs"] = 0  # on_pairs counts per scan
+            known["pairs"] = _pair_count(library)
             if not sources:
                 status.say("Geen bronmappen ingesteld.")
             else:
