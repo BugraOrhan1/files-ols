@@ -39,6 +39,8 @@ CROSS_SIZE_HEADER = 0x400   # ... apart from a small tool header/trailer (e.g. 0
 _RANK_CACHE: dict[tuple, list[dict[str, Any]]] = {}
 DEFAULT_MIN_COVERAGE = 1.0
 MAX_DONORS_TRIED = 8
+# Donors at least this similar count as the same software for 'already partly tuned' proof.
+SAME_SOFTWARE_SIMILARITY = 0.999
 VALUE_TOLERANCE = 0.6
 ALREADY_TUNED = b"__already_tuned__"  # a recalculated cell must lie within ±60 % of the donor's original
 
@@ -583,6 +585,7 @@ def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set
                           f"(minimaal {min_similarity:.0%} gelijk)."}
     donors = _prefer_closest_values(data, profile, package, donors)
     best = None
+    suspect = None  # partial-presence finding from a donor with other software
     for rank, donor in enumerate(donors[:MAX_DONORS_TRIED]):
         blob = package.load_variant(donor["variant_id"])
         pair = choose_known_pair(blob, profile, donor["original_sha256"])
@@ -612,10 +615,23 @@ def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set
                               f"{pair.get('tuned_version_name') or profile} zitten er al in. Open het originele bestand."}
         present_large = [m for m in present if m["length"] >= 8]
         if present_large:
-            return {"status": "failed", "code": "partially_tuned",
-                    "reason": f"{len(present_large)} kaart(en) in dit bestand zijn al aangepast zoals bij "
-                              f"{pair.get('tuned_version_name') or profile}; de rest niet. Een half bewerkt "
-                              "bestand wordt niet nog eens getuned (dat zou dubbel verhogen). Open het origineel."}
+            finding = {"status": "failed", "code": "partially_tuned",
+                       "reason": f"{len(present_large)} kaart(en) in dit bestand zijn al aangepast zoals bij "
+                                 f"{pair.get('tuned_version_name') or profile}; de rest niet. Een half bewerkt "
+                                 "bestand wordt niet nog eens getuned (dat zou dubbel verhogen). Open het origineel."}
+            if donor["similarity"] >= SAME_SOFTWARE_SIMILARITY and not donor.get("cross_size"):
+                return finding
+            # Other software or another read form (anchor similarity only):
+            # its tuned values may simply be this file's stock values. Skip
+            # this donor; reported as no_reliable_donor if no other donor works.
+            suspect = suspect or {
+                "status": "failed", "code": "no_reliable_donor",
+                "reason": f"Geen betrouwbaar voorbeeld: het beste voorbeeld ({pair.get('tuned_version_name') or profile}, "
+                          f"project {pair.get('project_name', '')}) is andere software of een andere uitleesvorm en "
+                          f"heeft op {len(present_large)} kaart(en) al de waarden die dit bestand ook heeft. Of dit "
+                          "bestand is deels getuned, of die software heeft andere standaardwaarden; daarom is "
+                          "niets overgezet. Meer projecten van deze software in de bibliotheek lossen dit op."}
+            continue
         missing = [m for m in missing if not m.get("present")]
         total_bytes = sum(len(e[1]) // 2 for e in pair["edits"])
         missing_bytes = sum(m["length"] for m in missing)
@@ -627,6 +643,8 @@ def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set
         if coverage >= 1.0:
             break
     if best is None:
+        if suspect is not None:
+            return suspect
         return {"status": "failed", "code": "no_similar_original",
                 "reason": f"Vergelijkbare originelen gevonden, maar zonder '{profile}'-voorbeeld."}
     if best["coverage"] < min_coverage:

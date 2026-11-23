@@ -76,7 +76,7 @@ def _select_variant(package, data: bytes) -> tuple[dict, dict, dict]:
         return result
 
     full = []
-    recognized: dict[str, dict] = {}
+    recognized: dict[str, tuple[tuple[int, int], dict]] = {}
     partial = []
     for family, variant in package.variants():
         ecu_tokens = [t for t in family["family_identity"].get("ecu_type", []) if _useful(t)]
@@ -85,7 +85,10 @@ def _select_variant(package, data: bytes) -> tuple[dict, dict, dict]:
         missing = [t for v in result.values() for t in v["missing"]]
         found = sum(len(v["found"]) for v in result.values())
         if ecu_found or found:
-            recognized[family["family_key"]] = family
+            key = family["family_key"]
+            score = (int(ecu_found), found)
+            if key not in recognized or score > recognized[key][0]:
+                recognized[key] = (score, family)
         if variant["size"] != len(data):
             continue
         if not result:
@@ -107,8 +110,11 @@ def _select_variant(package, data: bytes) -> tuple[dict, dict, dict]:
             "en werk de bibliotheek bij.",
         )
     if not partial:
-        family = sorted(recognized.values(), key=lambda f: f["family_key"])[0]
-        sizes = ", ".join(sorted({str(v["size"]) for f in recognized.values() for v in f["variants"]}))
+        # Name the best-matching family (ECU type found, most identity tokens), not the alphabetically first.
+        top_score = max(score for score, _f in recognized.values())
+        best = sorted((f for score, f in recognized.values() if score == top_score), key=lambda f: f["family_key"])
+        family = best[0]
+        sizes = ", ".join(sorted({str(v["size"]) for f in best for v in f["variants"]}))
         raise GenerationRejected(
             "unknown_segment_layout",
             f"De ECU-familie {family['ecu_type'] or family['family_key']} is herkend, maar de "
