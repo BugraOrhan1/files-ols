@@ -258,6 +258,14 @@ def run_update(root: Path, *, publish_every_pairs: int = 500, publish_every_seco
                 publish("gestopt – wat al gescand is" if stop.is_set() else "klaar")
             else:
                 status.say("Geen nieuwe voorbeelden; huidige bibliotheekversie blijft actief.")
+            if not stop.is_set():
+                from .consensus import learn_structure
+
+                status.update(phase="kaarten", current=None)
+                try:
+                    learn_structure(root, workers=workers or 4, progress=status.say, stop=stop.is_set)
+                except Exception as exc:  # extra knowledge: never fails the update
+                    status.say(f"Kaartstructuur overgeslagen: {exc}")
             if practice and not stop.is_set():
                 practise()
             if not continuous or stop.is_set():

@@ -687,6 +687,9 @@ def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set
                           "niets overgezet. Meer projecten van deze software in de bibliotheek lossen dit op."}
             continue
         missing = [m for m in missing if not m.get("present")]
+        if suspect is not None and (missing or present or any(
+                p["how"] in ("omgerekend", "kaart via assen") for p in placed)):
+            continue  # after an alarm only changes on identical original bytes prove a stock file
         total_bytes = sum(len(e[1]) // 2 for e in pair["edits"])
         missing_bytes = sum(m["length"] for m in missing)
         coverage = 1 - missing_bytes / total_bytes if total_bytes else 0.0

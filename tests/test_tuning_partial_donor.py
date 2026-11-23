@@ -11,7 +11,7 @@ class _Package:
         return {"variant_id": variant_id}
 
 
-def _run(donors, present_for):
+def _run(donors, present_for, how="zelfde plek"):
     """Run transfer() with donors; donors whose id is in present_for report a present 8-byte map."""
 
     calls = []
@@ -24,7 +24,7 @@ def _run(donors, present_for):
         vid = calls[-1]
         if vid in present_for:
             return data, [], [{"start": 0, "length": 8, "present": True}]
-        return data, [{"how": "exact"}], []
+        return data, [{"how": how}], []
 
     with mock.patch.object(tr, "rank_donors", return_value=donors), \
             mock.patch.object(tr, "_prefer_closest_values", side_effect=lambda d, p, pk, ds: ds), \
@@ -47,6 +47,11 @@ class PartialDonorTests(unittest.TestCase):
         result = _run([_donor("a", 1.0, cross_size=True), _donor("b", 0.9)], present_for={"a"})
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["donor"]["variant_id"], "b")
+
+    def test_after_an_alarm_recalculated_maps_are_not_accepted(self):
+        for how in ("omgerekend", "kaart via assen"):
+            result = _run([_donor("a", 0.95), _donor("b", 0.9)], present_for={"a"}, how=how)
+            self.assertEqual(result["code"], "no_reliable_donor")
 
     def test_only_weak_donors_report_no_reliable_donor(self):
         result = _run([_donor("a", 0.95), _donor("b", 1.0, cross_size=True)], present_for={"a", "b"})

@@ -217,6 +217,8 @@ class TunerApp:
         ttk.Button(footer, text="Diagnose opslaan…", command=self.save_diagnostics).pack(side="right")
         self.explain_button = ttk.Button(footer, text="Uitleg: welke referentie past?", command=self.show_explanation)
         self.explain_button.pack(side="right", padx=8)
+        self.proposal_button = ttk.Button(footer, text="Kaartvoorstel…", command=self.make_proposal)
+        self.proposal_button.pack(side="right")
 
         self.active_id = None
         self.reload_package()
@@ -517,6 +519,32 @@ class TunerApp:
             self.message.show("ok", "Overgezet – klaar om te maken", "\n".join(lines))
         else:
             self.message.show("ok", "Herkend – klaar om te maken", "\n".join(lines))
+
+    def make_proposal(self) -> None:
+        """Review list for software without an example (never a flash file)."""
+
+        if self.original is None:
+            self.message.show("warn", "Kaartvoorstel", "Open eerst een origineel bestand.")
+            return
+        from .consensus import write_proposal
+
+        path, root = self.original, self.store.root
+        profile = self._profile_key() or "stage1"
+        target = Path(self.settings.data["output_dir"]) / f"{path.name}_{profile}_kaartvoorstel.x"
+
+        def work():
+            return write_proposal(path.read_bytes(), root, profile, target, source_name=path.name)
+
+        def done(report, error) -> None:
+            if error is not None:
+                self.message.show("warn", "Geen kaartvoorstel", str(error))
+                return
+            self.message.show(
+                "warn", f"Kaartvoorstel: {len(report['kaarten'])} kaarten ({report['ecu']})",
+                "Lijst om in WinOLS te controleren; dit is geen complete tune en geen flashbestand.\n"
+                f"Gebaseerd op {report['voorbeelden_gevonden']} voorbeelden. Opgeslagen: {report['csv']}")
+
+        self._run("Kaartvoorstel wordt gemaakt…", work, done)
 
     def make_bin(self, ask_path: bool = True) -> Path | None:
         if self.result is None or self.original is None:

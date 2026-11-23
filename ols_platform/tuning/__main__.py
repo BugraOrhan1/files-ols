@@ -96,6 +96,13 @@ def build_parser() -> argparse.ArgumentParser:
     rules = sub.add_parser("map-rules", help="Regels per kaarttype: hoe tuners elke soort kaart aanpassen.")
     rules.add_argument("--min-examples", type=int, default=3)
     rules.add_argument("--json", action="store_true")
+    lst = sub.add_parser("learn-structure", help="Kaarten van alle voorbeelden herkennen aan hun opbouw.")
+    lst.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) // 2))
+    pro = sub.add_parser("propose", help="Kaartvoorstel (CSV/JSON, geen flashbestand) voor software zonder voorbeeld.")
+    pro.add_argument("original", type=Path)
+    pro.add_argument("--profile", default="stage1")
+    pro.add_argument("--ecu", help="ECU-type, bijv. EDC17CP44 (standaard: herkennen in het bestand).")
+    pro.add_argument("--output-dir", type=Path, required=True)
     sub.add_parser("packages", help="Toon pakketten.")
     sub.add_parser("rollback", help="Activeer de vorige pakketversie.")
     inst = sub.add_parser("install-package")
@@ -206,6 +213,23 @@ def main(argv: list[str] | None = None) -> int:
             print("py-ols niet gevonden; geef --py-ols <map> op.")
             return 2
         print(json.dumps(learn_maps(store.root, py_ols, workers=args.workers, max_files=args.max_files)))
+        return 0
+    if args.command == "learn-structure":
+        from .consensus import learn_structure
+
+        learn_structure(store.root, args.workers)
+        return 0
+    if args.command == "propose":
+        from .consensus import write_proposal
+
+        try:
+            report = write_proposal(args.original.read_bytes(), store.root, args.profile,
+                                    args.output_dir / f"{args.original.name}_{args.profile}_kaartvoorstel.x",
+                                    label=args.ecu, source_name=args.original.name)
+        except ValueError as exc:
+            print(exc)
+            return 3
+        print(json.dumps(report, indent=2))
         return 0
     if args.command == "map-rules":
         from .maps import map_rules
