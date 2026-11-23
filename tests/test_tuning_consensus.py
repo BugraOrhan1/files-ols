@@ -79,6 +79,8 @@ class ConsensusTests(unittest.TestCase):
             self.assertEqual(len(report["kaarten"]), 1)
             self.assertEqual(sorted(p.suffix for p in (root / "uit").iterdir()), [".csv", ".json"])
             self.assertIn("niet flashen", json.loads(Path(report["json"]).read_text(encoding="utf-8"))["soort"])
+            self.assertEqual(c.detect_labels(root, bytes(data), "VW_Golf_Bosch_TestECU17_OBD_VR.bin"), ["TESTECU17"])
+            self.assertEqual(c.detect_labels(root, bytes(data), "VW_Golf.bin"), [])
             for profile in ("dpf_off", "stage1+egr_off", "other"):
                 with self.assertRaises(ValueError):
                     c.write_proposal(bytes(data), root, profile, root / "uit" / "y.x", label="testecu17")

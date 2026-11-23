@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import re
 import statistics
 import struct
 from collections import defaultdict
@@ -397,17 +398,20 @@ def structural_records(original: bytes, tuned: bytes) -> list[dict[str, Any]]:
 
 # ----- proposal -------------------------------------------------------------
 
-def detect_labels(root: Path, data: bytes) -> list[str]:
-    """Indexed ECU labels whose name occurs in the file, longest first."""
+def detect_labels(root: Path, data: bytes, file_name: str = "") -> list[str]:
+    """Indexed ECU labels named in the file name (as AutoTuner does) or in
+    the file itself; file name first, longest first."""
 
     from .identity import token_in
 
+    parts = {part.upper() for part in re.split(r"[\s_()]+", file_name)}
     found = []
     for path in (root / MAPS_DIR / INDEX_DIR).glob("*.json.gz"):
         label = path.name[:-len(".json.gz")]
-        if len(label) >= 5 and any(c.isdigit() for c in label) and token_in(label, data):
+        if len(label) >= 5 and any(c.isdigit() for c in label) and (
+                label in parts or token_in(label, data)):
             found.append(label)
-    return sorted(found, key=lambda x: (-len(x), x))
+    return sorted(found, key=lambda x: (x not in parts, -len(x), x))
 
 
 def write_proposal(data: bytes, root: Path, profile: str, output: Path, *, label: str | None = None,
@@ -421,7 +425,7 @@ def write_proposal(data: bytes, root: Path, profile: str, output: Path, *, label
         raise ValueError("Voor dit type tuning wordt geen kaartvoorstel gemaakt.")
     profile = base_profile(profile)
     entries: list[dict[str, Any]] = []
-    for candidate in ([label.upper()] if label else detect_labels(root, data)):
+    for candidate in ([label.upper()] if label else detect_labels(root, data, source_name)):
         entries = load_index(root, candidate)
         if entries:
             label = candidate
