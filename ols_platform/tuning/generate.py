@@ -485,7 +485,7 @@ def _family_of(package, variant_id: str) -> tuple[dict, dict]:
 def _by_transfer(data: bytes, profile_name: str, package, contracts: dict | None, hint: str,
                  min_similarity: float | None, min_coverage: float | None,
                  earlier: GenerationRejected | None, family_floor: dict[str, float] | None = None) -> GenerationResult:
-    from .transfer import DEFAULT_MIN_COVERAGE, DEFAULT_MIN_SIMILARITY, transfer
+    from .transfer import DEFAULT_MIN_COVERAGE, DEFAULT_MIN_SIMILARITY, second_opinions, transfer
 
     outcome = transfer(data, profile_name, package, hint=hint, family_floor=family_floor,
                        min_similarity=min_similarity or DEFAULT_MIN_SIMILARITY,
@@ -516,6 +516,16 @@ def _by_transfer(data: bytes, profile_name: str, package, contracts: dict | None
         f"{len(outcome['placed'])} van {len(pair['edits'])} wijzigingen geplaatst ("
         + ", ".join(f"{n} {how}" for how, n in sorted(how_counts.items())) + ").",
     ]
+    opinion = second_opinions(data, profile_name, package, outcome, hint=hint, family_floor=family_floor,
+                              min_similarity=min_similarity or DEFAULT_MIN_SIMILARITY)
+    if opinion["contradicted"]:
+        notes.insert(0, f"WAARSCHUWING: {opinion['opinions']} andere voorbeelden spreken deze tune deels tegen "
+                        f"({opinion['agreement']:.0%} dezelfde richting). Controleer hem eerst in WinOLS.")
+    elif opinion["opinions"] == 0:
+        notes.append("Er is geen tweede voorbeeld om deze tune mee te vergelijken.")
+    else:
+        notes.append(f"Vergeleken met {opinion['opinions']} ander(e) voorbeeld(en): {opinion['agreement']:.0%} van de "
+                     "gedeelde wijzigingen gaat dezelfde kant op.")
     if donor.get("identity_confirmed") == "full":
         notes.append("Zelfde software- en hardwarenummers als het voorbeeld (andere uitleesvorm); "
                      "alle wijzigingen op identieke originele bytes geplaatst.")

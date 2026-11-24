@@ -139,6 +139,7 @@ _STAGE = re.compile(r"\b(stage|stufe|stg|st|step|etappe|level|lvl)[ ._-]?([1-4])
 # Versions their own author marked as faulty.
 _BAD = re.compile(r"\bbad ?files?\b|\blimp\b|limp ?mode|notlauf|(gives|has|with|copy) errors|\ball problems|"
                   r"not good|blue ?screen|(does ?n.?t|not) (start|run|work)|nicht gut|l[aä]uft nicht|"
+                  r"\b(test|testing|testfile|testdatei|not tested)\d*\b|"
                   r"geht nicht|defekt|\bfehlerhaft|\bkaputt")
 # Emission systems or fault codes in spellings the components do not cover
 # ('dpfoff', 'Lamda', 'P0420'). Such a version is no plain stage, and it is

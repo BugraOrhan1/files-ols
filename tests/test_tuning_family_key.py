@@ -58,6 +58,10 @@ class VersionNameTests(unittest.TestCase):
                     "stage 1 TTE500", "stage_1 350hp P350", "Stage 1 catch can"), "stage1")
         self.check(("Vmax 250Km/h begrenzung",), "vmax")
 
+    def test_trial_versions_are_not_learned(self):
+        self.check(("Stage 2 TEST", "stage1 test2", "stage_1 not tested yet", "Stage1 Testing"), "other")
+        self.check(("Stage 1 tested ok", "stage1 fastest"), "stage1")
+
     def test_versions_marked_bad_are_never_learned(self):
         self.check(("stage_1 bad_file see description", "Stage_1 gives errors", "stage 1 goes into limp mode",
                     "stage_1 pop_and_bang jerking pops Bad_File", "Stage 1 läuft nicht"), "other")

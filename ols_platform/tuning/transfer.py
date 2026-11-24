@@ -620,6 +620,54 @@ def choose_known_pair(blob: dict[str, Any], profile: str, original_sha: str) -> 
     return pairs[0]
 
 
+SECOND_OPINIONS = 4       # other donors a transferred tune is compared with
+OPINION_WINDOW = 0.05     # ... when at most this much less similar
+OPINION_MINIMUM = 0.90    # below this agreement on up/down the tunes contradict each other
+
+
+def _direction_agreement(original: bytes, one: bytes, other: bytes) -> float | None:
+    """Share of the cells both change that move the same way (byte order that
+    agrees more often); None when they change nothing in common."""
+
+    cells = [i for i in range(0, len(original) - 1, 2)
+             if one[i:i + 2] != original[i:i + 2] and other[i:i + 2] != original[i:i + 2]]
+    if not cells:
+        return None
+    best = 0
+    for fmt in ("<H", ">H"):
+        same = 0
+        for i in cells:
+            base, a, b = (struct.unpack_from(fmt, image, i)[0] for image in (original, one, other))
+            same += (a > base) == (b > base)
+        best = max(best, same)
+    return best / len(cells)
+
+
+def second_opinions(data: bytes, profile: str, package, outcome: dict[str, Any], *, hint: str = "",
+                    family_floor: dict[str, float] | None = None, min_similarity: float = DEFAULT_MIN_SIMILARITY,
+                    ) -> dict[str, Any]:
+    """How far other, independent donors agree with a transferred tune.
+
+    High similarity proves that a tune lands in the right place, not that the
+    tune itself is sound. ``contradicted`` needs at least two opinions."""
+
+    used = {outcome["donor"]["original_sha256"]}
+    floor = outcome["donor"]["similarity"] - OPINION_WINDOW
+    values = []
+    for _ in range(SECOND_OPINIONS):
+        other = transfer(data, profile, package, hint=hint, exclude=set(used), family_floor=family_floor,
+                         min_similarity=min_similarity, min_coverage=1.0)
+        if other["status"] != "ok" or other["donor"]["similarity"] < floor:
+            break
+        used.add(other["donor"]["original_sha256"])
+        value = _direction_agreement(data, outcome["output"], other["output"])
+        if value is not None:
+            values.append(value)
+    agreement = sum(values) / len(values) if values else None
+    return {"opinions": len(values), "agreement": agreement,
+            "contradicted": len(values) >= 2 and agreement < OPINION_MINIMUM}
+
+
 def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set[str] | None = None,
              family_floor: dict[str, float] | None = None,
              min_similarity: float = DEFAULT_MIN_SIMILARITY,
