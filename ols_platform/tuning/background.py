@@ -122,6 +122,16 @@ def _pair_count(library: Any) -> int:
     return library.db.execute("SELECT COUNT(*) FROM pairs").fetchone()[0]
 
 
+def _last_publish_time(root: Path) -> float:
+    """When the active package was installed, so that restarting the worker
+    does not postpone the next one; now when there is none."""
+
+    try:
+        return min(time.time(), (root / "active.json").stat().st_mtime)
+    except OSError:
+        return time.time()
+
+
 def publish_due(total: int, published: int, since: float, took: float,
                 every_pairs: int, every_seconds: int) -> bool:
     """Whether an intermediate package is due.
@@ -177,7 +187,7 @@ def run_update(root: Path, *, publish_every_pairs: int = 500, publish_every_seco
     beat.start()
     store = PackageStore(root)
     library = Library(store)
-    last_publish = {"time": time.time(), "pairs": 0, "took": 0.0}
+    last_publish = {"time": _last_publish_time(root), "pairs": 0, "took": 0.0}
     known = {"pairs": _pair_count(library)}  # examples from earlier runs count for the schedule
 
     def publish(reason: str) -> None:

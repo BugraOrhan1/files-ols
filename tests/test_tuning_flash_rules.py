@@ -52,6 +52,21 @@ class PublishScheduleTests(unittest.TestCase):
         self.assertFalse(publish_due(known + 600, known, 60, took, 500, 1800))
         self.assertTrue(publish_due(known + 600, known, 4 * took + 1, took, 500, 1800))
 
+    def test_restart_keeps_the_time_of_the_active_package(self):
+        import os
+        import tempfile
+        import time
+        from pathlib import Path
+
+        from ols_platform.tuning.background import _last_publish_time
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.assertAlmostEqual(_last_publish_time(root), time.time(), delta=5)
+            (root / "active.json").write_text("{}")
+            os.utime(root / "active.json", (1000, 1000))
+            self.assertEqual(_last_publish_time(root), 1000)
+
     def test_nothing_new_never_publishes(self):
         self.assertFalse(publish_due(100, 100, 10_000, 0, 500, 1800))
 

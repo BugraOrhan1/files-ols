@@ -200,6 +200,11 @@ def build_index(root: Path, progress=print) -> dict[str, int]:
     stats = {"families": 0, "tunes": 0, "maps": 0}
     defined = {p.name.split(".")[0] for p in (root / MAPS_DIR).glob("??/*.json.gz")}
     struct_db = _struct_db(root)
+    # One sequential pass puts the file in the system cache; tens of thousands
+    # of single lookups on a cold hard disk take the better part of an hour.
+    with (root / MAPS_DIR / "structuur.sqlite3").open("rb") as handle:
+        while handle.read(1 << 24):
+            pass
     for label, rows in labels.items():
         entries = []
         for pair_id, original, tuned, profile, _family, variant, project in rows:
