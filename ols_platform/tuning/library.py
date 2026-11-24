@@ -408,6 +408,27 @@ def process_project(task: dict[str, Any], reader: Any = None) -> dict[str, Any]:
             return result
 
 
+def contaminated_pairs(rows: list[dict[str, Any]]) -> set[str]:
+    """Pairs whose image is an original in one project and a tune in another
+    ("back to stock", a tuned read stored as original, swapped versions).
+
+    The role held in more projects is believed; on a tie neither is."""
+
+    as_original: dict[str, set[str]] = {}
+    as_tuned: dict[str, set[str]] = {}
+    for row in rows:
+        as_original.setdefault(row["original_sha256"], set()).add(row["project_sha256"])
+        as_tuned.setdefault(row["tuned_sha256"], set()).add(row["project_sha256"])
+    out = set()
+    for row in rows:
+        o, t = row["original_sha256"], row["tuned_sha256"]
+        dirty_original = o in as_tuned and len(as_tuned[o]) >= len(as_original[o])
+        bogus_tune = t in as_original and len(as_original[t]) >= len(as_tuned[t])
+        if dirty_original or bogus_tune:
+            out.add(row["pair_id"])
+    return out
+
+
 @dataclass
 class ResourceMeter:
     started: float = field(default_factory=time.monotonic)
@@ -689,12 +710,19 @@ class Library:
         self.db.commit()
         if reclassified:
             say(f"{reclassified} voorbeelden opnieuw ingedeeld volgens de huidige tuningsoorten.")
+        contaminated = contaminated_pairs(rows)
+        if contaminated:
+            say(f"{len(contaminated)} voorbeelden uitgesloten: hun origineel of tune staat elders andersom.")
         holdout = holdout_closure(rows, holdout_projects or [])
         groups: dict[tuple[str, str], dict[str, list[str]]] = {}
         zones: dict[tuple[str, str], list[str]] = {}
         excluded = []
         for row in rows:
             if row["pair_id"] in holdout:
+                continue
+            if row["pair_id"] in contaminated:
+                excluded.append({"pair_id": row["pair_id"], "profile": row["profile"],
+                                 "reason": "origineel en tune staan elders andersom"})
                 continue
             key = (row["family_key"], row["variant_key"])
             wanted = profiles is None or row["profile"] in profiles
