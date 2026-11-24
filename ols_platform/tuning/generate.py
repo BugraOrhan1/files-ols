@@ -516,6 +516,9 @@ def _by_transfer(data: bytes, profile_name: str, package, contracts: dict | None
         f"{len(outcome['placed'])} van {len(pair['edits'])} wijzigingen geplaatst ("
         + ", ".join(f"{n} {how}" for how, n in sorted(how_counts.items())) + ").",
     ]
+    if outcome.get("integrity_fields"):
+        notes.append(f"{len(outcome['integrity_fields'])} checksum-/handtekeningveld(en) van het voorbeeld niet "
+                     "overgenomen: die horen bij één bestand en moeten door het flashprogramma worden berekend.")
     opinion = second_opinions(data, profile_name, package, outcome, hint=hint, family_floor=family_floor,
                               min_similarity=min_similarity or DEFAULT_MIN_SIMILARITY)
     if opinion["contradicted"]:

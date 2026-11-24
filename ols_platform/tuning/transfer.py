@@ -620,6 +620,45 @@ def choose_known_pair(blob: dict[str, Any], profile: str, original_sha: str) -> 
     return pairs[0]
 
 
+FIELD_BLOCK = 0x100        # signatures end at a block boundary ...
+SUM_BLOCK = 0x2000         # ... and so do checksums
+FIELD_SLACK = 4            # an unchanged byte or word may follow
+SIGNATURE_BYTES = (96, 300)
+
+
+def is_integrity_field(start: int, orig: bytes, tuned: bytes) -> bool:
+    """A checksum or signature: random-looking bytes that end at a block
+    boundary. They belong to one exact file and are recalculated by the flash
+    tool, so they are neither transferred nor counted as a missing change."""
+
+    size, end = len(orig), start + len(orig)
+
+    def at_boundary(block: int) -> bool:
+        return -end % block <= FIELD_SLACK
+
+    if size <= 8:
+        return at_boundary(SUM_BLOCK)
+    if not SIGNATURE_BYTES[0] <= size <= SIGNATURE_BYTES[1] or not at_boundary(FIELD_BLOCK):
+        return False
+    if sum(a != b for a, b in zip(orig, tuned)) < 0.9 * size:
+        return False  # a map changes its values, not practically every byte
+    # 128 random bytes hold about 100 different values; a table far fewer.
+    return min(len(set(orig)), len(set(tuned))) >= 0.55 * size and not (_is_table(orig) or _is_table(tuned))
+
+
+def split_integrity(missing: list[dict[str, Any]], edits: list[list[Any]],
+                    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """(real missing changes, checksum/signature fields) of a placement."""
+
+    real, fields = [], []
+    for item in missing:
+        edit = None if item.get("present") else next(
+            (e for e in edits if e[0] - 1 <= item["start"] <= e[0] and len(e[1]) // 2 <= item["length"] + 1), None)
+        found = edit is not None and is_integrity_field(edit[0], bytes.fromhex(edit[1]), bytes.fromhex(edit[2]))
+        (fields if found else real).append(item)
+    return real, fields
+
+
 SECOND_OPINIONS = 4       # other donors a transferred tune is compared with
 OPINION_WINDOW = 0.05     # ... when at most this much less similar
 OPINION_MINIMUM = 0.90    # below this agreement on up/down the tunes contradict each other
@@ -700,6 +739,9 @@ def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set
             records = load_records(maps_root, donor["original_sha256"], pair.get("tuned_sha256", ""))
             if records:
                 output, placed, missing = place_by_maps(data, output, placed, missing, records)
+        fields: list[dict[str, Any]] = []
+        if uses_map_knowledge(profile):
+            missing, fields = split_integrity(missing, pair["edits"])
         if donor.get("exact_required"):
             # Accepted on identity or partial-read similarity alone: only
             # byte-identical placement of every change counts (no
@@ -716,6 +758,7 @@ def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set
                     "reason": f"Dit bestand is al getuned: de wijzigingen van "
                               f"{pair.get('tuned_version_name') or profile} zitten er al in. Open het originele bestand."}
         present_large = [m for m in present if m["length"] >= 8]
+        edit_bytes = sum(len(e[1]) // 2 for e in pair["edits"])
         if present_large:
             finding = {"status": "failed", "code": "partially_tuned",
                        "reason": f"{len(present_large)} kaart(en) in dit bestand zijn al aangepast zoals bij "
@@ -738,11 +781,11 @@ def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set
         if suspect is not None and (missing or present or any(
                 p["how"] in ("omgerekend", "kaart via assen") for p in placed)):
             continue  # after an alarm only changes on identical original bytes prove a stock file
-        total_bytes = sum(len(e[1]) // 2 for e in pair["edits"])
+        total_bytes = edit_bytes - sum(m["length"] for m in fields)
         missing_bytes = sum(m["length"] for m in missing)
         coverage = 1 - missing_bytes / total_bytes if total_bytes else 0.0
         candidate = {"donor": donor, "pair": pair, "output": bytes(output), "placed": placed,
-                     "missing": missing, "coverage": coverage}
+                     "missing": missing, "coverage": coverage, "integrity_fields": fields}
         if best is None or (coverage, donor["similarity"]) > (best["coverage"], best["donor"]["similarity"]):
             best = candidate
         if coverage >= 1.0:
