@@ -363,6 +363,25 @@ def _integrity(family: dict[str, Any], contracts: dict | None) -> dict[str, Any]
     }
 
 
+_NO_NAME = {"", "ONBEKEND", "UNKNOWN", "UNDEFINED"}
+
+
+def _named_family(data: bytes, package, family: dict[str, Any]) -> dict[str, Any]:
+    """The ECU family to apply the checksum rule of.
+
+    A project without an ECU type says nothing about the ECU. The file does:
+    when all numbers of a named software variant occur in it (the same proof
+    as for exact recognition), that variant's family is used."""
+
+    if family["family_key"].rpartition("|")[0].upper() not in _NO_NAME:
+        return family
+    try:
+        named, _variant, _identity = _select_variant(package, data)
+    except GenerationRejected:
+        return family
+    return family if named["family_key"].rpartition("|")[0].upper() in _NO_NAME else named
+
+
 def _generate_known(data: bytes, profile_name: str, package, contracts: dict | None,
                     pair_id: str | None = None) -> GenerationResult | None:
     """The tune of this exact original; ``pair_id`` picks one of its versions."""
@@ -374,6 +393,7 @@ def _generate_known(data: bytes, profile_name: str, package, contracts: dict | N
         return None
     chosen = versions[0]
     family, variant = _family_of(package, chosen["variant_id"])
+    family = _named_family(data, package, family)
     blob = package.load_variant(chosen["variant_id"])
     _check_zones(blob, data, profile_name)
     output = bytearray(data)
@@ -546,6 +566,7 @@ def _by_transfer(data: bytes, profile_name: str, package, contracts: dict | None
         raise GenerationRejected(code, prefix + "Overzetten: " + outcome["reason"], outcome)
     donor = outcome["donor"]
     family, variant = _family_of(package, donor["variant_id"])
+    family = _named_family(data, package, family)
     blob = package.load_variant(donor["variant_id"])
     _check_zones(blob, data, profile_name)
     how_counts: dict[str, int] = {}

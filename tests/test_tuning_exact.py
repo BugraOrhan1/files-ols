@@ -29,6 +29,21 @@ class ExactTests(unittest.TestCase):
         data[-1] ^= 0xFF
         self.assertEqual(known_versions(bytes(data), self.package), [])
 
+    def test_unnamed_project_takes_the_ecu_recognised_in_the_file(self):
+        from unittest import mock
+
+        from ols_platform.tuning import generate as g
+
+        unnamed, named = {"family_key": "onbekend|6"}, {"family_key": "MG1CS002|6"}
+        with mock.patch.object(g, "_select_variant", return_value=(named, {}, {})):
+            self.assertIs(g._named_family(b"", None, unnamed), named)
+            other = {"family_key": "EDC17C46|6"}
+            self.assertIs(g._named_family(b"", None, other), other)  # a name is never replaced
+        with mock.patch.object(g, "_select_variant", side_effect=GenerationRejected("x", "y")):
+            self.assertIs(g._named_family(b"", None, unnamed), unnamed)
+        with mock.patch.object(g, "_select_variant", return_value=({"family_key": "UNKNOWN|6"}, {}, {})):
+            self.assertIs(g._named_family(b"", None, unnamed), unnamed)
+
     def test_a_version_can_be_chosen_and_must_belong_to_the_original(self):
         version = known_versions(self.pair.original, self.package)[0]
         key = f"{version['profile']}@{version['pair_id']}"
