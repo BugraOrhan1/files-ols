@@ -434,6 +434,24 @@ def _line_at(data: bytes, at: int, fmt: str) -> tuple[int, int, int] | None:
     return None
 
 
+def _prefixed_at(data: bytes, at: int, fmt: str) -> tuple[int, int, int] | None:
+    """The other Bosch layout: every axis is preceded by its own length."""
+
+    (nx,) = struct.unpack_from(f"{fmt}H", data, at)
+    if not 3 <= nx <= 32 or at + 4 + 2 * nx > len(data):
+        return None
+    (ny,) = struct.unpack_from(f"{fmt}H", data, at + 2 + 2 * nx)
+    start = at + 4 + 2 * (nx + ny)
+    if not 3 <= ny <= 32 or nx * ny < 12 or start + 2 * nx * ny > len(data):
+        return None
+    for kind in "Hh":
+        x = struct.unpack_from(f"{fmt}{nx}{kind}", data, at + 2)
+        y = struct.unpack_from(f"{fmt}{ny}{kind}", data, at + 4 + 2 * nx)
+        if _rising(x) and _rising(y):
+            return nx, ny, start
+    return None
+
+
 def _find_table(data: bytes, pos: int) -> tuple[int, str, int, int, int] | None:
     """Nearest table before ``pos`` whose cells contain ``pos``."""
 
@@ -443,7 +461,8 @@ def _find_table(data: bytes, pos: int) -> tuple[int, str, int, int, int] | None:
         if data[at] and data[at + 1]:
             continue  # a dimension word has one zero byte
         for fmt in "<>":
-            found = _header_at(data, at, fmt) or (_line_at(data, at, fmt) if pos - at < 0x84 else None)
+            found = (_header_at(data, at, fmt) or _prefixed_at(data, at, fmt)
+                     or (_line_at(data, at, fmt) if pos - at < 0x84 else None))
             if found and found[2] <= pos < found[2] + 2 * found[0] * found[1]:
                 return (at, fmt, *found)
     return None

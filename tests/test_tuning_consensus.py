@@ -71,6 +71,16 @@ class ConsensusTests(unittest.TestCase):
         self.assertIn(f"0x{start:X}", overview_note(bytes(original), bytes(tuned)))
         self.assertIsNone(overview_note(bytes(original), bytes(original)))
 
+    def test_axes_with_their_own_length_are_recognised(self):
+        original = bytearray(random.Random(9).randrange(1, 256) for _ in range(0x2000))
+        block = words([len(X)]) + words(X) + words([len(Y)]) + words(Y) + words(CELLS)
+        original[0x600:0x600 + len(block)] = block
+        start = 0x600 + len(block) - 2 * len(CELLS)
+        tuned = bytearray(original)
+        tuned[start:start + 2 * len(CELLS)] = words([v + 60 for v in CELLS])
+        records = c.structural_records(bytes(original), bytes(tuned))
+        self.assertEqual([(r["start"], r["columns"], r["rows"]) for r in records], [(start, 8, 6)])
+
     def test_structure_is_stored_once_and_only_for_eligible_profiles(self):
         from types import SimpleNamespace
 
