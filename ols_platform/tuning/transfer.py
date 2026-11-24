@@ -41,6 +41,7 @@ _RANK_CACHE: dict[tuple, list[dict[str, Any]]] = {}
 DEFAULT_MIN_COVERAGE = 1.0
 MAX_DONORS_TRIED = 8
 # Donors at least this similar count as the same software for 'already partly tuned' proof.
+NEARLY_IDENTICAL = 0.95     # ranked before donors that only share their numbers
 SAME_SOFTWARE_SIMILARITY = 0.999
 VALUE_TOLERANCE = 0.6
 ALREADY_TUNED = b"__already_tuned__"  # a recalculated cell must lie within ±60 % of the donor's original
@@ -222,7 +223,10 @@ def _rank_donors(package, data: bytes, hint: str = "", profile: str | None = Non
                         identity_confirmed=level, exact_required=True, cross_size=entry["size"] != len(data))
             ranked.append(item)
             listed[entry["original_sha256"]] = item
-    ranked.sort(key=lambda e: (_IDENTITY_ORDER.get(e.get("identity_confirmed"), 2),
+    # A nearly identical image is better evidence than equal numbers in an
+    # otherwise different one (measured on hidden tunes).
+    ranked.sort(key=lambda e: (0 if e["similarity"] >= NEARLY_IDENTICAL else 1,
+                               _IDENTITY_ORDER.get(e.get("identity_confirmed"), 2),
                                -(e["similarity"] + 0.004 * min(e["hint_overlap"], 5)), e["original_sha256"]))
     return ranked
 
@@ -729,7 +733,10 @@ def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set
     maps_root = store_root_of(package)
     best = None
     suspect = None  # partial-presence finding from a donor with other software
-    for rank, donor in enumerate(donors[:MAX_DONORS_TRIED]):
+    # Donors sharing the numbers stay candidates behind the nearly identical ones.
+    tried = donors[:MAX_DONORS_TRIED]
+    tried += [d for d in donors[MAX_DONORS_TRIED:] if d.get("identity_confirmed")][:MAX_DONORS_TRIED // 2]
+    for rank, donor in enumerate(tried):
         blob = package.load_variant(donor["variant_id"])
         pair = choose_known_pair(blob, profile, donor["original_sha256"])
         if pair is None or not pair["edits"]:

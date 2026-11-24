@@ -53,6 +53,13 @@ class PartialDonorTests(unittest.TestCase):
             result = _run([_donor("a", 0.95), _donor("b", 0.9)], present_for={"a"}, how=how)
             self.assertEqual(result["code"], "no_reliable_donor")
 
+    def test_number_donors_stay_candidates_behind_many_similar_ones(self):
+        similar = [_donor(f"s{i}", 0.99 - i / 1000) for i in range(tr.MAX_DONORS_TRIED)]
+        number = dict(_donor("n", 0.02), identity_confirmed="full", exact_required=True)
+        result = _run([*similar, number], present_for={d["variant_id"] for d in similar})
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["donor"]["variant_id"], "n")
+
     def test_only_weak_donors_report_no_reliable_donor(self):
         result = _run([_donor("a", 0.95), _donor("b", 1.0, cross_size=True)], present_for={"a", "b"})
         self.assertEqual(result["code"], "no_reliable_donor")
