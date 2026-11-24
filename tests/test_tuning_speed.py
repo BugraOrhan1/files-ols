@@ -47,6 +47,22 @@ class AnchorTests(unittest.TestCase):
         self.assertLess(transfer.shifted_similarity(random.Random(2).randbytes(200_000), blob), 0.1)
 
 
+class MessageTests(unittest.TestCase):
+    def test_unknown_ecu_gives_a_short_message(self):
+        from ols_platform.tuning.generate import GenerationRejected, _select_variant
+
+        class Package(dict):
+            def variants(self):
+                return []
+
+        package = Package(families=[{"ecu_type": f"ECU{i}", "family_key": f"ECU{i}|1"} for i in range(6000)])
+        with self.assertRaises(GenerationRejected) as ctx:
+            _select_variant(package, bytes(100_000))
+        self.assertEqual(ctx.exception.code, "ecu_not_recognized")
+        self.assertIn("6000 ECU-typen", ctx.exception.message)
+        self.assertLess(len(ctx.exception.message), 400)
+
+
 class NamingTests(unittest.TestCase):
     def row(self, sha, family):
         return {"original_sha256": sha, "family_key": family}

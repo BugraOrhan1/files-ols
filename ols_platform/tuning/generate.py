@@ -104,11 +104,11 @@ def _select_variant(package, data: bytes) -> tuple[dict, dict, dict]:
         _, _, family, variant, result = full[0]
         return family, variant, result
     if not recognized:
-        known = ", ".join(sorted({f["ecu_type"] or f["family_key"] for f in package["families"]}))
+        known = len({f["ecu_type"] or f["family_key"] for f in package["families"]})
         raise GenerationRejected(
             "ecu_not_recognized",
-            "De ECU van dit bestand komt niet voor in de bibliotheek "
-            f"(bekende families: {known}). Voeg WinOLS-projecten van deze ECU met getunede versies toe "
+            f"De ECU van dit bestand is niet herkend ({known} ECU-typen in de bibliotheek). "
+            "Voeg WinOLS-projecten van deze ECU met getunede versies toe "
             "en werk de bibliotheek bij.",
         )
     if not partial:
