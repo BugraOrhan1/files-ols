@@ -18,7 +18,8 @@ import sqlite3
 import sys
 import threading
 import time
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
+import zlib
+from concurrent.futures import FIRST_COMPLETED, BrokenExecutor, ProcessPoolExecutor, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -408,6 +409,32 @@ def process_project(task: dict[str, Any], reader: Any = None) -> dict[str, Any]:
             return result
 
 
+PARALLEL_VARIANTS = 64   # fewer new variants are prepared in this process
+TRAIN_WORKERS = max(2, min(6, (os.cpu_count() or 2) // 2))
+
+
+def _prepare_variant_task(task: dict[str, Any]) -> None:
+    """Learn one software variant and write it to the cache (worker process)."""
+
+    root = Path(task["root"])
+    originals: dict[str, bytes] = {}
+
+    def loaded(pair_id: str, profile: str | None = None) -> TrainingPair:
+        pair = load_pair(root, pair_id, originals)
+        pair.family_key = task["family_key"]  # current family: joined spellings, names taken over
+        if profile is not None:
+            pair.profile = profile  # current classification
+        return pair
+
+    learning = {p: [loaded(i, p) for i in ids[:MAX_LEARNING_PAIRS]] for p, ids in task["by_profile"].items()}
+    extra = {p: (loaded(i, p) for i in ids[MAX_LEARNING_PAIRS:]) for p, ids in task["by_profile"].items()}
+    unit = prepare_variant(learning, extra, [loaded(i) for i in task["zone_ids"]], task["cfg"])
+    path = Path(task["cache_file"])
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_bytes(gzip.compress(json.dumps(unit).encode(), compresslevel=3, mtime=0))
+    os.replace(tmp, path)
+
+
 READ_AHEAD = 48  # variants whose files are read before they are needed
 
 
@@ -732,7 +759,7 @@ class Library:
 
     def train(self, *, profiles: list[str] | None = None, holdout_projects: list[str] | None = None,
               settings: dict[str, Any] | None = None, activate: bool = True,
-              progress: Callable[[str], None] | None = None) -> dict[str, Any]:
+              progress: Callable[[str], None] | None = None, workers: int | None = None) -> dict[str, Any]:
         """Train every software variant (all recognised profiles), one variant
         at a time. Unchanged variants are taken from the cache."""
 
@@ -809,46 +836,74 @@ class Library:
             profiles_of = {p: sorted(ids) for p, ids in groups[key].items()}
             digest = hashlib.sha256(json.dumps(
                 {"p": profiles_of, "z": sorted(zones.get(key, []))[:MAX_LEARNING_PAIRS], "s": cfg,
-                 "v": SOFTWARE_VERSION, "f": 6, "k": key[0]}, sort_keys=True).encode()).hexdigest()[:32]
-            return cache_dir / f"{digest}.json"
+                 "v": SOFTWARE_VERSION, "f": 7, "k": key[0]}, sort_keys=True).encode()).hexdigest()[:32]
+            return cache_dir / f"{digest}.json.gz"
 
-        for index, key in enumerate(order, 1):
-            if index + READ_AHEAD <= len(order):
-                upcoming = order[index + READ_AHEAD - 1]
-                cached = cache_file_of(upcoming)
-                ahead.add_file(cached) if cached.exists() else ahead.add(
-                    [i for ids in groups[upcoming].values() for i in sorted(ids)[:MAX_LEARNING_PAIRS]])
-            by_profile = {p: sorted(ids) for p, ids in groups[key].items()}
-            zone_ids = sorted(zones.get(key, []))[:MAX_LEARNING_PAIRS]
-            cache_file = cache_file_of(key)
-            used_cache.add(cache_file.name)
-            if cache_file.exists():
-                try:
-                    builder.add_prepared(json.loads(cache_file.read_text(encoding="utf-8")))
-                    reused += 1
-                    continue
-                except (OSError, ValueError, KeyError):
-                    pass
-            total = sum(len(v) for v in by_profile.values())
-            say(f"Leren variant {index}/{len(groups)}: {key[0]} ({total} voorbeelden, {len(by_profile)} profielen)")
-            cache: dict[str, bytes] = {}
+        def task_of(key: tuple[str, str]) -> dict[str, Any]:
+            return {"root": str(self.root), "family_key": key[0], "cfg": cfg, "cache_file": str(cache_file_of(key)),
+                    "by_profile": {p: sorted(ids) for p, ids in groups[key].items()},
+                    "zone_ids": sorted(zones.get(key, []))[:MAX_LEARNING_PAIRS]}
 
-            def loaded(pair_id: str, profile: str, cache: dict[str, bytes] = cache) -> TrainingPair:
-                pair = self.load_pair(pair_id, cache)
-                pair.profile = profile  # current classification
-                return pair
+        missing = [key for key in order if not cache_file_of(key).exists()]
+        parallel = workers is None and len(missing) >= PARALLEL_VARIANTS
+        pool = ProcessPoolExecutor(max_workers=TRAIN_WORKERS) if parallel else None
+        queue = iter(missing)
+        running: dict[tuple[str, str], Any] = {}
 
-            learning = {p: [loaded(i, p) for i in ids[:MAX_LEARNING_PAIRS]] for p, ids in by_profile.items()}
-            extra = {p: (loaded(i, p) for i in ids[MAX_LEARNING_PAIRS:]) for p, ids in by_profile.items()}
-            zone_pairs = [self.load_pair(i, cache) for i in zone_ids]
-            unit = prepare_variant(learning, extra, zone_pairs, cfg)
-            builder.add_prepared(unit)
-            tmp = cache_file.with_suffix(".tmp")
-            tmp.write_text(json.dumps(unit), encoding="utf-8")
-            os.replace(tmp, cache_file)
-            del learning, extra, zone_pairs, cache
-        ahead.close()
-        for stale in cache_dir.glob("*.json"):
+        def fill() -> None:
+            while pool is not None and len(running) < TRAIN_WORKERS * 4:
+                key = next(queue, None)
+                if key is None:
+                    return
+                running[key] = pool.submit(_prepare_variant_task, task_of(key))
+
+        failed = 0
+        try:
+            for index, key in enumerate(order, 1):
+                if index + READ_AHEAD <= len(order):
+                    upcoming = order[index + READ_AHEAD - 1]
+                    cached = cache_file_of(upcoming)
+                    if cached.exists():
+                        ahead.add_file(cached)
+                    elif pool is None:
+                        ahead.add([i for ids in groups[upcoming].values() for i in sorted(ids)[:MAX_LEARNING_PAIRS]])
+                cache_file = cache_file_of(key)
+                used_cache.add(cache_file.name)
+                fill()
+                future = running.pop(key, None)
+                unit = None
+                if future is None and cache_file.exists():
+                    try:
+                        unit = json.loads(gzip.decompress(cache_file.read_bytes()))
+                        reused += 1
+                    except (OSError, EOFError, ValueError, zlib.error):
+                        unit = None
+                if unit is None:
+                    count = sum(len(v) for v in groups[key].values())
+                    say(f"Leren variant {index}/{len(groups)}: {key[0]} ({count} voorbeelden, {len(groups[key])} profielen)")
+                    try:
+                        try:
+                            if future is not None:
+                                future.result()
+                        except BrokenExecutor:  # a worker died: go on in this process
+                            pool, future = None, None
+                            running.clear()
+                        if future is None:
+                            _prepare_variant_task(task_of(key))
+                        unit = json.loads(gzip.decompress(cache_file.read_bytes()))
+                    except (OSError, EOFError, ValueError, KeyError, zlib.error) as exc:
+                        # One damaged example must not cost a training run of hours.
+                        failed += 1
+                        say(f"Variant {key[0]} overgeslagen: {exc}")
+                        continue
+                builder.add_prepared(unit)
+        finally:
+            ahead.close()
+            if pool is not None:
+                pool.shutdown(wait=False, cancel_futures=True)
+        if failed and not builder.selection:
+            raise ValueError(f"Geen enkele variant kon geleerd worden ({failed} mislukt).")
+        for stale in cache_dir.glob("*.json*"):
             if stale.name not in used_cache:
                 stale.unlink(missing_ok=True)
         package = builder.finish(holdout=sorted(holdout), excluded=excluded)
