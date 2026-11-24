@@ -28,6 +28,7 @@ from .maps import MAPS_DIR, load_all, uses_map_knowledge
 INDEX_DIR = "families"
 MIN_VOTERS = 4               # independent originals that must agree on a map
 MIN_SHARE = 0.25             # ... as a share of all originals found to have maps in the input
+MIN_MAPS = 3                 # measured: proposals of 1-2 maps are right in direction only 38-75 %
 MIN_DIRECTION = 0.80         # agreement on up/down per map
 MIN_ANCHOR_BYTES = 16        # axis bytes that must match to trust a place
 VALUE_WINDOW = 0.35          # median deviation of present values from an example's original
@@ -65,7 +66,7 @@ def _endian(blob: bytes, columns: int) -> str:
 
 # ----- index ----------------------------------------------------------------
 
-STRUCT_DIR = "structuur"
+STRUCT_DIR = "structuur2"  # bump when structural_records finds more
 
 
 def _index_path(root: Path, label: str) -> Path:
@@ -330,7 +331,8 @@ def propose(data: bytes, entries: Iterable[dict[str, Any]], profile: str, *,
 # ----- structure: maps recognised without definitions -----------------------
 
 HEADER_SEARCH = 0xA00        # how far before a change its map header may lie
-MERGE_GAP = 48
+MERGE_GAP = 8
+MIN_LINE = 7                 # shorter curves have too little axis to be recognised
 
 
 def _rising(values: tuple[int, ...]) -> bool:
@@ -339,7 +341,7 @@ def _rising(values: tuple[int, ...]) -> bool:
 
 def _header_at(data: bytes, at: int, fmt: str) -> tuple[int, int, int] | None:
     """(columns, rows, data start) when a Bosch table header lies at ``at``:
-    two dimensions, two strictly rising axes, then the cells."""
+    two dimensions, two strictly rising axes (signed or not), then the cells."""
 
     nx, ny = struct.unpack_from(f"{fmt}2H", data, at)
     if not (3 <= nx <= 32 and 3 <= ny <= 32) or nx * ny < 12:
@@ -347,10 +349,39 @@ def _header_at(data: bytes, at: int, fmt: str) -> tuple[int, int, int] | None:
     start = at + 4 + 2 * (nx + ny)
     if start + 2 * nx * ny > len(data):
         return None
-    axes = struct.unpack_from(f"{fmt}{nx + ny}H", data, at + 4)
-    if not _rising(axes[:nx]) or not _rising(axes[nx:]):
+    for kind in "Hh":
+        axes = struct.unpack_from(f"{fmt}{nx + ny}{kind}", data, at + 4)
+        if _rising(axes[:nx]) and _rising(axes[nx:]):
+            return nx, ny, start
+    return None
+
+
+def _line_at(data: bytes, at: int, fmt: str) -> tuple[int, int, int] | None:
+    """The same for a curve: one dimension, one rising axis, then the cells."""
+
+    (nx,) = struct.unpack_from(f"{fmt}H", data, at)
+    start = at + 2 + 2 * nx
+    if not MIN_LINE <= nx <= 32 or start + 2 * nx > len(data):
         return None
-    return nx, ny, start
+    for kind in "Hh":
+        if _rising(struct.unpack_from(f"{fmt}{nx}{kind}", data, at + 2)):
+            return nx, 1, start
+    return None
+
+
+def _find_table(data: bytes, pos: int) -> tuple[int, str, int, int, int] | None:
+    """Nearest table before ``pos`` whose cells contain ``pos``."""
+
+    for at in range(pos - 4 - pos % 2, max(-1, pos - HEADER_SEARCH), -2):
+        if at < 0:
+            break
+        if data[at] and data[at + 1]:
+            continue  # a dimension word has one zero byte
+        for fmt in "<>":
+            found = _header_at(data, at, fmt) or (_line_at(data, at, fmt) if pos - at < 0x84 else None)
+            if found and found[2] <= pos < found[2] + 2 * found[0] * found[1]:
+                return (at, fmt, *found)
+    return None
 
 
 def structural_records(original: bytes, tuned: bytes) -> list[dict[str, Any]]:
@@ -362,37 +393,27 @@ def structural_records(original: bytes, tuned: bytes) -> list[dict[str, Any]]:
         return []
     records: dict[int, dict[str, Any]] = {}
     covered_to = -1
+    # Small gap: neighbouring tables are often changed together, and each
+    # change run beyond the table found so far is looked up on its own.
     for start, end in diff_regions(original, tuned, MERGE_GAP):
-        if start < covered_to:
-            continue
-        best = None
-        first = start - 4
-        for at in range(first - first % 2, max(-1, start - HEADER_SEARCH), -2):
-            if at < 0:
-                break
-            # cheap test before unpacking axes: a dimension word has one zero byte
-            if original[at] and original[at + 1]:
+        pos = max(start, covered_to)
+        while pos < end:
+            if original[pos] == tuned[pos]:
+                pos += 1
                 continue
-            for fmt in "<>":
-                found = _header_at(original, at, fmt)
-                if found and found[2] <= start < found[2] + 2 * found[0] * found[1]:
-                    best = (at, fmt, *found)
-                    break
-            if best:
+            found = _find_table(original, pos)
+            if found is None:
                 break
-        if best is None:
-            continue
-        at, fmt, nx, ny, data_start = best
-        data_end = data_start + 2 * nx * ny
-        if tuned[at:data_start] != original[at:data_start]:
-            continue  # axes rescaled: values alone do not describe the change
-        covered_to = data_end
-        records[data_start] = {
-            "name": "", "start": data_start, "width": 2, "columns": nx, "rows": ny,
-            "endian": "little" if fmt == "<" else "big",
-            "orig": original[data_start:data_end].hex(), "tuned": tuned[data_start:data_end].hex(),
-            "axes": [{"rel": at - data_start, "bytes": original[at:data_start].hex()}],
-        }
+            at, fmt, nx, ny, data_start = found
+            data_end = covered_to = data_start + 2 * nx * ny
+            if tuned[at:data_start] == original[at:data_start]:  # else the axes were rescaled
+                records[data_start] = {
+                    "name": "", "start": data_start, "width": 2, "columns": nx, "rows": ny,
+                    "endian": "little" if fmt == "<" else "big",
+                    "orig": original[data_start:data_end].hex(), "tuned": tuned[data_start:data_end].hex(),
+                    "axes": [{"rel": at - data_start, "bytes": original[at:data_start].hex()}],
+                }
+            pos = max(pos + 1, data_end)
     return list(records.values())
 
 
@@ -433,6 +454,9 @@ def write_proposal(data: bytes, root: Path, profile: str, output: Path, *, label
     if not entries:
         raise ValueError("Geen kaartkennis voor deze ECU, of het ECU-type staat niet in het bestand.")
     result = propose(data, entries, profile)
+    if len(result["maps"]) < MIN_MAPS:
+        raise ValueError(f"Te weinig overeenstemming voor een voorstel ({len(result['maps'])} kaarten, "
+                         f"minimaal {MIN_MAPS}). Meer projecten van deze ECU zijn nodig.")
     rows = [{"adres": f"0x{m['start']:X}", "einde": f"0x{m['end']:X}", "kolommen": m["columns"], "rijen": m["rows"],
              "naam": m["name"], "voorbeelden": m["voters"], "verandering": round(m["median_change"], 4)}
             for m in result["maps"]]

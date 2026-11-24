@@ -6,6 +6,7 @@ import struct
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from ols_platform.tuning import consensus as c
 
@@ -43,6 +44,21 @@ class ConsensusTests(unittest.TestCase):
         records = example(1)["records"]
         self.assertEqual([(r["columns"], r["rows"], r["endian"]) for r in records], [(8, 6, "big")])
 
+    def test_neighbouring_tables_and_curves_are_all_found(self):
+        original = bytearray(random.Random(9).randrange(1, 256) for _ in range(0x2000))
+        table = words([len(X), len(Y)]) + words(X) + words(Y) + words(CELLS)
+        curve = words([len(X)]) + struct.pack(">8h", *range(-40, 40, 10)) + words(range(500, 580, 10))
+        block = table + table + curve
+        original[0x400:0x400 + len(block)] = block
+        tuned = bytearray(original)
+        head = 2 * (2 + len(X) + len(Y))
+        starts = [0x400 + head, 0x400 + len(table) + head, 0x400 + 2 * len(table) + 2 + 16]
+        for start, count in zip(starts, (len(CELLS), len(CELLS), 8)):
+            values = struct.unpack_from(f">{count}H", tuned, start)
+            struct.pack_into(f">{count}H", tuned, start, *(v + 50 for v in values))
+        records = c.structural_records(bytes(original), bytes(tuned))
+        self.assertEqual(sorted(r["start"] for r in records), starts)
+
     def test_agreement_is_applied_at_the_new_place(self):
         data, start = image(50, 0x2344, 1.05)
         result = c.propose(bytes(data), [example(i) for i in range(1, 6)], "stage1")
@@ -75,7 +91,10 @@ class ConsensusTests(unittest.TestCase):
             root = Path(tmp)
             c._write_gz(c._index_path(root, "TESTECU17"), {"label": "TESTECU17",
                                                            "entries": [example(i) for i in range(1, 6)]})
-            report = c.write_proposal(bytes(data), root, "stage1+vmax", root / "uit" / "x.x", label="testecu17")
+            with self.assertRaises(ValueError):  # a single map is too little to rely on
+                c.write_proposal(bytes(data), root, "stage1", root / "uit" / "z.x", label="testecu17")
+            with mock.patch.object(c, "MIN_MAPS", 1):
+                report = c.write_proposal(bytes(data), root, "stage1+vmax", root / "uit" / "x.x", label="testecu17")
             self.assertEqual(len(report["kaarten"]), 1)
             self.assertEqual(sorted(p.suffix for p in (root / "uit").iterdir()), [".csv", ".json"])
             self.assertIn("niet flashen", json.loads(Path(report["json"]).read_text(encoding="utf-8"))["soort"])

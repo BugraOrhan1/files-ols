@@ -136,6 +136,17 @@ COMPONENTS: list[tuple[str, str, re.Pattern]] = [
 ]
 COMPONENT_LABELS = {key: label for key, label, _ in COMPONENTS}
 _STAGE = re.compile(r"\b(stage|stufe|stg|st|step|etappe|level|lvl)[ ._-]?([1-4])(?!\d)", re.IGNORECASE)
+# Versions their own author marked as faulty.
+_BAD = re.compile(r"\bbad ?files?\b|\blimp\b|limp ?mode|notlauf|(gives|has|with|copy) errors|\ball problems|"
+                  r"not good|blue ?screen|(does ?n.?t|not) (start|run|work)|nicht gut|l[aä]uft nicht|"
+                  r"geht nicht|defekt|\bfehlerhaft|\bkaputt")
+# Emission systems or fault codes in spellings the components do not cover
+# ('dpfoff', 'Lamda', 'P0420'). Such a version is no plain stage, and it is
+# not added to the emission profiles either: it is simply not learned.
+_HIDDEN_OF = (("egr_off", r"\b(no ?)?(egr|agr)(?!ee)"), ("dpf_off", r"dpf|\b(no ?)?(fap|opf|gpf|rpf)(?=off|\d)|particul"),
+              ("cat_off", r"lamda|\bcats\b|\bkats\b|vorkat|racecat|catal[sy]"),
+              ("dtc_off", r"dtcoff|\bp[0-3][0-9a-f]{3}(?![0-9a-f])"))
+_HIDDEN_OF = tuple((key, re.compile(pattern)) for key, pattern in _HIDDEN_OF)
 _ORIGINAL = {"original", "orginal", "ori", "org", "stock", "serie", "standard", "origineel"}
 
 
@@ -151,6 +162,8 @@ def classify_profile(name: str) -> str:
     normalized = re.sub(r"\s+", " ", name.replace("_", " ").strip().lower())
     if normalized in _ORIGINAL:
         return "original"
+    if _BAD.search(normalized):
+        return "other"
     core = re.sub(r"\b\d{2,4} ?(ps|hp|pk|cv|kw|nm|bhp)\b", " ", normalized)
     parts = []
     stage = _STAGE.search(core)
@@ -160,6 +173,8 @@ def classify_profile(name: str) -> str:
     for key, _label, pattern in COMPONENTS:
         if pattern.search(core):
             parts.append(key)
+    if any(key not in parts and pattern.search(normalized) for key, pattern in _HIDDEN_OF):
+        return "other"
     return "+".join(parts) if parts else "other"
 
 

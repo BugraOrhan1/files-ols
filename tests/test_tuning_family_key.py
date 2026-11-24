@@ -37,5 +37,32 @@ class ProfileClassificationTests(unittest.TestCase):
         self.assertEqual(classify_profile("Stage 1"), "stage1")
 
 
+class VersionNameTests(unittest.TestCase):
+    def check(self, names, expected):
+        from ols_platform.tuning.ols_versions import classify_profile
+
+        for name in names:
+            self.assertEqual(classify_profile(name), expected, name)
+
+    def test_hidden_emission_spellings_are_not_learned(self):
+        self.check(("Stage1 + dpfoff", "Stage1 + Lamda_Off", "stage2 - egrdpf", "Stage1_+_V-Max_+_Agroff",
+                    "Stage1 NO Catalysator", "stage_1 p0420", "stage1 vmax noegr_nodpf", "stage2 racecat",
+                    "dpfoff", "noegr", "Lamda Remove"), "other")
+
+    def test_recognised_spellings_keep_their_profile(self):
+        self.check(("stage1 dpf_off",), "stage1+dpf_off")
+        self.check(("EGR off",), "egr_off")
+
+    def test_ordinary_names_stay_ordinary(self):
+        self.check(("Stage1 Drehmoment begrenzer raus", "stage 1 350 degrees", "Stage_1 see description",
+                    "stage 1 TTE500", "stage_1 350hp P350", "Stage 1 catch can"), "stage1")
+        self.check(("Vmax 250Km/h begrenzung",), "vmax")
+
+    def test_versions_marked_bad_are_never_learned(self):
+        self.check(("stage_1 bad_file see description", "Stage_1 gives errors", "stage 1 goes into limp mode",
+                    "stage_1 pop_and_bang jerking pops Bad_File", "Stage 1 läuft nicht"), "other")
+
+
+
 if __name__ == "__main__":
     unittest.main()
