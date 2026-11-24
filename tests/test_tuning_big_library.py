@@ -18,9 +18,13 @@ class BigLibraryTests(unittest.TestCase):
         blobs = _CompressedBlobs()
         blobs["a"] = b"0123456789" * 10_000
         self.assertEqual(blobs["a"], b"0123456789" * 10_000)
-        self.assertLess(len(blobs._data["a"]), 5_000)
+        blobs["b2"] = b"other" * 1000
+        blobs["a"] = b"replaced"
+        self.assertEqual((blobs["a"], blobs["b2"]), (b"replaced", b"other" * 1000))
+        blobs["a"] = b"0123456789" * 10_000
+        self.assertLess(blobs._end, 8_000)
         self.assertIsNone(blobs.get("b"))
-        self.assertEqual(len(blobs), 1)
+        self.assertEqual(len(blobs), 2)
 
     def test_package_survives_the_round_trip(self):
         package = build_package([make_pair(1), make_pair(2, scale=0.95)])

@@ -24,6 +24,7 @@ import os
 import re
 import sys
 import tempfile
+import threading
 import zipfile
 import zlib
 from datetime import datetime, timezone
@@ -162,24 +163,35 @@ def fingerprint(image: bytes) -> bytes:
 
 
 class _CompressedBlobs:
-    """Variant files of a package under construction. Kept compressed: they
-    shrink more than ten times, and tens of thousands of variants do not fit
-    in memory otherwise."""
+    """Variant files of a package under construction: compressed, in one
+    temporary file. A large library holds tens of gigabytes of them."""
 
     def __init__(self) -> None:
-        self._data: dict[str, bytes] = {}
+        self._file = tempfile.TemporaryFile(prefix="ols-tuner-")
+        self._where: dict[str, tuple[int, int]] = {}
+        self._end = 0
+        self._lock = threading.Lock()
 
     def __setitem__(self, key: str, value: bytes) -> None:
-        self._data[key] = zlib.compress(value, 1)
+        packed = zlib.compress(value, 1)
+        with self._lock:
+            self._file.seek(self._end)
+            self._file.write(packed)
+            self._where[key] = (self._end, len(packed))
+            self._end += len(packed)
 
     def __getitem__(self, key: str) -> bytes:
-        return zlib.decompress(self._data[key])
+        start, size = self._where[key]
+        with self._lock:
+            self._file.seek(start)
+            packed = self._file.read(size)
+        return zlib.decompress(packed)
 
     def __len__(self) -> int:
-        return len(self._data)
+        return len(self._where)
 
     def get(self, key: str, default: Any = None) -> Any:
-        return self[key] if key in self._data else default
+        return self[key] if key in self._where else default
 
 
 class Package:
