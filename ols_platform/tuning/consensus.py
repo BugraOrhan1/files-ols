@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
 import re
 import statistics
 import struct
@@ -80,10 +81,28 @@ def _struct_path(root: Path, pair_id: str) -> Path:
 
 def _write_gz(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")  # several processes may write the same example
     with gzip.open(tmp, "wt", encoding="utf-8", compresslevel=4) as handle:
         json.dump(value, handle, separators=(",", ":"))
     tmp.replace(path)
+
+
+def store_structure(root: Path, pair: Any) -> int:
+    """Write the structural records of a loaded pair (once). -1: not eligible."""
+
+    if not eligible_profile(pair.profile) or family_label(pair.family_key) in NO_FAMILY:
+        return -1
+    path = _struct_path(root, pair.pair_id)
+    if path.exists():
+        return 0
+    records = structural_records(pair.original, pair.tuned)
+    _write_gz(path, records)
+    return len(records)
+
+
+def _stored_structures(root: Path) -> set[str]:
+    folder = root / MAPS_DIR / STRUCT_DIR
+    return {p.name.split(".")[0] for p in folder.glob("??/*.json.gz")} if folder.is_dir() else set()
 
 
 def _learn_pair(task: tuple[str, str]) -> int:
@@ -121,7 +140,8 @@ def learn_structure(root: Path, workers: int = 4, progress=print, stop=None) -> 
 
     from concurrent.futures import ProcessPoolExecutor
 
-    todo = [(str(root), r[0]) for r in _pairs(root) if not _struct_path(root, r[0]).exists()]
+    have = _stored_structures(root)
+    todo = [(str(root), r[0]) for r in _pairs(root) if r[0] not in have]
     progress(f"Kaartstructuur: {len(todo)} voorbeelden te lezen, {workers} tegelijk.")
     done = 0
     if todo:

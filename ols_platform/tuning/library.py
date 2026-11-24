@@ -337,6 +337,18 @@ def reader_spec(reader: Any) -> Any:
     return None
 
 
+def _store_structure(root: Path, pair: TrainingPair) -> None:
+    """Changed tables of the pair, while its images are in memory: reading
+    them back later costs two random reads per example on the archive disk."""
+
+    from .consensus import store_structure
+
+    try:
+        store_structure(root, pair)
+    except Exception:  # extra knowledge: learn_structure retries it later
+        pass
+
+
 def process_project(task: dict[str, Any], reader: Any = None) -> dict[str, Any]:
     """Hash, parse and store one project. Runs in a worker process.
 
@@ -371,6 +383,7 @@ def process_project(task: dict[str, Any], reader: Any = None) -> dict[str, Any]:
                     local.unlink(missing_ok=True)
             for pair in pairs:
                 save_pair(root, pair)
+                _store_structure(root, pair)
             result.update(
                 status="parsed_with_pairs" if pairs else ("rejected" if rejected else "parsed_no_pairs"),
                 message=json.dumps(rejected, ensure_ascii=False) if rejected else "",

@@ -59,6 +59,23 @@ class ConsensusTests(unittest.TestCase):
         records = c.structural_records(bytes(original), bytes(tuned))
         self.assertEqual(sorted(r["start"] for r in records), starts)
 
+    def test_structure_is_stored_once_and_only_for_eligible_profiles(self):
+        from types import SimpleNamespace
+
+        original, start = image(1, 0x480)
+        tuned = bytearray(original)
+        tuned[start:start + 2 * len(CELLS)] = words([v + 40 for v in CELLS])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pair = SimpleNamespace(pair_id="aa11", profile="stage1", family_key="EDC17C46|16384",
+                                   original=bytes(original), tuned=bytes(tuned))
+            self.assertEqual(c.store_structure(root, pair), 1)
+            self.assertEqual(c.store_structure(root, pair), 0)
+            self.assertEqual(c._stored_structures(root), {"aa11"})
+            for profile, family in (("dpf_off", "EDC17C46|1"), ("other", "EDC17C46|1"), ("stage1", "onbekend|1")):
+                pair.profile, pair.family_key, pair.pair_id = profile, family, "bb22"
+                self.assertEqual(c.store_structure(root, pair), -1)
+
     def test_agreement_is_applied_at_the_new_place(self):
         data, start = image(50, 0x2344, 1.05)
         result = c.propose(bytes(data), [example(i) for i in range(1, 6)], "stage1")
