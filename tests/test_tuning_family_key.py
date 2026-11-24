@@ -37,6 +37,26 @@ class ProfileClassificationTests(unittest.TestCase):
         self.assertEqual(classify_profile("Stage 1"), "stage1")
 
 
+class SpellingTests(unittest.TestCase):
+    def test_spellings_of_one_ecu_are_joined(self):
+        from ols_platform.tuning.package import normalize_family_key as key
+
+        for name in ("EDC17_CP44", "EDC 17CP44", "edc17cp44", "EDC17 CP44", "EDC17-CP44"):
+            self.assertEqual(key(f"{name}|4194304"), "EDC17CP44|4194304")
+        self.assertEqual(key("MED17;5|1"), "MED17.5|1")
+        self.assertEqual(key("SID 209|1"), "SID209|1")
+        self.assertEqual(key("MDG1_MD1CP002|1"), key("MD1CP002|1"))
+
+    def test_different_ecus_stay_apart(self):
+        from ols_platform.tuning.package import normalize_family_key as key
+
+        self.assertNotEqual(key("EDC15P|1"), key("EDC15P+|1"))
+        self.assertNotEqual(key("MED17.1.1|1"), key("MED17.11|1"))
+        self.assertEqual(key("Bosch 0281010082|1"), "BOSCH 0281010082|1")
+        self.assertEqual(key("Siemens/Continental PO300|1"), "SIEMENS/CONTINENTAL PO300|1")
+        self.assertEqual(key("onbekend|1"), "onbekend|1")
+
+
 class VersionNameTests(unittest.TestCase):
     def check(self, names, expected):
         from ols_platform.tuning.ols_versions import classify_profile

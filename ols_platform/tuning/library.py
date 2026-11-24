@@ -719,7 +719,8 @@ class Library:
         cfg = {**DEFAULT_SETTINGS, **(settings or {})}
         rows = [
             {"pair_id": r[0], "project_sha256": r[1], "original_sha256": r[2], "tuned_sha256": r[3],
-             "profile": r[4], "family_key": r[5], "variant_key": r[6], "project_name": r[7] or "",
+             "profile": r[4], "family_key": normalize_family_key(r[5]), "variant_key": r[6],
+             "project_name": r[7] or "",
              "tuned_version_name": r[8]}
             for r in self.db.execute(
                 "SELECT pair_id,project_sha256,original_sha256,tuned_sha256,profile,family_key,"
@@ -784,7 +785,7 @@ class Library:
             profiles_of = {p: sorted(ids) for p, ids in groups[key].items()}
             digest = hashlib.sha256(json.dumps(
                 {"p": profiles_of, "z": sorted(zones.get(key, []))[:MAX_LEARNING_PAIRS], "s": cfg,
-                 "v": SOFTWARE_VERSION, "f": 5}, sort_keys=True).encode()).hexdigest()[:32]
+                 "v": SOFTWARE_VERSION, "f": 6, "k": key[0]}, sort_keys=True).encode()).hexdigest()[:32]
             return cache_dir / f"{digest}.json"
 
         for index, key in enumerate(order, 1):

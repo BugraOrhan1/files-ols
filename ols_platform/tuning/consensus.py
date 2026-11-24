@@ -39,7 +39,9 @@ NO_FAMILY = {"", "ONBEKEND", "UNKNOWN"}
 
 
 def family_label(family_key: str) -> str:
-    return family_key.rpartition("|")[0].upper()
+    from .package import normalize_family_key
+
+    return normalize_family_key(family_key).rpartition("|")[0].upper()
 
 
 def eligible_profile(profile: str) -> bool:
@@ -230,7 +232,8 @@ def build_index(root: Path, progress=print) -> dict[str, int]:
 
 
 def load_index(root: Path, label: str) -> list[dict[str, Any]]:
-    path = _index_path(root, label.upper())
+    label = family_label(f"{label}|0")
+    path = _index_path(root, label)
     if not path.exists():
         return []
     with gzip.open(path, "rt", encoding="utf-8") as handle:
@@ -487,7 +490,7 @@ def detect_labels(root: Path, data: bytes, file_name: str = "") -> list[str]:
 
     from .identity import token_in
 
-    parts = {part.upper() for part in re.split(r"[\s_()]+", file_name)}
+    parts = {family_label(f"{part}|0") for part in re.split(r"[\s_()]+", file_name) if part}
     found = []
     for path in (root / MAPS_DIR / INDEX_DIR).glob("*.json.gz"):
         label = path.name[:-len(".json.gz")]

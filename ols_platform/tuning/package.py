@@ -21,6 +21,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import re
 import sys
 import tempfile
 import zipfile
@@ -40,6 +41,10 @@ MAX_LEARNING_PAIRS = 32  # per variant; all pairs stay available as known pairs
 _ZIP_DATE = (2020, 1, 1, 0, 0, 0)
 
 
+_ECU_TYPE = re.compile(r"^([A-Z]{2,5})[ _-]*\d")
+_MAKERS = {"BOSCH", "DENSO", "TEMIC"}
+
+
 def normalize_family_label(label: str) -> str:
     """One spelling per ECU family: WinOLS headers mix 'mg1cs002', 'MG1CS002 ' etc.
 
@@ -49,7 +54,14 @@ def normalize_family_label(label: str) -> str:
     cleaned = " ".join(str(label).split())
     if not cleaned or cleaned == "onbekend":
         return "onbekend"
-    return cleaned.upper()
+    label = cleaned.upper()
+    # 'EDC 17CP44', 'EDC17_CP44' and 'EDC17CP44' are one ECU. Only labels that
+    # look like an ECU type are joined; 'BOSCH 0281010082' stays as it is.
+    match = _ECU_TYPE.match(label)
+    if match and match.group(1) not in _MAKERS:
+        label = re.sub(r"(?<=[A-Z0-9])[ _-]+(?=[A-Z0-9])", "", label).replace(";", ".")
+        label = re.sub(r"^MDG1(?=M[DG]1)", "", label)
+    return label
 
 
 def contract_for(contracts: dict[str, Any] | None, family_key: str) -> dict[str, Any]:
