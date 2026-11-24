@@ -45,6 +45,7 @@ EVIDENCE_LABELS = {
     "KNOWN_PAIR": "Bekend origineel – exact de tuning uit uw database",
     "MULTI_PROJECT": "Geleerde tuning (meerdere projecten van deze software)",
     "REPRODUCTION_ONLY": "Geleerde tuning (slechts één project van deze software – extra controle aanbevolen)",
+    "COMBINED": "Samengesteld uit losse tunes – controleer het resultaat",
     "DONOR_TRANSFER": "Overgezet van het meest gelijkende bestand uit uw database – controleer het resultaat",
 }
 

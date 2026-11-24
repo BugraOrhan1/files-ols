@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .identity import _useful, classify_input, token_in
+from .compose import join, offered, parts_of
 from .ols_versions import profile_label
 from .package import contract_for
 
@@ -339,6 +340,7 @@ def available_profiles(data: bytes, package, hint: str = "", min_similarity: flo
     if family is None and donors:
         family = next((f for f in package["families"] for v in f["variants"]
                        if v["variant_id"] == donors[0]["variant_id"]), None)
+    profiles.extend(offered(profiles))
     return family, variant, sorted(profiles, key=profile_sort_key)
 
 
@@ -568,6 +570,60 @@ def _by_transfer(data: bytes, profile_name: str, package, contracts: dict | None
 def generate(data: bytes, profile_name: str, package, contracts: dict | None = None, *,
              hint: str = "", min_similarity: float | None = None,
              min_coverage: float | None = None, family_floor: dict[str, float] | None = None) -> GenerationResult:
+    """The tune itself when the library has it; a combination without an
+    example is joined from its separate tunes."""
+
+    options = {"hint": hint, "min_similarity": min_similarity, "min_coverage": min_coverage,
+               "family_floor": family_floor}
+    try:
+        return _generate_single(data, profile_name, package, contracts, **options)
+    except GenerationRejected as exc:
+        parts = parts_of(profile_name)
+        if not parts or exc.code in ("already_tuned", "partially_tuned", "other_modification_present") \
+                or exc.code.startswith("input_"):
+            raise
+        return _compose(data, profile_name, parts, package, contracts, exc, options)
+
+
+def _compose(data: bytes, profile_name: str, parts: list[str], package, contracts: dict | None,
+             earlier: GenerationRejected, options: dict[str, Any]) -> GenerationResult:
+    results = []
+    for part in parts:
+        try:
+            results.append(_generate_single(data, part, package, contracts, **options))
+        except GenerationRejected as exc:
+            raise GenerationRejected(earlier.code, f"{earlier.message} Samenstellen uit losse delen kan ook niet: "
+                                     f"{profile_label(part)}: {exc.message}") from exc
+    output, conflicts = join(data, [r.output for r in results])
+    if conflicts:
+        raise GenerationRejected(
+            "combination_conflict",
+            f"Samenstellen uit losse delen kan niet: {len(conflicts)} waarden worden door twee delen verschillend "
+            f"gezet (bijv. 0x{min(conflicts):X}). Er is geen voorbeeld van deze combinatie zelf.",
+            {"cells": conflicts[:20]})
+    notes = [f"Samengesteld uit losse delen ({', '.join(profile_label(p) for p in parts)}): er is geen voorbeeld van "
+             "deze combinatie. De delen spreken elkaar niet tegen; hun samenwerking is niet bewezen. "
+             "Controleer het resultaat in WinOLS."]
+    for part, result in zip(parts, results):
+        notes.extend(f"{profile_label(part)}: {note}" for note in result.notes)
+    changes = [dict(c, label=f"{profile_label(part)}: {c.get('label') or ''}".strip())
+               for part, result in zip(parts, results) for c in result.changes]
+    base = next((r for p, r in zip(parts, results) if p.startswith("stage")), results[0])
+    ready = all(r.integrity["ready_for_use"] for r in results)
+    integrity = next((r.integrity for r in results if not r.integrity["ready_for_use"]), base.integrity) \
+        if not ready else base.integrity
+    return GenerationResult(
+        output=output, family_key=base.family_key, variant_key=base.variant_key, profile=profile_name,
+        package_id=base.package_id, input_sha256=base.input_sha256,
+        output_sha256=hashlib.sha256(output).hexdigest(), changes=changes,
+        allowed_ranges=sorted({tuple(x) for r in results for x in r.allowed_ranges}),
+        identity=dict(base.identity, parts=parts), evidence_level="COMBINED", integrity=integrity, notes=notes)
+
+
+def _generate_single(data: bytes, profile_name: str, package, contracts: dict | None = None, *,
+                     hint: str = "", min_similarity: float | None = None,
+                     min_coverage: float | None = None,
+                     family_floor: dict[str, float] | None = None) -> GenerationResult:
     """Exact software variant first; otherwise transfer from the most similar original."""
 
     classification = classify_input(data)
