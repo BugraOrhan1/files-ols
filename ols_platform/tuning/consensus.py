@@ -20,6 +20,7 @@ import os
 import re
 import statistics
 import struct
+import zlib
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable
@@ -67,7 +68,8 @@ def _endian(blob: bytes, columns: int) -> str:
 
 # ----- index ----------------------------------------------------------------
 
-STRUCT_DIR = "structuur2"  # bump when structural_records finds more
+STRUCT_DIR = "structuur2"  # small files of an earlier version, taken over once
+STRUCT_VERSION = 2         # bump when structural_records finds more
 
 
 def _index_path(root: Path, label: str) -> Path:
@@ -87,35 +89,67 @@ def _write_gz(path: Path, value: Any) -> None:
     tmp.replace(path)
 
 
+def _struct_db(root: Path) -> Any:
+    """All structural records in one file: hundreds of thousands of small
+    files take hours to read back from a hard disk."""
+
+    import sqlite3
+
+    path = root / MAPS_DIR / "structuur.sqlite3"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(path, timeout=120)
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA synchronous=NORMAL")
+    db.execute("CREATE TABLE IF NOT EXISTS structuur (pair_id TEXT NOT NULL, version INTEGER NOT NULL, "
+               "records BLOB NOT NULL, PRIMARY KEY (pair_id, version))")
+    return db
+
+
+def _pack(records: list[dict[str, Any]]) -> bytes:
+    return zlib.compress(json.dumps(records, separators=(",", ":")).encode(), 4)
+
+
+def _save_structures(root: Path, rows: list[tuple[str, bytes]]) -> None:
+    db = _struct_db(root)
+    try:
+        with db:
+            db.executemany("INSERT OR IGNORE INTO structuur VALUES (?,?,?)",
+                           [(pair_id, STRUCT_VERSION, blob) for pair_id, blob in rows])
+    finally:
+        db.close()
+
+
 def store_structure(root: Path, pair: Any) -> int:
     """Write the structural records of a loaded pair (once). -1: not eligible."""
 
     if not eligible_profile(pair.profile) or family_label(pair.family_key) in NO_FAMILY:
         return -1
-    path = _struct_path(root, pair.pair_id)
-    if path.exists():
-        return 0
     records = structural_records(pair.original, pair.tuned)
-    _write_gz(path, records)
+    _save_structures(root, [(pair.pair_id, _pack(records))])
     return len(records)
 
 
 def _stored_structures(root: Path) -> set[str]:
-    folder = root / MAPS_DIR / STRUCT_DIR
-    return {p.name.split(".")[0] for p in folder.glob("??/*.json.gz")} if folder.is_dir() else set()
-
-
-def _learn_pair(task: tuple[str, str]) -> int:
-    from .library import load_pair
-
-    root, pair_id = Path(task[0]), task[1]
+    db = _struct_db(root)
     try:
+        return {r[0] for r in db.execute("SELECT pair_id FROM structuur WHERE version=?", (STRUCT_VERSION,))}
+    finally:
+        db.close()
+
+
+def _learn_pair(task: tuple[str, str]) -> tuple[str, bytes] | None:
+    root, pair_id = Path(task[0]), task[1]
+    old = _struct_path(root, pair_id)
+    try:
+        if old.exists():  # written as a small file by an earlier version
+            with gzip.open(old, "rt", encoding="utf-8") as handle:
+                return pair_id, _pack(json.load(handle))
+        from .library import load_pair
+
         pair = load_pair(root, pair_id)
-        records = structural_records(pair.original, pair.tuned)
-    except (OSError, ValueError, KeyError):
-        return -1
-    _write_gz(_struct_path(root, pair_id), records)
-    return len(records)
+        return pair_id, _pack(structural_records(pair.original, pair.tuned))
+    except (OSError, EOFError, ValueError, KeyError):
+        return None
 
 
 def _pairs(root: Path) -> list[tuple]:
@@ -149,7 +183,9 @@ def learn_structure(root: Path, workers: int = 4, progress=print, stop=None) -> 
             for begin in range(0, len(todo), 400):
                 if stop is not None and stop():
                     return done
-                done += sum(n >= 0 for n in pool.map(_learn_pair, todo[begin:begin + 400], chunksize=10))
+                rows = [x for x in pool.map(_learn_pair, todo[begin:begin + 400], chunksize=10) if x]
+                _save_structures(root, rows)
+                done += len(rows)
                 progress(f"Kaartstructuur: {min(begin + 400, len(todo))}/{len(todo)} voorbeelden.")
     build_index(root, progress)
     return done
@@ -162,16 +198,16 @@ def build_index(root: Path, progress=print) -> dict[str, int]:
     for row in _pairs(root):
         labels[family_label(row[4])].append(row)
     stats = {"families": 0, "tunes": 0, "maps": 0}
+    defined = {p.name.split(".")[0] for p in (root / MAPS_DIR).glob("??/*.json.gz")}
+    struct_db = _struct_db(root)
     for label, rows in labels.items():
         entries = []
         for pair_id, original, tuned, profile, _family, variant, project in rows:
-            path = _struct_path(root, pair_id)
-            records: list[dict[str, Any]] = []
-            if path.exists():
-                with gzip.open(path, "rt", encoding="utf-8") as handle:
-                    records = json.load(handle)
+            found = struct_db.execute("SELECT records FROM structuur WHERE pair_id=? AND version=?",
+                                      (pair_id, STRUCT_VERSION)).fetchone()
+            records: list[dict[str, Any]] = json.loads(zlib.decompress(found[0])) if found else []
             spans = [(r["start"], r["start"] + len(r["orig"]) // 2) for r in records]
-            for record in load_all(root, original).get(tuned, []):
+            for record in load_all(root, original).get(tuned, []) if original in defined else ():
                 s, e = record["start"], record["start"] + len(record["orig"]) // 2
                 if not any(s < y and x < e for x, y in spans):
                     records.append(record)
@@ -183,6 +219,7 @@ def build_index(root: Path, progress=print) -> dict[str, int]:
             stats["families"] += 1
             stats["tunes"] += len(entries)
             stats["maps"] += sum(len(e["records"]) for e in entries)
+    struct_db.close()
     progress(f"Kaartindex: {stats['maps']} kaarten van {stats['tunes']} tunes, {stats['families']} ECU-types.")
     return stats
 

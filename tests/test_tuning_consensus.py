@@ -70,11 +70,19 @@ class ConsensusTests(unittest.TestCase):
             pair = SimpleNamespace(pair_id="aa11", profile="stage1", family_key="EDC17C46|16384",
                                    original=bytes(original), tuned=bytes(tuned))
             self.assertEqual(c.store_structure(root, pair), 1)
-            self.assertEqual(c.store_structure(root, pair), 0)
+            self.assertEqual(c.store_structure(root, pair), 1)
             self.assertEqual(c._stored_structures(root), {"aa11"})
             for profile, family in (("dpf_off", "EDC17C46|1"), ("other", "EDC17C46|1"), ("stage1", "onbekend|1")):
                 pair.profile, pair.family_key, pair.pair_id = profile, family, "bb22"
                 self.assertEqual(c.store_structure(root, pair), -1)
+
+    def test_small_files_of_an_earlier_version_are_taken_over(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            c._write_gz(c._struct_path(root, "cc33"), example(1)["records"])
+            c._save_structures(root, [c._learn_pair((str(root), "cc33"))])
+            self.assertEqual(c._stored_structures(root), {"cc33"})
+            self.assertIsNone(c._learn_pair((str(root), "missing")))
 
     def test_agreement_is_applied_at_the_new_place(self):
         data, start = image(50, 0x2344, 1.05)
