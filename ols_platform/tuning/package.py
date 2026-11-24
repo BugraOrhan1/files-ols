@@ -192,6 +192,27 @@ class Package:
         self.path = path
         self._cache: dict[str, dict[str, Any]] = {}
         self._fingerprints = fingerprints
+        self._members: dict[str, zipfile.ZipInfo] | None = None
+        self._sha_of: dict[str, str] | None = None
+
+    def _read_member(self, name: str) -> bytes:
+        """Read one file of the package. The archive directory (tens of
+        thousands of entries) is parsed once; the file itself is not kept
+        open, so that Windows can replace or remove it."""
+
+        if self._members is None:
+            with zipfile.ZipFile(self.path) as archive:
+                self._members = {info.filename: info for info in archive.infolist()}
+        info = self._members[name]
+        with open(self.path, "rb") as handle:
+            handle.seek(info.header_offset)
+            header = handle.read(30)
+            if header[:4] != b"PK\x03\x04" or info.compress_type not in (zipfile.ZIP_DEFLATED, zipfile.ZIP_STORED):
+                raise ValueError(f"Modelpakket {self.path.name} is beschadigd of gewijzigd.")
+            handle.seek(info.header_offset + 30 + int.from_bytes(header[26:28], "little")
+                        + int.from_bytes(header[28:30], "little"))
+            raw = handle.read(info.compress_size)
+        return zlib.decompress(raw, -15) if info.compress_type == zipfile.ZIP_DEFLATED else raw
 
     def fingerprints(self) -> list[dict[str, Any]]:
         """Fingerprints of every training original (loaded on first use)."""
@@ -228,18 +249,14 @@ class Package:
     def load_variant(self, variant_id: str) -> dict[str, Any]:
         if variant_id in self._cache:
             return self._cache[variant_id]
-        expected = None
-        for _family, variant in self.variants():
-            if variant["variant_id"] == variant_id:
-                expected = variant["sha256"]
-        if expected is None:
-            raise KeyError(variant_id)
+        if self._sha_of is None:
+            self._sha_of = {variant["variant_id"]: variant["sha256"] for _family, variant in self.variants()}
+        expected = self._sha_of[variant_id]
         raw = self._blobs.get(variant_id)
         if raw is None:
             if self.path is None:
                 raise KeyError(variant_id)
-            with zipfile.ZipFile(self.path) as archive:
-                raw = archive.read(f"variants/{variant_id}.json")
+            raw = self._read_member(f"variants/{variant_id}.json")
         if hashlib.sha256(raw).hexdigest() != expected:
             raise ValueError(f"Variantbestand {variant_id} in het modelpakket is beschadigd.")
         data = json.loads(raw)

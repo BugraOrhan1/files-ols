@@ -441,6 +441,27 @@ class _ReadAhead:
         self.pool.shutdown(wait=False, cancel_futures=True)
 
 
+_NO_NAME = {"", "ONBEKEND", "UNKNOWN", "UNDEFINED"}
+
+
+def name_unknown_families(rows: list[dict[str, Any]]) -> int:
+    """Give rows without an ECU type the family the same original image has
+    elsewhere, when all named projects agree. Returns the number changed."""
+
+    names: dict[str, set[str]] = {}
+    for row in rows:
+        if row["family_key"].rpartition("|")[0].upper() not in _NO_NAME:
+            names.setdefault(row["original_sha256"], set()).add(row["family_key"])
+    changed = 0
+    for row in rows:
+        if row["family_key"].rpartition("|")[0].upper() in _NO_NAME:
+            known = names.get(row["original_sha256"], set())
+            if len(known) == 1:
+                row["family_key"] = next(iter(known))
+                changed += 1
+    return changed
+
+
 def contaminated_pairs(rows: list[dict[str, Any]]) -> set[str]:
     """Pairs whose image is an original in one project and a tune in another
     ("back to stock", a tuned read stored as original, swapped versions).
@@ -744,6 +765,9 @@ class Library:
         self.db.commit()
         if reclassified:
             say(f"{reclassified} voorbeelden opnieuw ingedeeld volgens de huidige tuningsoorten.")
+        named = name_unknown_families(rows)
+        if named:
+            say(f"{named} voorbeelden zonder ECU-type ingedeeld: hetzelfde origineel staat elders met naam.")
         contaminated = contaminated_pairs(rows)
         if contaminated:
             say(f"{len(contaminated)} voorbeelden uitgesloten: hun origineel of tune staat elders andersom.")

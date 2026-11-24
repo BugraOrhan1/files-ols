@@ -67,6 +67,32 @@ class AppTests(unittest.TestCase):
             window.select(name)
             self.tk.update()
 
+    def test_checksum_choice_list(self):
+        from unittest import mock
+
+        pair = make_pair(1)
+        self.store.install(build_package([pair, make_pair(2, scale=0.95)]))
+        self.app.reload_package()
+        window = self.app.open_library()
+        window.refresh_checksum()
+        self.assertEqual(window.choice_tree.get_children(), ("SYNECU-77",))
+        window.choice_tree.selection_set("SYNECU-77")
+        with mock.patch("tkinter.messagebox.askyesno", return_value=False):
+            window.set_checksum_choice(True)
+        self.assertEqual(self.store.contracts(), {})  # nothing without an explicit yes
+        with mock.patch("tkinter.messagebox.askyesno", return_value=True):
+            window.set_checksum_choice(True)
+        from ols_platform.tuning.package import contract_for
+
+        for size in ("65536", "4194304"):
+            self.assertEqual(contract_for(self.store.contracts(), f"SYNECU-77|{size}")["contract"],
+                             "FLASH_TOOL_CORRECTS_ON_WRITE")
+        self.assertEqual(contract_for(self.store.contracts(), "OTHER|1")["contract"], "UNKNOWN")
+        window.choice_tree.selection_set("SYNECU-77")
+        with mock.patch("tkinter.messagebox.askyesno", return_value=True):
+            window.set_checksum_choice(False)
+        self.assertEqual(contract_for(self.store.contracts(), "SYNECU-77|65536")["contract"], "UNKNOWN")
+
     def test_recognition_contract_and_export_flow(self):
         pair = make_pair(1)
         self.store.install(build_package([pair, make_pair(2, scale=0.95)]))

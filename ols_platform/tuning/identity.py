@@ -88,6 +88,28 @@ _VAG_PART = re.compile(r"\d[A-Z0-9]{2}9\d{5}[A-Z]{0,3}")
 _ALNUM = frozenset(b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
 
 
+_TEXT_RUNS = re.compile(rb"[\x20-\x7e]{4,}")
+_TEXT_MIN_IMAGE = 64 * 1024
+_text_cache: tuple[bytes, bytes] | None = None
+
+
+def _searchable(image: bytes, raw: bytes) -> bytes:
+    """The image's printable text when ``raw`` can only occur there.
+
+    Runs are separated by a zero byte, so a match and the characters around it
+    are the same as in the image itself; thousands of numbers are looked up in
+    every file, and the text is a small part of it."""
+
+    global _text_cache
+    if len(image) < _TEXT_MIN_IMAGE or len(raw) < 4 or not all(32 <= b < 127 for b in raw):
+        return image
+    cached = _text_cache
+    if cached is None or cached[0] is not image:
+        image = bytes(image) if not isinstance(image, bytes) else image
+        cached = _text_cache = (image, b"\0".join(_TEXT_RUNS.findall(image)))
+    return cached[1]
+
+
 def token_in(token: str, image: bytes) -> bool:
     """True when ``token`` literally occurs in ``image``.
 
@@ -98,6 +120,7 @@ def token_in(token: str, image: bytes) -> bool:
     raw = token.encode("latin-1", "ignore")
     if not raw:
         return False
+    image = _searchable(image, raw)
     if token.isdigit():
         # Software numbers such as 031471 must not be part of a longer number.
         pos = image.find(raw)

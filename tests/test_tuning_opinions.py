@@ -25,7 +25,7 @@ class OpinionTests(unittest.TestCase):
     def test_agreeing_donors(self):
         result, called = run([UP, UP])
         self.assertEqual((result["opinions"], result["agreement"], result["contradicted"]), (2, 1.0, False))
-        self.assertEqual(called.call_args_list[1].kwargs["exclude"], {"me", "d0"})
+        self.assertEqual(called.call_args_list[1].kwargs["skip"], {"me", "d0"})
 
     def test_contradiction_needs_two_opinions(self):
         self.assertTrue(run([DOWN, DOWN])[0]["contradicted"])

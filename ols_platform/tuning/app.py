@@ -502,6 +502,12 @@ class TunerApp:
                       result.integrity["contract"])
         lines = [EVIDENCE_LABELS.get(result.evidence_level, result.evidence_level)]
         lines.extend(result.notes)
+        if self.original is not None:
+            from .export import overview_note
+
+            overview = overview_note(self.original.read_bytes(), result.output)
+            if overview:
+                lines.append(overview)
         lines.append(f"Tuning: {profile_label(result.profile)}  ·  ECU: {result.identity['family']}  ·  "
                      f"{len(result.changes)} gebieden worden aangepast.")
         practice = family_line(read_stats(self.store.root), result.family_key)
@@ -734,6 +740,20 @@ class ExplainWindow:
                                               if wanted is None or c["category"] == wanted])
         self.text.delete("1.0", "end")
         self.text.insert("end", format_report(shown) + "\n")
+
+
+def checksum_choices(package, contracts: dict) -> list[tuple[str, int, bool]]:
+    """(ECU type, examples, confirmed) of the library, most examples first.
+    Types without a name cannot be confirmed: that would cover anything."""
+
+    counts: dict[str, int] = {}
+    for family in (package["families"] if package is not None else []):
+        label = family["family_key"].rpartition("|")[0]
+        if label.upper() in ("", "ONBEKEND", "UNKNOWN", "UNDEFINED", "NODATA"):
+            continue
+        counts[label] = counts.get(label, 0) + sum(len(v["pairs"]) for v in family["variants"])
+    return [(label, count, contracts.get(f"{label}|*", {}).get("contract") == "FLASH_TOOL_CORRECTS_ON_WRITE")
+            for label, count in sorted(counts.items(), key=lambda x: (-x[1], x[0]))]
 
 
 class LibraryWindow:
@@ -1206,8 +1226,73 @@ class LibraryWindow:
             self.contract_tree.heading(col, text=label)
             self.contract_tree.column(col, width=width, anchor="w")
         self.contract_tree.pack(fill="both", expand=True)
+        self._build_checksum_choice(tab)
+
+    def _build_checksum_choice(self, tab) -> None:
+        """One line per ECU type with the number of examples: tick once what
+        the flash tool corrects, for every read size of that type."""
+
+        ttk, tk = self.ttk, self.tk
+        box = ttk.LabelFrame(tab, text="  Keuzelijst per ECU-type  ", padding=8)
+        box.pack(fill="both", expand=True, pady=(10, 0))
+        bar = ttk.Frame(box)
+        bar.pack(fill="x", pady=(0, 6))
+        ttk.Label(bar, text="Zoeken:").pack(side="left")
+        self.choice_filter = tk.StringVar()
+        entry = ttk.Entry(bar, textvariable=self.choice_filter, width=22)
+        entry.pack(side="left", padx=6)
+        entry.bind("<KeyRelease>", lambda _e: self.fill_checksum_choice())
+        ttk.Button(bar, text="AutoTuner corrigeert deze", command=lambda: self.set_checksum_choice(True)).pack(side="left")
+        ttk.Button(bar, text="Niet (meer) zeker", command=lambda: self.set_checksum_choice(False)).pack(side="left", padx=6)
+        self.choice_summary = tk.StringVar()
+        ttk.Label(bar, textvariable=self.choice_summary, style="Muted.TLabel").pack(side="left", padx=6)
+        frame = ttk.Frame(box)
+        frame.pack(fill="both", expand=True)
+        self.choice_tree = ttk.Treeview(frame, columns=("ecu", "count", "status"), show="headings", height=9,
+                                        selectmode="extended")
+        for col, label, width in (("ecu", "ECU-type", 240), ("count", "Voorbeelden", 110),
+                                  ("status", "Checksum", 260)):
+            self.choice_tree.heading(col, text=label, anchor="w")
+            self.choice_tree.column(col, width=width, anchor="w")
+        scroll = ttk.Scrollbar(frame, command=self.choice_tree.yview)
+        self.choice_tree.configure(yscrollcommand=scroll.set)
+        self.choice_tree.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="left", fill="y")
+
+    def fill_checksum_choice(self) -> None:
+        rows = checksum_choices(self.app.package, self.app.store.contracts())
+        wanted = self.choice_filter.get().strip().upper()
+        self.choice_tree.delete(*self.choice_tree.get_children())
+        for label, count, confirmed in [x for x in rows if wanted in x[0]][:400]:
+            self.choice_tree.insert("", "end", iid=label, values=(
+                label, count, "AutoTuner corrigeert (door u bevestigd)" if confirmed else "niet bevestigd"))
+        total = sum(count for _l, count, _c in rows)
+        done = sum(count for _l, count, confirmed in rows if confirmed)
+        self.choice_summary.set(f"Bevestigd: {done / total:.0%} van de voorbeelden" if total else "")
+
+    def set_checksum_choice(self, confirmed: bool) -> None:
+        from tkinter import messagebox
+
+        labels = list(self.choice_tree.selection())
+        if not labels:
+            messagebox.showinfo("Kies ECU-typen", "Selecteer eerst een of meer regels.", parent=self.win)
+            return
+        shown = ", ".join(labels[:8]) + (f" en nog {len(labels) - 8}" if len(labels) > 8 else "")
+        question = (f"Weet u zeker dat AutoTuner bij deze ECU's de checksum corrigeert bij het schrijven?\n\n{shown}\n\n"
+                    "Klopt dit niet, dan kan een ECU na het schrijven niet meer starten."
+                    if confirmed else f"De bevestiging intrekken voor:\n\n{shown}?")
+        if not messagebox.askyesno("Checksum", question, parent=self.win):
+            return
+        for label in labels:
+            self.app.store.set_contract(
+                f"{label}|*", "FLASH_TOOL_CORRECTS_ON_WRITE" if confirmed else "UNKNOWN",
+                "Door gebruiker bevestigd in de keuzelijst: AutoTuner corrigeert bij schrijven")
+        self.refresh()
+        self.refresh_checksum()
+        self.app.check_original()
 
     def refresh_checksum(self) -> None:
+        self.fill_checksum_choice()
         families = [f["family_key"] for f in (self.app.package["families"] if self.app.package else [])]
         self.family_box.configure(values=families)
         self.contract_tree.delete(*self.contract_tree.get_children())

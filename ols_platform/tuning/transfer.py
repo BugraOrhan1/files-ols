@@ -83,19 +83,21 @@ def sizes_compatible(a: int, b: int) -> bool:
     return all(n % CROSS_SIZE_ALIGN <= CROSS_SIZE_HEADER for n in (a, b))
 
 
-def shifted_similarity(data: bytes, anchor_blob: bytes, early_stop: bool = True) -> float:
+def shifted_similarity(data: bytes, anchor_blob: bytes, give_up_below: float = 0.3) -> float:
     """Fraction of the donor's anchor snippets found anywhere in ``data``.
-    Stops early when the first quarter already shows the donor is unrelated."""
+    Stops after a quarter, spread over the whole donor, when that already
+    shows the donor is unrelated (less than ``give_up_below`` found)."""
 
     snippets = [anchor_blob[i:i + ANCHOR_SIZE] for i in range(0, len(anchor_blob), ANCHOR_SIZE)]
     if not snippets:
         return 0.0
+    snippets = [s for phase in range(4) for s in snippets[phase::4]]
     found = 0
     quarter = max(1, len(snippets) // 4)
     for index, snippet in enumerate(snippets, 1):
         if snippet in data:
             found += 1
-        if early_stop and index == quarter and found / quarter < 0.3:
+        if index == quarter and found / quarter < give_up_below:
             return found / len(snippets)
     return found / len(snippets)
 
@@ -175,8 +177,9 @@ def _rank_donors(package, data: bytes, hint: str = "", profile: str | None = Non
     for overlap, entry in cross_size[:CROSS_SIZE_CHECKS]:
         larger = entry["size"] > len(data)
         anchors_blob = base64.b64decode(entry["anchors"])
-        best = shifted_similarity(data, anchors_blob, early_stop=not larger)
         floor = max(min_similarity, (family_floor or {}).get(entry.get("family_key", ""), 0.0))
+        # a larger read can hold at most len(data)/size of its anchors here
+        best = shifted_similarity(data, anchors_blob, 0.3 * len(data) / entry["size"] if larger else 0.3)
         if best >= floor:
             ranked.append(dict(entry, similarity=best, same_offset_similarity=0.0, hint_overlap=overlap,
                                cross_size=True))
@@ -694,7 +697,7 @@ def second_opinions(data: bytes, profile: str, package, outcome: dict[str, Any],
     floor = outcome["donor"]["similarity"] - OPINION_WINDOW
     values = []
     for _ in range(SECOND_OPINIONS):
-        other = transfer(data, profile, package, hint=hint, exclude=set(used), family_floor=family_floor,
+        other = transfer(data, profile, package, hint=hint, skip=set(used), family_floor=family_floor,
                          min_similarity=min_similarity, min_coverage=1.0)
         if other["status"] != "ok" or other["donor"]["similarity"] < floor:
             break
@@ -708,6 +711,7 @@ def second_opinions(data: bytes, profile: str, package, outcome: dict[str, Any],
 
 
 def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set[str] | None = None,
+             skip: set[str] | None = None,
              family_floor: dict[str, float] | None = None,
              min_similarity: float = DEFAULT_MIN_SIMILARITY,
              min_coverage: float = DEFAULT_MIN_COVERAGE) -> dict[str, Any]:
@@ -715,6 +719,8 @@ def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set
     ``status`` 'ok' (output, placed, donor, coverage) or 'failed' (reason)."""
 
     donors = rank_donors(package, data, hint, profile, min_similarity, exclude, family_floor)
+    if skip:  # applied after the (cached) ranking: asking for another donor costs no new search
+        donors = [d for d in donors if d["original_sha256"] not in skip]
     if not donors:
         return {"status": "failed", "code": "no_similar_original",
                 "reason": f"Geen vergelijkbaar origineel met '{profile}' in de bibliotheek "

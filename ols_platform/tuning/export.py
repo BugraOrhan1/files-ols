@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .consensus import change_overview
 from . import SOFTWARE_VERSION
 from .generate import GenerationResult
 from .ols_versions import profile_label
@@ -87,6 +88,16 @@ def verify_output_file(original_path: Path, output_path: Path, allowed: list[tup
     return checks
 
 
+def overview_note(original: bytes, output: bytes) -> str | None:
+    """One line about the recognised tables, to look at first in WinOLS."""
+
+    rows = change_overview(original, output)
+    if not rows:
+        return None
+    shown = ", ".join(f"0x{x['start']:X} ({x['columns']}x{x['rows']}) {x['median_change']:+.0%}" for x in rows[:4])
+    return f"{len(rows)} gewijzigde kaarten herkend; grootste veranderingen: {shown}. Alle kaarten staan in het rapport."
+
+
 def _report(result: GenerationResult, original_path: Path, output_path: Path,
             checks: dict[str, Any], package: dict[str, Any]) -> dict[str, Any]:
     return {
@@ -111,6 +122,7 @@ def _report(result: GenerationResult, original_path: Path, output_path: Path,
             for change in result.changes
         ],
         "integrity": result.integrity,
+        "recognised_tables": change_overview(original_path.read_bytes(), result.output),
         "verification": checks,
     }
 

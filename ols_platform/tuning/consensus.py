@@ -482,6 +482,25 @@ def structural_records(original: bytes, tuned: bytes) -> list[dict[str, Any]]:
     return list(records.values())
 
 
+def change_overview(original: bytes, output: bytes) -> list[dict[str, Any]]:
+    """Facts for a review: every changed table that is recognised by its own
+    layout, with its place and change. No judgement; measured on real tunes,
+    unusual values did not predict bad ones."""
+
+    rows = []
+    for record in structural_records(original, output):
+        before = _cells(bytes.fromhex(record["orig"]), 2, record["endian"])
+        after = _cells(bytes.fromhex(record["tuned"]), 2, record["endian"])
+        ratios = [b / a for a, b in zip(before, after) if a and a != b]
+        if ratios:
+            rows.append({"start": record["start"], "columns": record["columns"], "rows": record["rows"],
+                         "cells_changed": sum(a != b for a, b in zip(before, after)),
+                         "median_change": round(statistics.median(ratios) - 1, 4),
+                         "smallest": round(min(ratios) - 1, 4), "largest": round(max(ratios) - 1, 4),
+                         "to_maximum": sum(b >= 0xFFFF > a for a, b in zip(before, after))})
+    return sorted(rows, key=lambda x: -abs(x["median_change"]))
+
+
 # ----- proposal -------------------------------------------------------------
 
 def detect_labels(root: Path, data: bytes, file_name: str = "") -> list[str]:

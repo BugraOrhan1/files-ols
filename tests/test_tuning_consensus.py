@@ -59,6 +59,18 @@ class ConsensusTests(unittest.TestCase):
         records = c.structural_records(bytes(original), bytes(tuned))
         self.assertEqual(sorted(r["start"] for r in records), starts)
 
+    def test_overview_lists_changed_tables_with_facts(self):
+        from ols_platform.tuning.export import overview_note
+
+        original, start = image(1, 0x480)
+        tuned = bytearray(original)
+        tuned[start:start + 2 * len(CELLS)] = words([round(v * 1.25) for v in CELLS])
+        rows = c.change_overview(bytes(original), bytes(tuned))
+        self.assertEqual([(r["start"], r["columns"], r["rows"], r["to_maximum"]) for r in rows], [(start, 8, 6, 0)])
+        self.assertAlmostEqual(rows[0]["median_change"], 0.25, delta=0.01)
+        self.assertIn(f"0x{start:X}", overview_note(bytes(original), bytes(tuned)))
+        self.assertIsNone(overview_note(bytes(original), bytes(original)))
+
     def test_structure_is_stored_once_and_only_for_eligible_profiles(self):
         from types import SimpleNamespace
 
