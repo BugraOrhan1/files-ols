@@ -19,12 +19,12 @@ from __future__ import annotations
 import base64
 import fnmatch
 import hashlib
-import io
 import json
 import os
 import sys
 import tempfile
 import zipfile
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -149,10 +149,31 @@ def fingerprint(image: bytes) -> bytes:
                     for i in range(FP_SAMPLES))
 
 
+class _CompressedBlobs:
+    """Variant files of a package under construction. Kept compressed: they
+    shrink more than ten times, and tens of thousands of variants do not fit
+    in memory otherwise."""
+
+    def __init__(self) -> None:
+        self._data: dict[str, bytes] = {}
+
+    def __setitem__(self, key: str, value: bytes) -> None:
+        self._data[key] = zlib.compress(value, 1)
+
+    def __getitem__(self, key: str) -> bytes:
+        return zlib.decompress(self._data[key])
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self[key] if key in self._data else default
+
+
 class Package:
     """A loaded package: manifest in memory, variant files on demand."""
 
-    def __init__(self, manifest: dict[str, Any], variant_blobs: dict[str, bytes] | None = None,
+    def __init__(self, manifest: dict[str, Any], variant_blobs: Any = None,
                  path: Path | None = None, fingerprints: list[dict[str, Any]] | None = None) -> None:
         self.manifest = manifest
         self._blobs = variant_blobs or {}
@@ -318,7 +339,7 @@ class PackageBuilder:
         self.settings = dict(DEFAULT_SETTINGS)
         self.settings.update(settings or {})
         self.families: dict[str, dict[str, Any]] = {}
-        self.blobs: dict[str, bytes] = {}
+        self.blobs = _CompressedBlobs()
         self.selection: list[dict[str, Any]] = []
         self.fingerprints: list[dict[str, Any]] = []
 
@@ -375,7 +396,7 @@ class PackageBuilder:
         manifest["fingerprints_sha256"] = hashlib.sha256(_canonical(self.fingerprints)).hexdigest()
         manifest["package_id"] = hashlib.sha256(_canonical(manifest)).hexdigest()[:16]
         manifest["created_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        return Package(manifest, dict(self.blobs), fingerprints=list(self.fingerprints))
+        return Package(manifest, self.blobs, fingerprints=list(self.fingerprints))
 
 
 def build_package(pairs: list[TrainingPair], *, other_pairs: list[TrainingPair] | None = None,
@@ -410,8 +431,22 @@ def package_content_id(manifest: dict[str, Any]) -> str:
 
 def write_package(package: Package, path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".pkg-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            _write_archive(package, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+    return path
+
+
+def _write_archive(package: Package, target: Any) -> None:
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
         info = zipfile.ZipInfo("manifest.json", _ZIP_DATE)
         info.compress_type = zipfile.ZIP_DEFLATED
         archive.writestr(info, json.dumps(package.manifest, indent=1, sort_keys=True))
@@ -427,18 +462,6 @@ def write_package(package: Package, path: Path) -> Path:
         info = zipfile.ZipInfo("fingerprints.json", _ZIP_DATE)
         info.compress_type = zipfile.ZIP_DEFLATED
         archive.writestr(info, _canonical(package.fingerprints()))
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".pkg-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(buffer.getvalue())
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, path)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
-    return path
 
 
 def _read_blob(package: Package, variant_id: str) -> bytes:

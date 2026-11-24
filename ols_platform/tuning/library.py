@@ -18,7 +18,7 @@ import sqlite3
 import sys
 import threading
 import time
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -408,6 +408,39 @@ def process_project(task: dict[str, Any], reader: Any = None) -> dict[str, Any]:
             return result
 
 
+READ_AHEAD = 48  # variants whose files are read before they are needed
+
+
+class _ReadAhead:
+    """Read example files a little before training needs them, several at a
+    time, so a hard disk can serve them in its own order (training itself
+    reads one file at a time and leaves the disk seeking)."""
+
+    def __init__(self, root: Path, original_of: dict[str, str], threads: int = 8) -> None:
+        self.root, self.original_of = root, original_of
+        self.pool = ThreadPoolExecutor(max_workers=threads)
+
+    def _touch(self, path: Path) -> None:
+        try:
+            with path.open("rb") as handle:
+                while handle.read(1 << 20):
+                    pass
+        except OSError:
+            pass
+
+    def add_file(self, path: Path) -> None:
+        self.pool.submit(self._touch, path)
+
+    def add(self, pair_ids: list[str]) -> None:
+        originals = {self.original_of[i] for i in pair_ids if i in self.original_of}
+        for path in ([self.root / "pairs" / f"{i}.json.gz" for i in pair_ids]
+                     + [self.root / "originals" / f"{sha}.bin.gz" for sha in originals]):
+            self.pool.submit(self._touch, path)
+
+    def close(self) -> None:
+        self.pool.shutdown(wait=False, cancel_futures=True)
+
+
 def contaminated_pairs(rows: list[dict[str, Any]]) -> set[str]:
     """Pairs whose image is an original in one project and a tune in another
     ("back to stock", a tuned read stored as original, swapped versions).
@@ -743,13 +776,26 @@ class Library:
         used_cache: set[str] = set()
         builder = PackageBuilder(cfg)
         reused = 0
-        for index, key in enumerate(sorted(groups), 1):
+        original_of = {row["pair_id"]: row["original_sha256"] for row in rows}
+        ahead = _ReadAhead(self.root, original_of)
+        order = sorted(groups)
+
+        def cache_file_of(key: tuple[str, str]) -> Path:
+            profiles_of = {p: sorted(ids) for p, ids in groups[key].items()}
+            digest = hashlib.sha256(json.dumps(
+                {"p": profiles_of, "z": sorted(zones.get(key, []))[:MAX_LEARNING_PAIRS], "s": cfg,
+                 "v": SOFTWARE_VERSION, "f": 5}, sort_keys=True).encode()).hexdigest()[:32]
+            return cache_dir / f"{digest}.json"
+
+        for index, key in enumerate(order, 1):
+            if index + READ_AHEAD <= len(order):
+                upcoming = order[index + READ_AHEAD - 1]
+                cached = cache_file_of(upcoming)
+                ahead.add_file(cached) if cached.exists() else ahead.add(
+                    [i for ids in groups[upcoming].values() for i in sorted(ids)[:MAX_LEARNING_PAIRS]])
             by_profile = {p: sorted(ids) for p, ids in groups[key].items()}
             zone_ids = sorted(zones.get(key, []))[:MAX_LEARNING_PAIRS]
-            cache_key = hashlib.sha256(json.dumps(
-                {"p": by_profile, "z": zone_ids, "s": cfg, "v": SOFTWARE_VERSION, "f": 5},
-                sort_keys=True).encode()).hexdigest()[:32]
-            cache_file = cache_dir / f"{cache_key}.json"
+            cache_file = cache_file_of(key)
             used_cache.add(cache_file.name)
             if cache_file.exists():
                 try:
@@ -776,6 +822,7 @@ class Library:
             tmp.write_text(json.dumps(unit), encoding="utf-8")
             os.replace(tmp, cache_file)
             del learning, extra, zone_pairs, cache
+        ahead.close()
         for stale in cache_dir.glob("*.json"):
             if stale.name not in used_cache:
                 stale.unlink(missing_ok=True)
