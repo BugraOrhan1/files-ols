@@ -78,6 +78,13 @@ class VersionNameTests(unittest.TestCase):
                     "stage 1 TTE500", "stage_1 350hp P350", "Stage 1 catch can"), "stage1")
         self.check(("Vmax 250Km/h begrenzung",), "vmax")
 
+    def test_names_seen_in_the_default_folder(self):
+        self.check(("stage 1 speed off", "Stage1 Speed OFF", "Stag1 speed off", "stage 1 + top speed"), "stage1+vmax")
+        self.check(("Start & Stop", "start en stop", "start/stop", "S&S"), "start_stop_off")
+        self.check(("stage 1 + s&s off",), "stage1+start_stop_off")
+        self.check(("stage 1 - shift speed",), "stage1")
+        self.check(("Stag1 cat off speed off",), "stage1+cat_off+vmax")
+
     def test_trial_versions_are_not_learned(self):
         self.check(("Stage 2 TEST", "stage1 test2", "stage_1 not tested yet", "Stage1 Testing", "Stage 1 voor chinees , maar is nog niet volledig",
                     "stage1 nicht fertig", "Stage 2 unfinished"), "other")

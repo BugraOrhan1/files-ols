@@ -121,12 +121,12 @@ COMPONENTS: list[tuple[str, str, re.Pattern]] = [
         ("cat_off", "Lambda/KAT OFF", r"lambda|\bo2\b|\bcat\b|\bkat\b|decat|catalyst|katalysator|kat ?off|cat ?off"),
         ("dtc_off", "DTC OFF", r"\bdtc"),
         ("pop_bang", "Pop & Bang", r"pop|bang|burble|crackle|\bp ?& ?b\b|\bpnb\b"),
-        ("vmax", "Vmax", r"v ?-?max|speed ?limit|limiter"),
+        ("vmax", "Vmax", r"v ?-?max|speed ?limit|limiter|\bspeed ?(off|uit|aus)\b|top ?speed"),
         ("launch_control", "Launch control", r"launch|\blc\b"),
         ("hardcut", "Hardcut", r"hard ?cut"),
         ("immo_off", "IMMO OFF", r"immo"),
         ("swirl_off", "Swirl/flaps OFF", r"swirl|\bflaps?\b|drall"),
-        ("start_stop_off", "Start/Stop OFF", r"start ?/? ?stop|\bs/s\b"),
+        ("start_stop_off", "Start/Stop OFF", r"start ?(/|&|\+|en|and|und)? ?stop|\bs ?[/&] ?s\b"),
         ("maf_off", "MAF OFF", r"\bmaf\b|\blmm\b"),
         ("torque_monitor_off", "Torque monitoring OFF", r"torq(ue)? ?monitor"),
         ("evap_off", "EVAP OFF", r"evap"),
@@ -135,7 +135,7 @@ COMPONENTS: list[tuple[str, str, re.Pattern]] = [
     )
 ]
 COMPONENT_LABELS = {key: label for key, label, _ in COMPONENTS}
-_STAGE = re.compile(r"\b(stage|stufe|stg|st|step|etappe|level|lvl)[ ._-]?([1-4])(?!\d)", re.IGNORECASE)
+_STAGE = re.compile(r"\b(stage|stag|stufe|stg|st|step|etappe|level|lvl)[ ._-]?([1-4])(?!\d)", re.IGNORECASE)
 # Versions their own author marked as faulty.
 _BAD = re.compile(r"\bbad ?files?\b|\blimp\b|limp ?mode|notlauf|(gives|has|with|copy) errors|\ball problems|"
                   r"not good|blue ?screen|(does ?n.?t|not) (start|run|work)|nicht gut|l[aä]uft nicht|"

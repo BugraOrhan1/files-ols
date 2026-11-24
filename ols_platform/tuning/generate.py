@@ -14,6 +14,7 @@ from typing import Any
 
 from .identity import _useful, classify_input, token_in
 from .compose import join, offered, parts_of
+from .exact import known_versions
 from .ols_versions import profile_label
 from .package import contract_for
 
@@ -328,6 +329,8 @@ def available_profiles(data: bytes, package, hint: str = "", min_similarity: flo
         profiles = list(variant["profiles"])
     except GenerationRejected as exc:
         error = exc
+    same = known_versions(data, package)
+    profiles = list(dict.fromkeys([v["profile"] for v in same] + profiles))
     similar, donors = transfer_profiles(package, data, hint, min_similarity or DEFAULT_MIN_SIMILARITY, family_floor)
     for profile in similar:
         if profile not in profiles:
@@ -358,6 +361,46 @@ def _integrity(family: dict[str, Any], contracts: dict | None) -> dict[str, Any]
             if ready else "Integriteitsmethode onbekend: export geblokkeerd."
         ),
     }
+
+
+def _generate_known(data: bytes, profile_name: str, package, contracts: dict | None,
+                    pair_id: str | None = None) -> GenerationResult | None:
+    """The tune of this exact original; ``pair_id`` picks one of its versions."""
+
+    versions = [v for v in known_versions(data, package) if v["profile"] == profile_name]
+    if pair_id is not None:
+        versions = [v for v in versions if v["pair_id"] == pair_id]
+    if not versions:
+        return None
+    chosen = versions[0]
+    family, variant = _family_of(package, chosen["variant_id"])
+    blob = package.load_variant(chosen["variant_id"])
+    _check_zones(blob, data, profile_name)
+    output = bytearray(data)
+    changes = []
+    for edit in chosen["pair"]["edits"]:
+        start, orig_hex, tuned_hex = edit[0], edit[1], edit[2]
+        new = bytes.fromhex(tuned_hex)
+        output[start:start + len(new)] = new
+        changes.append({
+            "start": start, "end": start + len(new), "kind": "known_pair", "method": "bekend paar",
+            "changed_bytes": sum(1 for a, b in zip(new, bytes.fromhex(orig_hex)) if a != b),
+            "changed_cells": None, "map": None, "label": f"Wijziging 0x{start:X}"})
+    notes = [f"Exact hetzelfde origineel als in project {chosen['project']}; de versie '{chosen['name']}' daarvan "
+             "wordt gebruikt."]
+    if len(versions) > 1:
+        notes.append(f"Er bestaan {len(versions) - 1} andere varianten van {profile_label(profile_name)} voor dit "
+                     "origineel: " + "; ".join(
+            f"'{v['name']}' ({v['project']})" for v in versions[1:6]) + ".")
+    input_sha = hashlib.sha256(data).hexdigest()
+    return GenerationResult(
+        output=bytes(output), family_key=family["family_key"], variant_key=variant["variant_key"],
+        profile=profile_name, package_id=package["package_id"], input_sha256=input_sha,
+        output_sha256=hashlib.sha256(bytes(output)).hexdigest(), changes=changes,
+        allowed_ranges=[(c["start"], c["end"]) for c in changes],
+        identity={"family": family["ecu_type"], "variant": variant["variant_key"],
+                  "known_pair": chosen["pair_id"], "original_sha256_equal": True},
+        evidence_level="KNOWN_PAIR", integrity=_integrity(family, contracts), notes=notes)
 
 
 def _generate_exact(data: bytes, profile_name: str, package, contracts: dict | None = None) -> GenerationResult:
@@ -575,6 +618,12 @@ def generate(data: bytes, profile_name: str, package, contracts: dict | None = N
 
     options = {"hint": hint, "min_similarity": min_similarity, "min_coverage": min_coverage,
                "family_floor": family_floor}
+    profile_name, _at, pair_id = profile_name.partition("@")
+    if pair_id:
+        result = _generate_known(data, profile_name, package, contracts, pair_id)
+        if result is None:
+            raise GenerationRejected("version_not_found", "Deze versie hoort niet bij dit origineel.")
+        return result
     try:
         return _generate_single(data, profile_name, package, contracts, **options)
     except GenerationRejected as exc:
@@ -629,6 +678,9 @@ def _generate_single(data: bytes, profile_name: str, package, contracts: dict | 
     classification = classify_input(data)
     if classification.kind != "raw_image":
         raise GenerationRejected(f"input_{classification.kind}", classification.message)
+    known = _generate_known(data, profile_name, package, contracts)
+    if known is not None:
+        return known
     try:
         return _generate_exact(data, profile_name, package, contracts)
     except GenerationRejected as exc:

@@ -444,8 +444,12 @@ class TunerApp:
         path, package, options = self.original, self.package, self._transfer_options()
 
         def work():
-            return available_profiles(path.read_bytes(), package, options["hint"], options["min_similarity"],
-                                      options["family_floor"])
+            from .exact import known_versions
+
+            data = path.read_bytes()
+            found = available_profiles(data, package, options["hint"], options["min_similarity"],
+                                       options["family_floor"])
+            return *found, known_versions(data, package)
 
         def done(result, error) -> None:
             if error is not None:
@@ -454,13 +458,18 @@ class TunerApp:
                 self.profile_var.set("")
                 self._show_error(error, "Herkenning")
                 return
-            family, variant, profiles = result
+            family, variant, profiles, versions = result
             previous = self._profile_key()
             self.log.info("Herkend: familie %s, variant %s, tunings: %s",
                           family["family_key"] if family else "-",
                           variant["variant_key"] if variant else "geen exacte variant (overzetten)",
                           ", ".join(profiles))
             self.profile_map = {profile_label(p): p for p in profiles}
+            # every separate version of this exact original (e.g. two kinds of pop & bang)
+            several = [v for v in versions if sum(w["profile"] == v["profile"] for w in versions) > 1]
+            for v in several:
+                self.profile_map[f"   {profile_label(v['profile'])} – versie: {v['name'][:70]}"] = \
+                    f"{v['profile']}@{v['pair_id']}"
             self.profile_box.configure(values=list(self.profile_map))
             choice = previous if previous in profiles else ("stage1" if "stage1" in profiles else profiles[0])
             self.profile_var.set(profile_label(choice))
