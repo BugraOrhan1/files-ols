@@ -43,6 +43,17 @@ class TowardTests(unittest.TestCase):
         slightly = struct.pack("<8H", *[1030 + 40 * i for i in range(8)])
         self.assertEqual(self.count(slightly), (8, 0))
 
+    def test_one_tuned_map_among_stock_ones(self):
+        tuned_map = struct.pack("<8H", *[1100 + 40 * i for i in range(8)])
+        stock_map = struct.pack("<8H", *[900 + 40 * i for i in range(8)])
+        edits = [[16 * k, ORIGINAL.hex(), UP.hex()] for k in range(4)]
+        placed = [{"how": "omgerekend", "start": 16 * k, "end": 16 * k + 16, "donor_start": 16 * k} for k in range(4)]
+        data = tuned_map + stock_map * 3
+        cells, toward = tr.moved_toward_tune(data, edits, placed)
+        self.assertLess(toward, tr.TOWARD_SHARE * cells)  # lost in the total ...
+        self.assertEqual(tr.one_map_moved(data, edits, placed), (8, 8))  # ... not on its own
+        self.assertEqual(tr.one_map_moved(stock_map * 4, edits, placed), (0, 0))
+
     def test_identical_bytes_are_not_counted(self):
         placed = [{"how": "zelfde plek", "start": 0, "end": 16, "donor_start": 0}]
         self.assertEqual(tr.moved_toward_tune(UP, [[0, ORIGINAL.hex(), UP.hex()]], placed), (0, 0))

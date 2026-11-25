@@ -669,6 +669,7 @@ def split_integrity(missing: list[dict[str, Any]], edits: list[list[Any]],
 TOWARD_CELLS = 8          # recalculated cells that differ from the donor's original ...
 TOWARD_SHARE = 0.85       # ... and lie on the tuned side of it: the file is probably tuned already
 TOWARD_PROGRESS = 0.25    # a tune moves values this far or further; stock variants differ less
+ONE_MAP_PROGRESS, ONE_MAP_SHARE = 0.5, 0.95   # the same for a single change on its own
 WARN_CELLS, WARN_SHARE = 16, 0.95   # the same for any other donor: only a warning
 
 
@@ -680,29 +681,54 @@ def moved_toward_tune(data: bytes, edits: list[list[Any]], placed: list[dict[str
     worked on differs the way tunes do, and recalculating would raise it
     twice. Measured on deliberately half-tuned files."""
 
-    by_start = {e[0]: e for e in edits}
     best = (0, 0)
     for fmt in ("<H", ">H"):
-        cells = toward = 0
-        for item in placed:
-            if item["how"] != "omgerekend":
-                continue
-            edit = by_start.get(item["donor_start"]) or by_start.get(item["donor_start"] + 1)
-            if edit is None:
-                continue
-            orig, tuned = bytes.fromhex(edit[1]), bytes.fromhex(edit[2])
-            offset = item["start"] + edit[0] - item["donor_start"]
-            for i in range(0, len(orig) - 1, 2):
-                if offset + i + 2 > len(data):
-                    break
-                before, after = struct.unpack_from(fmt, orig, i)[0], struct.unpack_from(fmt, tuned, i)[0]
-                value = struct.unpack_from(fmt, data, offset + i)[0]
-                if before != after and value != before:
-                    cells += 1
-                    toward += (value - before) / (after - before) >= TOWARD_PROGRESS
+        rows = _progress(data, edits, placed, fmt)
+        cells = sum(map(len, rows))
+        toward = sum(v >= TOWARD_PROGRESS for row in rows for v in row)
         if cells and (not best[0] or abs(toward / cells - 0.5) > abs(best[1] / best[0] - 0.5)):
             best = (cells, toward)
     return best
+
+
+def one_map_moved(data: bytes, edits: list[list[Any]], placed: list[dict[str, Any]]) -> tuple[int, int]:
+    """(cells, on the way) of the one recalculated change that already lies
+    nearly completely at the tune; (0, 0) when there is none.
+
+    A tuner who only raised one or two maps disappears in the total of
+    ``moved_toward_tune``."""
+
+    best = (0, 0)
+    for fmt in ("<H", ">H"):
+        for row in _progress(data, edits, placed, fmt):
+            toward = sum(v >= ONE_MAP_PROGRESS for v in row)
+            if len(row) >= TOWARD_CELLS and toward >= ONE_MAP_SHARE * len(row) and toward > best[1]:
+                best = (len(row), toward)
+    return best
+
+
+def _progress(data: bytes, edits: list[list[Any]], placed: list[dict[str, Any]], fmt: str) -> list[list[float]]:
+    """Per recalculated change: how far (0 = the donor's original, 1 = its
+    tune) every cell lies that differs from the donor's original."""
+
+    by_start = {e[0]: e for e in edits}
+    out = []
+    for item in placed:
+        if item["how"] != "omgerekend":
+            continue
+        edit = by_start.get(item["donor_start"]) or by_start.get(item["donor_start"] + 1)
+        if edit is None:
+            continue
+        orig, tuned = bytes.fromhex(edit[1]), bytes.fromhex(edit[2])
+        offset = item["start"] + edit[0] - item["donor_start"]
+        row = []
+        for i in range(0, min(len(orig), len(data) - offset) - 1, 2):
+            before, after = struct.unpack_from(fmt, orig, i)[0], struct.unpack_from(fmt, tuned, i)[0]
+            value = struct.unpack_from(fmt, data, offset + i)[0]
+            if before != after and value != before:
+                row.append((value - before) / (after - before))
+        out.append(row)
+    return out
 
 
 SECOND_OPINIONS = 4       # other donors a transferred tune is compared with
@@ -860,6 +886,8 @@ def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set
                 p["how"] in ("omgerekend", "kaart via assen") for p in placed)):
             continue  # after an alarm only changes on identical original bytes prove a stock file
         cells, toward = moved_toward_tune(data, pair["edits"], placed)
+        if not (cells >= TOWARD_CELLS and toward >= TOWARD_SHARE * cells):
+            cells, toward = one_map_moved(data, pair["edits"], placed)
         if cells >= TOWARD_CELLS and toward >= TOWARD_SHARE * cells:
             return {"status": "failed", "code": "possibly_tuned",
                     "reason": f"Dit bestand lijkt al door een tuner bewerkt: {toward} van de {cells} afwijkende waarden "
