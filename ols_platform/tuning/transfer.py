@@ -33,13 +33,18 @@ from .package import ANCHOR_SIZE, FP_SAMPLES, fingerprint
 DEFAULT_MIN_SIMILARITY = 0.70
 CANDIDATE_FLOOR = 0.10      # below this same-offset score a donor is not even checked for shifts
 MAX_SHIFT_CHECKS = 24
+PRESCREEN_ANCHORS = 16      # of every donor, spread over it, looked up in the file before any full comparison
+PRESCREEN_SHARE = 0.4       # share of those that must be found for a full comparison
+PRESCREEN_CHECKS = 60       # donors of the same size compared in full because of it
 CROSS_SIZE_CHECKS = 200     # donors of another file size (full read vs calibration-only) checked by anchors
+CROSS_SIZE_PENALTY = 0.02   # in the ranking
 CROSS_SIZE_RATIO = 4.0      # ... only when the sizes differ at most this factor
 CROSS_SIZE_ALIGN = 0x10000  # ... and both are whole 64 KB sectors (a cut-off read is never "another form")
 CROSS_SIZE_HEADER = 0x400   # ... apart from a small tool header/trailer (e.g. 0x840010 = 8.25 MB + 16 bytes)
 _RANK_CACHE: dict[tuple, list[dict[str, Any]]] = {}
 DEFAULT_MIN_COVERAGE = 1.0
 MAX_DONORS_TRIED = 8
+MAX_DONORS_FALLBACK = 24   # ... when none of the first ones places the whole tune
 # Donors at least this similar count as the same software for 'already partly tuned' proof.
 NEARLY_IDENTICAL = 0.95     # ranked before donors that only share their numbers
 SAME_SOFTWARE_SIMILARITY = 0.999
@@ -103,6 +108,48 @@ def shifted_similarity(data: bytes, anchor_blob: bytes, give_up_below: float = 0
     return found / len(snippets)
 
 
+def _anchor_index(package) -> tuple[array, array, set[int]]:
+    """(some 8-byte keys of every donor, where each donor's keys start, all
+    different keys), built once per loaded package."""
+
+    index = getattr(package, "_anchor_index", None)
+    if index is None:
+        keys, starts = array("Q"), array("L")
+        for entry in package.fingerprints():
+            starts.append(len(keys))
+            blob = base64.b64decode(entry.get("anchors") or "")
+            count = len(blob) // ANCHOR_SIZE
+            chosen = {i * count // PRESCREEN_ANCHORS for i in range(PRESCREEN_ANCHORS)} if count else ()
+            for i in sorted(chosen):
+                keys.frombytes(blob[i * ANCHOR_SIZE + 4:i * ANCHOR_SIZE + 12])
+        starts.append(len(keys))
+        index = (keys, starts, set(keys))
+        try:
+            package._anchor_index = index
+        except AttributeError:
+            pass
+    return index
+
+
+def prescreen(package, data: bytes) -> list[float]:
+    """For every fingerprint of the package: the share of its sampled anchors
+    that occurs anywhere in ``data``. Looks at all donors (half a second for
+    140,000), so the few that get a full comparison are the right ones and
+    not the first ones of a long list."""
+
+    keys, starts, wanted = _anchor_index(package)
+    found: set[int] = set()
+    for shift in range(8):
+        words = array("Q")
+        words.frombytes(data[shift:shift + (len(data) - shift) // 8 * 8])
+        found |= wanted.intersection(words)
+    out = []
+    for i in range(len(starts) - 1):
+        own = keys[starts[i]:starts[i + 1]]
+        out.append(sum(k in found for k in own) / len(own) if own else 0.0)
+    return out
+
+
 def rank_donors(package, data: bytes, hint: str = "", profile: str | None = None,
                 min_similarity: float = DEFAULT_MIN_SIMILARITY, exclude: set[str] | None = None,
                 family_floor: dict[str, float] | None = None) -> list[dict[str, Any]]:
@@ -142,7 +189,9 @@ def _rank_donors(package, data: bytes, hint: str = "", profile: str | None = Non
             pass
     exclude = exclude or set()
     cross_size = []
-    for entry in package.fingerprints():
+    promising = []
+    shares = prescreen(package, data)
+    for entry, share in zip(package.fingerprints(), shares):
         if entry["original_sha256"] in exclude:
             continue
         if profile and profile not in entry.get("profiles", []):
@@ -151,10 +200,11 @@ def _rank_donors(package, data: bytes, hint: str = "", profile: str | None = Non
             # Same ECU read in another form (e.g. full flash vs calibration
             # only, or another dump size). Same-offset sampling says nothing
             # here; the donor's anchor snippets are searched anywhere instead.
-            if entry.get("anchors") and sizes_compatible(entry["size"], len(data)):
+            expected = min(1.0, len(data) / entry["size"]) if entry["size"] else 1.0
+            if entry.get("anchors") and share >= PRESCREEN_SHARE * expected and sizes_compatible(entry["size"], len(data)):
                 donor_tokens = hint_tokens(" ".join((entry.get("vehicle", ""), entry.get("ecu", ""),
                                                      entry.get("project", ""))))
-                cross_size.append((len(tokens & donor_tokens), entry))
+                cross_size.append((min(1.0, share / expected), len(tokens & donor_tokens), entry))
             continue
         key = (entry["variant_id"], entry["original_sha256"])
         donor_fp = cache.get(key)
@@ -163,19 +213,25 @@ def _rank_donors(package, data: bytes, hint: str = "", profile: str | None = Non
         score = similarity(input_fp, donor_fp)
         donor_tokens = hint_tokens(" ".join((entry.get("vehicle", ""), entry.get("ecu", ""), entry.get("project", ""))))
         stage1.append((score, len(tokens & donor_tokens), entry))
+        if score < min_similarity and share >= PRESCREEN_SHARE:
+            promising.append((-share, -score, entry["original_sha256"], id(entry)))
     stage1.sort(key=lambda item: (-(item[0] + 0.02 * min(item[1], 5)), item[2]["original_sha256"]))
     ranked = []
     checks = 0
+    promising = {item[3] for item in sorted(promising)[:PRESCREEN_CHECKS]}
     for score, overlap, entry in stage1:
         best = score
         if score < min_similarity and score >= CANDIDATE_FLOOR and checks < MAX_SHIFT_CHECKS and entry.get("anchors"):
             checks += 1
             best = max(score, shifted_similarity(data, base64.b64decode(entry["anchors"])))
+        elif id(entry) in promising:
+            best = max(score, shifted_similarity(data, base64.b64decode(entry["anchors"])))
         floor = max(min_similarity, (family_floor or {}).get(entry.get("family_key", ""), 0.0))
         if best >= floor:
             ranked.append(dict(entry, similarity=best, same_offset_similarity=score, hint_overlap=overlap))
-    cross_size.sort(key=lambda item: (-item[0], abs(item[1]["size"] - len(data)), item[1]["original_sha256"]))
-    for overlap, entry in cross_size[:CROSS_SIZE_CHECKS]:
+    cross_size.sort(key=lambda item: (-item[0] - 0.02 * min(item[1], 5), abs(item[2]["size"] - len(data)),
+                                      item[2]["original_sha256"]))
+    for _share, overlap, entry in cross_size[:CROSS_SIZE_CHECKS]:
         larger = entry["size"] > len(data)
         anchors_blob = base64.b64decode(entry["anchors"])
         floor = max(min_similarity, (family_floor or {}).get(entry.get("family_key", ""), 0.0))
@@ -225,9 +281,15 @@ def _rank_donors(package, data: bytes, hint: str = "", profile: str | None = Non
             listed[entry["original_sha256"]] = item
     # A nearly identical image is better evidence than equal numbers in an
     # otherwise different one (measured on hidden tunes).
-    ranked.sort(key=lambda e: (0 if e["similarity"] >= NEARLY_IDENTICAL else 1,
-                               _IDENTITY_ORDER.get(e.get("identity_confirmed"), 2),
-                               -(e["similarity"] + 0.004 * min(e["hint_overlap"], 5)), e["original_sha256"]))
+    # Same read form before another one; a part of a larger read comes last.
+    def order(e: dict[str, Any]) -> tuple:
+        partial = bool(e.get("exact_required")) and not e.get("identity_confirmed")
+        other_form = CROSS_SIZE_PENALTY if e.get("cross_size") else 0.0
+        return (0 if e["similarity"] >= NEARLY_IDENTICAL and not partial else 1,
+                _IDENTITY_ORDER.get(e.get("identity_confirmed"), 2), partial,
+                other_form - (e["similarity"] + 0.004 * min(e["hint_overlap"], 5)), e["original_sha256"])
+
+    ranked.sort(key=order)
     return ranked
 
 
@@ -827,6 +889,10 @@ def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set
     # Donors sharing the numbers stay candidates behind the nearly identical ones.
     tried = donors[:MAX_DONORS_TRIED]
     tried += [d for d in donors[MAX_DONORS_TRIED:] if d.get("identity_confirmed")][:MAX_DONORS_TRIED // 2]
+    listed = {d["original_sha256"] for d in tried}
+    # Partial reads often fail on their size alone; they do not use up the places of other donors.
+    tried += [d for d in donors if d["original_sha256"] not in listed
+              and not d.get("exact_required")][:MAX_DONORS_FALLBACK - MAX_DONORS_TRIED]
     for rank, donor in enumerate(tried):
         blob = package.load_variant(donor["variant_id"])
         pair = choose_known_pair(blob, profile, donor["original_sha256"])
@@ -889,10 +955,16 @@ def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set
         if not (cells >= TOWARD_CELLS and toward >= TOWARD_SHARE * cells):
             cells, toward = one_map_moved(data, pair["edits"], placed)
         if cells >= TOWARD_CELLS and toward >= TOWARD_SHARE * cells:
-            return {"status": "failed", "code": "possibly_tuned",
-                    "reason": f"Dit bestand lijkt al door een tuner bewerkt: {toward} van de {cells} afwijkende waarden "
-                              f"liggen al aan de kant waar '{pair.get('tuned_version_name') or profile}' ze heen "
-                              "brengt. Nog een keer tunen zou dubbel verhogen. Open het origineel."}
+            finding = {"status": "failed", "code": "possibly_tuned",
+                       "reason": f"Dit bestand lijkt al door een tuner bewerkt: {toward} van de {cells} afwijkende "
+                                 f"waarden liggen al aan de kant waar '{pair.get('tuned_version_name') or profile}' ze "
+                                 "heen brengt. Nog een keer tunen zou dubbel verhogen. Open het origineel."}
+            if donor["similarity"] >= NEARLY_IDENTICAL and not donor.get("cross_size"):
+                return finding
+            # A stronger stock version of other software lies there as well:
+            # only a donor on identical original bytes may still be used.
+            suspect = suspect or finding
+            continue
         total_bytes = edit_bytes - sum(m["length"] for m in fields)
         missing_bytes = sum(m["length"] for m in missing)
         coverage = 1 - missing_bytes / total_bytes if total_bytes else 0.0
