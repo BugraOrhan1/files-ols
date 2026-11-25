@@ -731,7 +731,10 @@ def split_integrity(missing: list[dict[str, Any]], edits: list[list[Any]],
 TOWARD_CELLS = 8          # recalculated cells that differ from the donor's original ...
 TOWARD_SHARE = 0.85       # ... and lie on the tuned side of it: the file is probably tuned already
 TOWARD_PROGRESS = 0.25    # a tune moves values this far or further; stock variants differ less
-ONE_MAP_PROGRESS, ONE_MAP_SHARE = 0.5, 0.95   # the same for a single change on its own
+ONE_MAP_CELLS, ONE_MAP_PROGRESS, ONE_MAP_SHARE = 12, 0.5, 0.95   # the same for a single map on its own
+ONE_MAP_GAP = 64          # recalculated rows at most this many bytes apart belong to the same map
+HINT_CELLS, HINT_PROGRESS, HINT_SHARE = 30, 0.05, 0.9   # a whole map a little to the tuned side: a warning
+LARGE_BLOCK = 400         # one change with more differing cells than this is other content, not another calibration
 WARN_CELLS, WARN_SHARE = 16, 0.95   # the same for any other donor: only a warning
 
 
@@ -754,19 +757,43 @@ def moved_toward_tune(data: bytes, edits: list[list[Any]], placed: list[dict[str
 
 
 def one_map_moved(data: bytes, edits: list[list[Any]], placed: list[dict[str, Any]]) -> tuple[int, int]:
-    """(cells, on the way) of the one recalculated change that already lies
+    """(cells, on the way) of the one recalculated map that already lies
     nearly completely at the tune; (0, 0) when there is none.
 
     A tuner who only raised one or two maps disappears in the total of
-    ``moved_toward_tune``."""
+    ``moved_toward_tune``. A map is often a list of separate rows, so rows
+    close together are judged as one too."""
 
     best = (0, 0)
     for fmt in ("<H", ">H"):
-        for row in _progress(data, edits, placed, fmt):
+        rows = _progress(data, edits, placed, fmt)
+        for row, enough in [(r, TOWARD_CELLS) for r in rows] + [(r, ONE_MAP_CELLS) for r in _by_map(placed, rows)]:
             toward = sum(v >= ONE_MAP_PROGRESS for v in row)
-            if len(row) >= TOWARD_CELLS and toward >= ONE_MAP_SHARE * len(row) and toward > best[1]:
+            if len(row) >= enough and toward >= ONE_MAP_SHARE * len(row) and toward > best[1]:
                 best = (len(row), toward)
     return best
+
+
+def hint_of_tune(data: bytes, edits: list[list[Any]], placed: list[dict[str, Any]]) -> bool:
+    """A whole recalculated map lies on the tuned side of the donor's
+    original. Stock software does that now and then, so it is only a reason
+    to warn."""
+
+    return any(len(row) >= HINT_CELLS and sum(v >= HINT_PROGRESS for v in row) >= HINT_SHARE * len(row)
+               for fmt in ("<H", ">H") for row in _by_map(placed, _progress(data, edits, placed, fmt)))
+
+
+def _by_map(placed: list[dict[str, Any]], rows: list[list[float]]) -> list[list[float]]:
+    items = [item for item in placed if item["how"] == "omgerekend"]
+    out: list[list[float]] = []
+    end = None
+    for item, row in sorted(zip(items, rows), key=lambda pair: pair[0]["start"]):
+        if end is not None and item["start"] - end <= ONE_MAP_GAP:
+            out[-1] = out[-1] + row
+        else:
+            out.append(row)
+        end = max(end or 0, item["end"])
+    return out
 
 
 def _progress(data: bytes, edits: list[list[Any]], placed: list[dict[str, Any]], fmt: str) -> list[list[float]]:
@@ -779,17 +806,17 @@ def _progress(data: bytes, edits: list[list[Any]], placed: list[dict[str, Any]],
         if item["how"] != "omgerekend":
             continue
         edit = by_start.get(item["donor_start"]) or by_start.get(item["donor_start"] + 1)
+        row: list[float] = []
+        out.append(row)
         if edit is None:
             continue
         orig, tuned = bytes.fromhex(edit[1]), bytes.fromhex(edit[2])
         offset = item["start"] + edit[0] - item["donor_start"]
-        row = []
         for i in range(0, min(len(orig), len(data) - offset) - 1, 2):
             before, after = struct.unpack_from(fmt, orig, i)[0], struct.unpack_from(fmt, tuned, i)[0]
             value = struct.unpack_from(fmt, data, offset + i)[0]
             if before != after and value != before:
                 row.append((value - before) / (after - before))
-        out.append(row)
     return out
 
 
@@ -836,7 +863,8 @@ def with_second_opinions(data: bytes, profile: str, package, outcome: dict[str, 
     least two opinions."""
 
     outcomes = [outcome]
-    looks_tuned = False
+    looks_tuned = bool(outcome.get("placed") and outcome.get("pair")
+                       and hint_of_tune(data, outcome["pair"]["edits"], outcome["placed"]))
     floor = outcome["donor"]["similarity"] - OPINION_WINDOW
     for _ in range(SECOND_OPINIONS):
         other = transfer(data, profile, package, hint=hint, family_floor=family_floor, min_similarity=min_similarity,
@@ -951,10 +979,18 @@ def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set
         if suspect is not None and (missing or present or any(
                 p["how"] in ("omgerekend", "kaart via assen") for p in placed)):
             continue  # after an alarm only changes on identical original bytes prove a stock file
+        if max(map(len, _progress(data, pair["edits"], placed, "<H")), default=0) >= LARGE_BLOCK:
+            suspect = suspect or {
+                "status": "failed", "code": "no_reliable_donor",
+                "reason": f"Geen betrouwbaar voorbeeld: een groot blok van het beste voorbeeld "
+                          f"({pair.get('tuned_version_name') or profile}, project {pair.get('project_name', '')}) heeft in "
+                          "dit bestand een heel andere inhoud. Dat wordt niet omgerekend."}
+            continue
         cells, toward = moved_toward_tune(data, pair["edits"], placed)
         if not (cells >= TOWARD_CELLS and toward >= TOWARD_SHARE * cells):
+            # (0, 0) unless one map or row on its own meets its thresholds
             cells, toward = one_map_moved(data, pair["edits"], placed)
-        if cells >= TOWARD_CELLS and toward >= TOWARD_SHARE * cells:
+        if cells:
             finding = {"status": "failed", "code": "possibly_tuned",
                        "reason": f"Dit bestand lijkt al door een tuner bewerkt: {toward} van de {cells} afwijkende "
                                  f"waarden liggen al aan de kant waar '{pair.get('tuned_version_name') or profile}' ze "

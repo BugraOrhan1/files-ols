@@ -608,7 +608,7 @@ def _by_transfer(data: bytes, profile_name: str, package, contracts: dict | None
         notes.append(f"{len(outcome['integrity_fields'])} checksum-/handtekeningveld(en) van het voorbeeld niet "
                      "overgenomen: die horen bij één bestand en moeten door het flashprogramma worden berekend.")
     if opinion["looks_tuned"]:
-        notes.insert(0, "WAARSCHUWING: volgens een ander voorbeeld lijkt dit bestand al (deels) getuned. Controleer of "
+        notes.insert(0, "WAARSCHUWING: dit bestand kan al (deels) getuned zijn. Controleer voor het flashen of "
                         "het echt een origineel is.")
     if opinion["replaced_first"]:
         notes.append(f"Gekozen uit {opinion['compared']} ongeveer even gelijkende voorbeelden: deze tune komt het "
