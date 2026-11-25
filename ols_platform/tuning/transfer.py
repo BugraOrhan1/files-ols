@@ -689,29 +689,49 @@ def _direction_agreement(original: bytes, one: bytes, other: bytes) -> float | N
     return best / len(cells)
 
 
-def second_opinions(data: bytes, profile: str, package, outcome: dict[str, Any], *, hint: str = "",
-                    family_floor: dict[str, float] | None = None, min_similarity: float = DEFAULT_MIN_SIMILARITY,
-                    ) -> dict[str, Any]:
-    """How far other, independent donors agree with a transferred tune.
+def _overlap(original: bytes, one: bytes, other: bytes) -> float:
+    """Shared share of the cells two tunes change."""
+
+    a = {i for i in range(0, len(original) - 1, 2) if one[i:i + 2] != original[i:i + 2]}
+    b = {i for i in range(0, len(original) - 1, 2) if other[i:i + 2] != original[i:i + 2]}
+    return len(a & b) / len(a | b) if a | b else 0.0
+
+
+def with_second_opinions(data: bytes, profile: str, package, outcome: dict[str, Any], *, hint: str = "",
+                         family_floor: dict[str, float] | None = None,
+                         min_similarity: float = DEFAULT_MIN_SIMILARITY) -> tuple[dict[str, Any], dict[str, Any]]:
+    """(the transfer to use, how far the other donors agree with it).
 
     High similarity proves that a tune lands in the right place, not that the
-    tune itself is sound. ``contradicted`` needs at least two opinions."""
+    tune itself is sound. Of three or more donors that are about equally
+    similar, the one the others agree with most is used; on hidden tunes that
+    came closer to the real tune than the first one. ``contradicted`` needs at
+    least two opinions."""
 
-    used = {outcome["donor"]["original_sha256"]}
+    outcomes = [outcome]
     floor = outcome["donor"]["similarity"] - OPINION_WINDOW
-    values = []
     for _ in range(SECOND_OPINIONS):
-        other = transfer(data, profile, package, hint=hint, skip=set(used), family_floor=family_floor,
-                         min_similarity=min_similarity, min_coverage=1.0)
+        other = transfer(data, profile, package, hint=hint, family_floor=family_floor, min_similarity=min_similarity,
+                         min_coverage=1.0, skip={o["donor"]["original_sha256"] for o in outcomes})
         if other["status"] != "ok" or other["donor"]["similarity"] < floor:
             break
-        used.add(other["donor"]["original_sha256"])
-        value = _direction_agreement(data, outcome["output"], other["output"])
-        if value is not None:
-            values.append(value)
+        outcomes.append(other)
+    agree = [[None if a is b else _direction_agreement(data, a["output"], b["output"]) for b in outcomes]
+             for a in outcomes]
+    chosen = 0
+    if len(outcomes) >= 3:
+        def support(i: int) -> float:
+            others = [k for k in range(len(outcomes)) if k != i]
+            return sum((agree[i][k] or 0.0) * _overlap(data, outcomes[i]["output"], outcomes[k]["output"])
+                       for k in others) / len(others)
+
+        scores = [support(i) for i in range(len(outcomes))]
+        chosen = max(range(len(outcomes)), key=lambda i: (round(scores[i], 4), -i))
+    values = [v for v in agree[chosen] if v is not None]
     agreement = sum(values) / len(values) if values else None
-    return {"opinions": len(values), "agreement": agreement,
-            "contradicted": len(values) >= 2 and agreement < OPINION_MINIMUM}
+    return outcomes[chosen], {
+        "opinions": len(values), "agreement": agreement, "compared": len(outcomes), "replaced_first": chosen != 0,
+        "contradicted": len(values) >= 2 and agreement < OPINION_MINIMUM}
 
 
 def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set[str] | None = None,

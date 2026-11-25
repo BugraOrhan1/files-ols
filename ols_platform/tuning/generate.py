@@ -16,7 +16,7 @@ from .identity import _useful, classify_input, token_in
 from .compose import join, offered, parts_of
 from .exact import known_versions
 from .ols_versions import profile_label
-from .package import contract_for
+from .package import contract_for, is_named_label
 
 
 class GenerationRejected(Exception):
@@ -363,9 +363,6 @@ def _integrity(family: dict[str, Any], contracts: dict | None) -> dict[str, Any]
     }
 
 
-_NO_NAME = {"", "ONBEKEND", "UNKNOWN", "UNDEFINED"}
-
-
 def _named_family(data: bytes, package, family: dict[str, Any]) -> dict[str, Any]:
     """The ECU family to apply the checksum rule of.
 
@@ -373,13 +370,31 @@ def _named_family(data: bytes, package, family: dict[str, Any]) -> dict[str, Any
     when all numbers of a named software variant occur in it (the same proof
     as for exact recognition), that variant's family is used."""
 
-    if family["family_key"].rpartition("|")[0].upper() not in _NO_NAME:
+    if is_named_label(family["family_key"].rpartition("|")[0]):
         return family
-    try:
-        named, _variant, _identity = _select_variant(package, data)
-    except GenerationRejected:
-        return family
-    return family if named["family_key"].rpartition("|")[0].upper() in _NO_NAME else named
+    named = {f["family_key"]: f for f in _matching_families(package, data)
+             if is_named_label(f["family_key"].rpartition("|")[0])}
+    return next(iter(named.values())) if len(named) == 1 else family  # contradicting names prove nothing
+
+
+def _matching_families(package, data: bytes) -> list[dict[str, Any]]:
+    """Families with a software variant of this size whose numbers all occur
+    in the file (at least two of them)."""
+
+    cache: dict[str, bool] = {}
+    out = []
+    for family, variant in package.variants():
+        if variant["size"] != len(data):
+            continue
+        tokens = {t for values in variant["identity"].values() for t in values if _useful(t)}
+        if len(tokens) < 2:
+            continue
+        for token in tokens:
+            if token not in cache:
+                cache[token] = token_in(token, data)
+        if all(cache[t] for t in tokens):
+            out.append(family)
+    return out
 
 
 def _generate_known(data: bytes, profile_name: str, package, contracts: dict | None,
@@ -425,6 +440,7 @@ def _generate_known(data: bytes, profile_name: str, package, contracts: dict | N
 
 def _generate_exact(data: bytes, profile_name: str, package, contracts: dict | None = None) -> GenerationResult:
     family, variant, identity = _select_variant(package, data)
+    family = _named_family(data, package, family)
     blob = package.load_variant(variant["variant_id"])
     profile = blob["profiles"].get(profile_name)
     known = blob["known_pairs"].get(profile_name, [])
@@ -550,7 +566,7 @@ def _family_of(package, variant_id: str) -> tuple[dict, dict]:
 def _by_transfer(data: bytes, profile_name: str, package, contracts: dict | None, hint: str,
                  min_similarity: float | None, min_coverage: float | None,
                  earlier: GenerationRejected | None, family_floor: dict[str, float] | None = None) -> GenerationResult:
-    from .transfer import DEFAULT_MIN_COVERAGE, DEFAULT_MIN_SIMILARITY, second_opinions, transfer
+    from .transfer import DEFAULT_MIN_COVERAGE, DEFAULT_MIN_SIMILARITY, transfer, with_second_opinions
 
     outcome = transfer(data, profile_name, package, hint=hint, family_floor=family_floor,
                        min_similarity=min_similarity or DEFAULT_MIN_SIMILARITY,
@@ -564,6 +580,9 @@ def _by_transfer(data: bytes, profile_name: str, package, contracts: dict | None
                 "cell_out_of_range", "layout_mismatch", "patch_region_mismatch")):
             code = earlier.code  # the recognised variant's own finding stays the headline
         raise GenerationRejected(code, prefix + "Overzetten: " + outcome["reason"], outcome)
+    outcome, opinion = with_second_opinions(
+        data, profile_name, package, outcome, hint=hint, family_floor=family_floor,
+        min_similarity=min_similarity or DEFAULT_MIN_SIMILARITY)
     donor = outcome["donor"]
     family, variant = _family_of(package, donor["variant_id"])
     family = _named_family(data, package, family)
@@ -585,8 +604,9 @@ def _by_transfer(data: bytes, profile_name: str, package, contracts: dict | None
     if outcome.get("integrity_fields"):
         notes.append(f"{len(outcome['integrity_fields'])} checksum-/handtekeningveld(en) van het voorbeeld niet "
                      "overgenomen: die horen bij één bestand en moeten door het flashprogramma worden berekend.")
-    opinion = second_opinions(data, profile_name, package, outcome, hint=hint, family_floor=family_floor,
-                              min_similarity=min_similarity or DEFAULT_MIN_SIMILARITY)
+    if opinion["replaced_first"]:
+        notes.append(f"Gekozen uit {opinion['compared']} ongeveer even gelijkende voorbeelden: deze tune komt het "
+                     "meest overeen met de andere.")
     if opinion["contradicted"]:
         notes.insert(0, f"WAARSCHUWING: {opinion['opinions']} andere voorbeelden spreken deze tune deels tegen "
                         f"({opinion['agreement']:.0%} dezelfde richting). Controleer hem eerst in WinOLS.")

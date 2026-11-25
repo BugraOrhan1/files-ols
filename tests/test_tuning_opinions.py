@@ -17,8 +17,8 @@ def run(outputs, similarities=None):
                for i, (o, s) in enumerate(zip(outputs, similarities))] + [{"status": "failed"}] * 9
     mine = {"output": UP, "donor": {"original_sha256": "me", "similarity": 1.0}}
     with mock.patch.object(tr, "transfer", side_effect=answers) as called:
-        result = tr.second_opinions(ORIGINAL, "stage1", None, mine)
-    return result, called
+        chosen, result = tr.with_second_opinions(ORIGINAL, "stage1", None, mine)
+    return dict(result, chosen=chosen), called
 
 
 class OpinionTests(unittest.TestCase):
@@ -28,8 +28,17 @@ class OpinionTests(unittest.TestCase):
         self.assertEqual(called.call_args_list[1].kwargs["skip"], {"me", "d0"})
 
     def test_contradiction_needs_two_opinions(self):
-        self.assertTrue(run([DOWN, DOWN])[0]["contradicted"])
+        self.assertTrue(run([UP, DOWN, DOWN, DOWN])[0]["contradicted"])
         self.assertFalse(run([DOWN])[0]["contradicted"])
+
+    def test_the_tune_the_others_agree_with_is_used(self):
+        result, _ = run([DOWN, DOWN])  # mine is the odd one out
+        self.assertEqual(result["chosen"]["output"], DOWN)
+        self.assertTrue(result["replaced_first"])
+        result, _ = run([UP, DOWN])
+        self.assertEqual(result["chosen"]["donor"]["original_sha256"], "me")
+        result, _ = run([DOWN])  # two tunes: no majority, the most similar one stays
+        self.assertEqual(result["chosen"]["donor"]["original_sha256"], "me")
 
     def test_much_less_similar_donors_are_not_asked(self):
         self.assertEqual(run([DOWN, DOWN], [0.80, 0.80])[0]["opinions"], 0)

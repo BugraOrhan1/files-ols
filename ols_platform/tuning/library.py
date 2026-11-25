@@ -29,7 +29,7 @@ from . import SOFTWARE_VERSION
 from .identity import learn_identity
 from .learn import DEFAULT_SETTINGS, TrainingPair, diff_regions
 from .ols_versions import checksum_state, classify_profile, inspect_project, read_slot
-from .package import (MAX_LEARNING_PAIRS, PackageBuilder, PackageStore, normalize_family_key,
+from .package import (is_named_label, MAX_LEARNING_PAIRS, PackageBuilder, PackageStore, normalize_family_key,
                       normalize_family_label,
                       prepare_variant)
 
@@ -468,20 +468,17 @@ class _ReadAhead:
         self.pool.shutdown(wait=False, cancel_futures=True)
 
 
-_NO_NAME = {"", "ONBEKEND", "UNKNOWN", "UNDEFINED"}
-
-
 def name_unknown_families(rows: list[dict[str, Any]]) -> int:
     """Give rows without an ECU type the family the same original image has
     elsewhere, when all named projects agree. Returns the number changed."""
 
     names: dict[str, set[str]] = {}
     for row in rows:
-        if row["family_key"].rpartition("|")[0].upper() not in _NO_NAME:
+        if is_named_label(row["family_key"].rpartition("|")[0]):
             names.setdefault(row["original_sha256"], set()).add(row["family_key"])
     changed = 0
     for row in rows:
-        if row["family_key"].rpartition("|")[0].upper() in _NO_NAME:
+        if not is_named_label(row["family_key"].rpartition("|")[0]):
             known = names.get(row["original_sha256"], set())
             if len(known) == 1:
                 row["family_key"] = next(iter(known))

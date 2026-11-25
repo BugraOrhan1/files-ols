@@ -34,15 +34,22 @@ class ExactTests(unittest.TestCase):
 
         from ols_platform.tuning import generate as g
 
-        unnamed, named = {"family_key": "onbekend|6"}, {"family_key": "MG1CS002|6"}
-        with mock.patch.object(g, "_select_variant", return_value=(named, {}, {})):
-            self.assertIs(g._named_family(b"", None, unnamed), named)
-            other = {"family_key": "EDC17C46|6"}
-            self.assertIs(g._named_family(b"", None, other), other)  # a name is never replaced
-        with mock.patch.object(g, "_select_variant", side_effect=GenerationRejected("x", "y")):
-            self.assertIs(g._named_family(b"", None, unnamed), unnamed)
-        with mock.patch.object(g, "_select_variant", return_value=({"family_key": "UNKNOWN|6"}, {}, {})):
-            self.assertIs(g._named_family(b"", None, unnamed), unnamed)
+        unnamed, named = {"family_key": "BOSCH 031471|6"}, {"family_key": "MG1CS002|6"}
+        other = {"family_key": "EDC17C46|6"}
+        for found, expected in (([named], named), ([unnamed, named], named), ([named, other], unnamed),
+                                ([], unnamed), ([{"family_key": "UNKNOWN|6"}], unnamed)):
+            with mock.patch.object(g, "_matching_families", return_value=found):
+                self.assertIs(g._named_family(b"", None, unnamed), expected)
+                self.assertIs(g._named_family(b"", None, other), other)  # a name is never replaced
+
+    def test_which_labels_name_an_ecu(self):
+        from ols_platform.tuning.package import is_named_label
+
+        for label in ("MG1CS002", "EDC17_CP44", "SIMOS19.6", "BOSCH EDC17C46", "DQ250", "MVSX", "Siemens EMS3155"):
+            self.assertTrue(is_named_label(label), label)
+        for label in ("onbekend", "UNKNOWN", "NoData", "BOSCH 031471", "0005", "SIEMENS/CONTINENTAL 4RDQID 1234",
+                      "Denso 89661-0F092", "", "--"):
+            self.assertFalse(is_named_label(label), label)
 
     def test_a_version_can_be_chosen_and_must_belong_to_the_original(self):
         version = known_versions(self.pair.original, self.package)[0]

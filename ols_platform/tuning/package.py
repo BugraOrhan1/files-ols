@@ -46,6 +46,23 @@ _ECU_TYPE = re.compile(r"^([A-Z]{2,5})[ _-]*\d")
 _MAKERS = {"BOSCH", "DENSO", "TEMIC"}
 
 
+_NO_NAME = {"", "ONBEKEND", "UNKNOWN", "UNDEFINED", "NODATA", "NO", "NONE", "NA", "X", "XX", "XXX", "--", "..", "/"}
+_MAKER_NUMBER = re.compile(
+    r"^(BOSCH|SIEMENS|CONTINENTAL|SIEMENS/CONTINENTAL|DELPHI|DENSO|MARELLI|MAGNETI MARELLI|VISTEON|TEMIC|VALEO|"
+    r"HITACHI|KEIHIN|DELCO|ACDELCO|MITSUBISHI|MELCO)\b.*\d{3}")
+
+
+def is_named_label(label: str) -> bool:
+    """Whether a family label names an ECU type. 'BOSCH 031471' or '0005' is a
+    software number from a project without one, and says nothing about it."""
+
+    text = normalize_family_label(label).upper()
+    if text in _NO_NAME or not any(ch.isalpha() for ch in text):
+        return False
+    # 'BOSCH EDC17C46' does hold a type; 'BOSCH 031471' does not
+    return not _MAKER_NUMBER.match(text) or bool(re.search(r"\b(EDC|MED|MEV|MEVD|ME|MG|MD|SID|SIMOS|DCM|CRD|PCR|PPD|MSD|MSV|MSS|EMS|SDI|DDE)\s?\d", text))
+
+
 def normalize_family_label(label: str) -> str:
     """One spelling per ECU family: WinOLS headers mix 'mg1cs002', 'MG1CS002 ' etc.
 
