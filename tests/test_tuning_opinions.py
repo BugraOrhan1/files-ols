@@ -21,6 +21,33 @@ def run(outputs, similarities=None):
     return dict(result, chosen=chosen), called
 
 
+class TowardTests(unittest.TestCase):
+    """Values already on the tuned side mean the file is probably tuned."""
+
+    def count(self, data):
+        edits = [[0, ORIGINAL.hex(), UP.hex()]]
+        placed = [{"how": "omgerekend", "start": 0, "end": 16, "donor_start": 0}]
+        return tr.moved_toward_tune(data, edits, placed)
+
+    def test_values_on_the_tuned_side(self):
+        other_tuner = struct.pack("<8H", *[1100 + 40 * i for i in range(8)])
+        self.assertEqual(self.count(other_tuner), (8, 8))
+
+    def test_stock_values_differ_both_ways_or_the_other_way(self):
+        mixed = struct.pack("<8H", *[1000 + 40 * i + (30 if i % 2 else -30) for i in range(8)])
+        cells, toward = self.count(mixed)
+        self.assertLess(toward, tr.TOWARD_SHARE * cells)
+        self.assertEqual(self.count(ORIGINAL), (0, 0))
+
+    def test_a_small_shift_is_a_stock_variant(self):
+        slightly = struct.pack("<8H", *[1030 + 40 * i for i in range(8)])
+        self.assertEqual(self.count(slightly), (8, 0))
+
+    def test_identical_bytes_are_not_counted(self):
+        placed = [{"how": "zelfde plek", "start": 0, "end": 16, "donor_start": 0}]
+        self.assertEqual(tr.moved_toward_tune(UP, [[0, ORIGINAL.hex(), UP.hex()]], placed), (0, 0))
+
+
 class OpinionTests(unittest.TestCase):
     def test_agreeing_donors(self):
         result, called = run([UP, UP])

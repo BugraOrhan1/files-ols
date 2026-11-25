@@ -666,6 +666,45 @@ def split_integrity(missing: list[dict[str, Any]], edits: list[list[Any]],
     return real, fields
 
 
+TOWARD_CELLS = 8          # recalculated cells that differ from the donor's original ...
+TOWARD_SHARE = 0.85       # ... and lie on the tuned side of it: the file is probably tuned already
+TOWARD_PROGRESS = 0.25    # a tune moves values this far or further; stock variants differ less
+WARN_CELLS, WARN_SHARE = 16, 0.95   # the same for any other donor: only a warning
+
+
+def moved_toward_tune(data: bytes, edits: list[list[Any]], placed: list[dict[str, Any]]) -> tuple[int, int]:
+    """(cells of recalculated changes whose value differs from the donor's
+    original, how many of them already lie well on the way to the tune).
+
+    Stock software of another car differs both ways. A file another tuner
+    worked on differs the way tunes do, and recalculating would raise it
+    twice. Measured on deliberately half-tuned files."""
+
+    by_start = {e[0]: e for e in edits}
+    best = (0, 0)
+    for fmt in ("<H", ">H"):
+        cells = toward = 0
+        for item in placed:
+            if item["how"] != "omgerekend":
+                continue
+            edit = by_start.get(item["donor_start"]) or by_start.get(item["donor_start"] + 1)
+            if edit is None:
+                continue
+            orig, tuned = bytes.fromhex(edit[1]), bytes.fromhex(edit[2])
+            offset = item["start"] + edit[0] - item["donor_start"]
+            for i in range(0, len(orig) - 1, 2):
+                if offset + i + 2 > len(data):
+                    break
+                before, after = struct.unpack_from(fmt, orig, i)[0], struct.unpack_from(fmt, tuned, i)[0]
+                value = struct.unpack_from(fmt, data, offset + i)[0]
+                if before != after and value != before:
+                    cells += 1
+                    toward += (value - before) / (after - before) >= TOWARD_PROGRESS
+        if cells and (not best[0] or abs(toward / cells - 0.5) > abs(best[1] / best[0] - 0.5)):
+            best = (cells, toward)
+    return best
+
+
 SECOND_OPINIONS = 4       # other donors a transferred tune is compared with
 OPINION_WINDOW = 0.05     # ... when at most this much less similar
 OPINION_MINIMUM = 0.90    # below this agreement on up/down the tunes contradict each other
@@ -709,12 +748,17 @@ def with_second_opinions(data: bytes, profile: str, package, outcome: dict[str, 
     least two opinions."""
 
     outcomes = [outcome]
+    looks_tuned = False
     floor = outcome["donor"]["similarity"] - OPINION_WINDOW
     for _ in range(SECOND_OPINIONS):
         other = transfer(data, profile, package, hint=hint, family_floor=family_floor, min_similarity=min_similarity,
                          min_coverage=1.0, skip={o["donor"]["original_sha256"] for o in outcomes})
+        looks_tuned |= other["status"] != "ok" and other.get("code") in ("possibly_tuned", "partially_tuned")
         if other["status"] != "ok" or other["donor"]["similarity"] < floor:
             break
+        if other.get("placed") and other.get("pair"):
+            cells, toward = moved_toward_tune(data, other["pair"]["edits"], other["placed"])
+            looks_tuned |= cells >= WARN_CELLS and toward >= WARN_SHARE * cells
         outcomes.append(other)
     agree = [[None if a is b else _direction_agreement(data, a["output"], b["output"]) for b in outcomes]
              for a in outcomes]
@@ -731,7 +775,8 @@ def with_second_opinions(data: bytes, profile: str, package, outcome: dict[str, 
     agreement = sum(values) / len(values) if values else None
     return outcomes[chosen], {
         "opinions": len(values), "agreement": agreement, "compared": len(outcomes), "replaced_first": chosen != 0,
-        "contradicted": len(values) >= 2 and agreement < OPINION_MINIMUM}
+        "contradicted": len(values) >= 2 and agreement < OPINION_MINIMUM,
+        "looks_tuned": looks_tuned}
 
 
 def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set[str] | None = None,
@@ -814,6 +859,12 @@ def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set
         if suspect is not None and (missing or present or any(
                 p["how"] in ("omgerekend", "kaart via assen") for p in placed)):
             continue  # after an alarm only changes on identical original bytes prove a stock file
+        cells, toward = moved_toward_tune(data, pair["edits"], placed)
+        if cells >= TOWARD_CELLS and toward >= TOWARD_SHARE * cells:
+            return {"status": "failed", "code": "possibly_tuned",
+                    "reason": f"Dit bestand lijkt al door een tuner bewerkt: {toward} van de {cells} afwijkende waarden "
+                              f"liggen al aan de kant waar '{pair.get('tuned_version_name') or profile}' ze heen "
+                              "brengt. Nog een keer tunen zou dubbel verhogen. Open het origineel."}
         total_bytes = edit_bytes - sum(m["length"] for m in fields)
         missing_bytes = sum(m["length"] for m in missing)
         coverage = 1 - missing_bytes / total_bytes if total_bytes else 0.0

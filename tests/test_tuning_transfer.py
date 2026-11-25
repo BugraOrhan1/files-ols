@@ -70,7 +70,8 @@ class TransferTests(unittest.TestCase):
             generate(with_other_sw(self.pair.original)[:-1024], "stage1", self.package)
 
     def test_moved_maps_with_other_values_are_recalculated(self):
-        original = make_original(7, calibration_scale=1.04, map_shift=64)
+        # a stock variant; differences nearer to the tune look like another tuner's work
+        original = make_original(7, calibration_scale=1.02, map_shift=64)
         data = with_other_sw(original)
         expected = make_stage1(original, map_shift=64)
         expected = with_other_sw(expected)  # same software string as the input

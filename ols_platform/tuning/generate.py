@@ -572,7 +572,10 @@ def _by_transfer(data: bytes, profile_name: str, package, contracts: dict | None
                        min_similarity=min_similarity or DEFAULT_MIN_SIMILARITY,
                        min_coverage=DEFAULT_MIN_COVERAGE if min_coverage is None else min_coverage)
     if outcome["status"] != "ok":
-        if outcome["code"] in ("already_tuned", "partially_tuned"):
+        if outcome["code"] == "possibly_tuned" and earlier is not None and earlier.code in (
+                "cell_out_of_range", "layout_mismatch", "patch_region_mismatch"):
+            raise earlier  # refused either way; the recognised variant's finding is more specific
+        if outcome["code"] in ("already_tuned", "partially_tuned", "possibly_tuned"):
             raise GenerationRejected(outcome["code"], outcome["reason"])
         prefix = (earlier.message + " ") if earlier is not None else ""
         code = outcome["code"]
@@ -604,6 +607,9 @@ def _by_transfer(data: bytes, profile_name: str, package, contracts: dict | None
     if outcome.get("integrity_fields"):
         notes.append(f"{len(outcome['integrity_fields'])} checksum-/handtekeningveld(en) van het voorbeeld niet "
                      "overgenomen: die horen bij één bestand en moeten door het flashprogramma worden berekend.")
+    if opinion["looks_tuned"]:
+        notes.insert(0, "WAARSCHUWING: volgens een ander voorbeeld lijkt dit bestand al (deels) getuned. Controleer of "
+                        "het echt een origineel is.")
     if opinion["replaced_first"]:
         notes.append(f"Gekozen uit {opinion['compared']} ongeveer even gelijkende voorbeelden: deze tune komt het "
                      "meest overeen met de andere.")
@@ -669,7 +675,8 @@ def generate(data: bytes, profile_name: str, package, contracts: dict | None = N
         return _generate_single(data, profile_name, package, contracts, **options)
     except GenerationRejected as exc:
         parts = parts_of(profile_name)
-        if not parts or exc.code in ("already_tuned", "partially_tuned", "other_modification_present") \
+        if not parts or exc.code in ("already_tuned", "partially_tuned", "possibly_tuned",
+                                     "other_modification_present") \
                 or exc.code.startswith("input_"):
             raise
         return _compose(data, profile_name, parts, package, contracts, exc, options)
