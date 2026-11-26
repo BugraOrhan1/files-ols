@@ -167,6 +167,8 @@ class PracticeTests(unittest.TestCase):
             library = Library(store)
             library.scan({"db": root / "db"}, NativeOlsReader(), workers=1)
             library.train()
+            timed_out = run_practice(library, workers=1, max_seconds=0)
+            self.assertEqual((timed_out["tested"], timed_out["remaining"]), (0, 16))  # time limit per round
             first = run_practice(library, workers=2)
             self.assertEqual(first["tested"], 16)
             rows = library.db.execute("SELECT status, score, same_variant, donor_project FROM practice").fetchall()

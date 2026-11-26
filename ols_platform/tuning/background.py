@@ -116,6 +116,7 @@ class _Status:
 
 
 TRAIN_SECONDS_PER_PAIR = 0.06  # measured: ~30 min for 30 000 examples; used until a run was timed
+PRACTICE_SECONDS_PER_ROUND = 3 * 3600   # practice per round; the rest is tested in later rounds
 
 
 def _pair_count(library: Any) -> int:
@@ -224,7 +225,10 @@ def run_update(root: Path, *, publish_every_pairs: int = 500, publish_every_seco
         from .practice import run_practice
 
         status.update(phase="oefenen", current={"source": "Oefenen", "done": 0, "found": 0})
+        # A large library holds hundreds of thousands of examples: one round
+        # practises for a limited time, so new projects keep being scanned.
         run_practice(library, stop=stop, workers=workers, progress=status.say,
+                     max_seconds=None if practice_only else PRACTICE_SECONDS_PER_ROUND,
                      on_test=lambda done_count, total: status.update(
                          current={"source": "Oefenen", "done": done_count, "found": total}))
 

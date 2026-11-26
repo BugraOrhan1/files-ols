@@ -216,9 +216,12 @@ def practice_pair(task: dict[str, Any]) -> dict[str, Any]:
 
 
 def run_practice(library, *, max_tests: int | None = None, workers: int | None = None,
-                 stop: threading.Event | None = None, progress: Callable[[str], None] | None = None,
+                 max_seconds: float | None = None, stop: threading.Event | None = None, progress: Callable[[str], None] | None = None,
                  on_test: Callable[[int, int], None] | None = None) -> dict[str, Any]:
-    """Practise on examples not yet tested with the current library version."""
+    """Practise on examples not yet tested with the current library version.
+
+    ``max_seconds`` ends the session in time (the rest is tested next time:
+    tested examples are remembered per library version)."""
 
     from .library import default_workers
 
@@ -247,7 +250,9 @@ def run_practice(library, *, max_tests: int | None = None, workers: int | None =
     tasks = iter([{"pair_id": r["pair_id"], "profile": r["profile"], "exclude": sorted(hidden[r["pair_id"]]),
                    "store_root": str(library.root), "package_path": str(package_path)} for r in todo])
     tested = 0
-    stopped = lambda: stop is not None and stop.is_set()  # noqa: E731
+    ends = time.monotonic() + max_seconds if max_seconds is not None else None
+    stopped = lambda: (stop is not None and stop.is_set()) or (  # noqa: E731
+        ends is not None and time.monotonic() >= ends)
 
     def record(res: dict[str, Any]) -> None:
         nonlocal tested
@@ -292,6 +297,8 @@ def run_practice(library, *, max_tests: int | None = None, workers: int | None =
                     for future in finished:
                         record(future.result())
     stats = write_stats(library.root, db, package.package_id)
+    if tested < total:
+        say(f"Oefenen: {tested} van {total} getest; de rest volgt in een volgende ronde.")
     say(f"Oefenen: {tested} getest. " + summary_line(stats))
     return {"tested": tested, "remaining": total - tested, "stats": stats}
 
