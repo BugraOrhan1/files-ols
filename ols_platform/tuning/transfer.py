@@ -756,6 +756,7 @@ TOWARD_CELLS = 8          # recalculated cells that differ from the donor's orig
 TOWARD_SHARE = 0.85       # ... and lie on the tuned side of it: the file is probably tuned already
 TOWARD_PROGRESS = 0.25    # a tune moves values this far or further; stock variants differ less
 ONE_MAP_CELLS, ONE_MAP_PROGRESS, ONE_MAP_SHARE = 12, 0.5, 0.95   # the same for a single map on its own
+CLEAN_SHARE = 0.5         # below this share on the tuned side a donor saw no tune
 ONE_MAP_GAP = 64          # recalculated rows at most this many bytes apart belong to the same map
 HINT_CELLS, HINT_PROGRESS, HINT_SHARE = 30, 0.05, 0.9   # a whole map a little to the tuned side: a warning
 LARGE_BLOCK = 400         # one change with more differing cells than this is other content, not another calibration
@@ -938,6 +939,7 @@ def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set
     maps_root = store_root_of(package)
     best = None
     suspect = None  # partial-presence finding from a donor with other software
+    clean = False   # an earlier donor compared many recalculated cells and saw no tune in them
     # Donors sharing the numbers stay candidates behind the nearly identical ones.
     tried = donors[:MAX_DONORS_TRIED]
     tried += [d for d in donors[MAX_DONORS_TRIED:] if d.get("identity_confirmed")][:MAX_DONORS_TRIED // 2]
@@ -1011,9 +1013,20 @@ def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set
                           "dit bestand een heel andere inhoud. Dat wordt niet omgerekend."}
             continue
         cells, toward = moved_toward_tune(data, pair["edits"], placed)
+        looked_clean = cells >= TOWARD_CELLS and toward < CLEAN_SHARE * cells
         if not (cells >= TOWARD_CELLS and toward >= TOWARD_SHARE * cells):
             # (0, 0) unless one map or row on its own meets its thresholds
             cells, toward = one_map_moved(data, pair["edits"], placed)
+        looked_clean = looked_clean and not cells
+        if cells and clean:
+            # A more similar donor saw no tune here: a suspicion, not a verdict.
+            suspect = suspect or {
+                "status": "failed", "code": "possibly_tuned",
+                "reason": f"Dit bestand lijkt mogelijk al bewerkt: {toward} van de {cells} afwijkende waarden liggen "
+                          f"al aan de kant waar '{pair.get('tuned_version_name') or profile}' ze heen brengt. Open "
+                          "het origineel als je het hebt."}
+            continue
+        clean = clean or looked_clean
         if cells:
             finding = {"status": "failed", "code": "possibly_tuned",
                        "reason": f"Dit bestand lijkt al door een tuner bewerkt: {toward} van de {cells} afwijkende "
@@ -1040,6 +1053,8 @@ def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set
         return {"status": "failed", "code": "no_similar_original",
                 "reason": f"Vergelijkbare originelen gevonden, maar zonder '{profile}'-voorbeeld."}
     if best["coverage"] < min_coverage:
+        if suspect is not None and suspect["code"] == "possibly_tuned":
+            return suspect  # refused either way; the suspicion is what the user should check
         donor = best["donor"]
         return {"status": "failed", "code": "transfer_incomplete",
                 "reason": f"Beste voorbeeld: {donor.get('vehicle') or donor.get('project')} "

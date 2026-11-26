@@ -87,6 +87,26 @@ class TowardTests(unittest.TestCase):
             outcome = tr.transfer(data, "stage1", package)
         self.assertEqual(outcome.get("code"), "possibly_tuned")
 
+    def test_a_later_alarm_after_a_clean_donor_is_a_suspicion(self):
+        stock = struct.pack("<8H", *[1000 + 40 * i + (30 if i % 2 else -30) for i in range(8)])
+        raised = struct.pack("<8H", *[1100 + 40 * i for i in range(8)])
+        clean_pair = {"edits": [[0, ORIGINAL.hex(), UP.hex()]], "tuned_version_name": "Stage 1"}
+        other_pair = {"edits": [[16, ORIGINAL.hex(), UP.hex()]], "tuned_version_name": "Stage 1"}
+        data = stock + raised
+        donors = [{"original_sha256": "a", "variant_id": "a", "similarity": 0.99},
+                  {"original_sha256": "b", "variant_id": "b", "similarity": 0.98}]
+        placements = {"a": (bytearray(data), [{"how": "omgerekend", "start": 0, "end": 16, "donor_start": 0}],
+                            [{"start": 40, "length": 2}]),
+                      "b": (bytearray(data), [{"how": "omgerekend", "start": 16, "end": 32, "donor_start": 16}], [])}
+        pairs = {"a": clean_pair, "b": other_pair}
+        with mock.patch.object(tr, "rank_donors", return_value=donors),                 mock.patch.object(tr, "_prefer_closest_values", side_effect=lambda d, p, k, ds: ds),                 mock.patch.object(tr, "choose_known_pair", side_effect=lambda blob, p, sha: pairs[sha]),                 mock.patch.object(tr, "tuned_presence", return_value=(0.0, 0)),                 mock.patch.object(tr, "place_edits", side_effect=lambda d, e, **k: placements["a" if e[0][0] == 0 else "b"]),                 mock.patch.object(tr, "store_root_of", return_value=None),                 mock.patch.object(tr, "uses_map_knowledge", return_value=False):
+            package = mock.Mock(path=None)
+            package.load_variant.side_effect = lambda vid: vid
+            outcome = tr.transfer(data, "stage1", package)
+        # donor a saw no tune but could not place everything; b's alarm is reported as a suspicion
+        self.assertEqual(outcome["code"], "possibly_tuned")
+        self.assertIn("mogelijk", outcome["reason"])
+
     def test_identical_bytes_are_not_counted(self):
         placed = [{"how": "zelfde plek", "start": 0, "end": 16, "donor_start": 0}]
         self.assertEqual(tr.moved_toward_tune(UP, [[0, ORIGINAL.hex(), UP.hex()]], placed), (0, 0))
