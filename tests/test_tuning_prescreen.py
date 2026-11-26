@@ -59,6 +59,25 @@ class PrescreenTests(unittest.TestCase):
         ranked = self.rank([other, entry("zz", self.data)])
         self.assertEqual([e["original_sha256"] for e in ranked], ["zz", "aa"])
 
+    def test_a_size_that_occurs_often_is_a_read_form(self):
+        full = entry("zz", self.data + image(6, 0x8000))  # 0x48000: no whole 64 KB sectors
+        self.assertEqual(self.rank([full]), [])  # on its own it may be a cut-off read
+        others = [entry(f"{i:03d}", image(50 + i, 0x48000)) for i in range(tr.READ_FORM_COUNT - 1)]
+        tr._RANK_CACHE.clear()
+        self.assertEqual([e["original_sha256"] for e in self.rank(others + [full])], ["zz"])
+
+    def test_a_cut_off_file_is_never_a_read_form(self):
+        entries = [entry(f"{i:03d}", image(70 + i)) for i in range(6)] + [entry("zz", self.data)]
+        cut = self.data[:-0x1000]
+        self.assertEqual(tr.rank_donors(Package(entries), cut, "", "stage1"), [])
+
+    def test_closest_values_stay_within_the_read_form(self):
+        same = dict(entry("s", self.data), similarity=0.96)
+        other = dict(entry("o", self.data + image(8, 0x10000)), similarity=0.962, cross_size=True)
+        with mock.patch.object(tr, "choose_known_pair", return_value=None):
+            chosen = tr._prefer_closest_values(self.data, "stage1", mock.Mock(), [same, other])
+        self.assertEqual([d["original_sha256"] for d in chosen], ["s", "o"])
+
 
 if __name__ == "__main__":
     unittest.main()

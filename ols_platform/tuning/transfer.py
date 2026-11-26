@@ -24,6 +24,7 @@ import hashlib
 import re
 import struct
 from array import array
+from collections import Counter
 from typing import Any
 
 from .learn import _roughness, _words
@@ -40,6 +41,7 @@ CROSS_SIZE_CHECKS = 200     # donors of another file size (full read vs calibrat
 CROSS_SIZE_PENALTY = 0.02   # in the ranking
 CROSS_SIZE_RATIO = 4.0      # ... only when the sizes differ at most this factor
 CROSS_SIZE_ALIGN = 0x10000  # ... and both are whole 64 KB sectors (a cut-off read is never "another form")
+READ_FORM_COUNT = 5         # a size this many training originals have is a read form, whatever its alignment
 CROSS_SIZE_HEADER = 0x400   # ... apart from a small tool header/trailer (e.g. 0x840010 = 8.25 MB + 16 bytes)
 _RANK_CACHE: dict[tuple, list[dict[str, Any]]] = {}
 DEFAULT_MIN_COVERAGE = 1.0
@@ -77,16 +79,31 @@ def hint_tokens(text: str) -> set[str]:
             if (len(t) >= 3 and not t.isdigit()) or (t.isdigit() and len(t) == 4)}
 
 
-def sizes_compatible(a: int, b: int) -> bool:
+def _read_forms(package) -> set[int]:
+    """Sizes that occur often enough in the package to be a read form; a
+    cut-off read has a size of its own."""
+
+    forms = getattr(package, "_read_forms", None)
+    if forms is None:
+        counts = Counter(e["size"] for e in package.fingerprints())
+        forms = {size for size, n in counts.items() if n >= READ_FORM_COUNT}
+        try:
+            package._read_forms = forms
+        except AttributeError:
+            pass
+    return forms
+
+
+def sizes_compatible(a: int, b: int, forms: set[int] | frozenset[int] = frozenset()) -> bool:
     """Two reads of the same ECU in another form: at most CROSS_SIZE_RATIO
-    apart and both whole 64 KB sectors (plus at most a small header). A
-    cut-off read (e.g. 1 KB short) is never another read form."""
+    apart and both whole 64 KB sectors (plus at most a small header) or a
+    known read form. A cut-off read (e.g. 1 KB short) is never another one."""
 
     if a == b:
         return True
     if not a or not b or not 1 / CROSS_SIZE_RATIO <= a / b <= CROSS_SIZE_RATIO:
         return False
-    return all(n % CROSS_SIZE_ALIGN <= CROSS_SIZE_HEADER for n in (a, b))
+    return all(n % CROSS_SIZE_ALIGN <= CROSS_SIZE_HEADER or n in forms for n in (a, b))
 
 
 def shifted_similarity(data: bytes, anchor_blob: bytes, give_up_below: float = 0.3) -> float:
@@ -190,6 +207,7 @@ def _rank_donors(package, data: bytes, hint: str = "", profile: str | None = Non
     exclude = exclude or set()
     cross_size = []
     promising = []
+    forms = _read_forms(package)
     shares = prescreen(package, data)
     for entry, share in zip(package.fingerprints(), shares):
         if entry["original_sha256"] in exclude:
@@ -201,7 +219,7 @@ def _rank_donors(package, data: bytes, hint: str = "", profile: str | None = Non
             # only, or another dump size). Same-offset sampling says nothing
             # here; the donor's anchor snippets are searched anywhere instead.
             expected = min(1.0, len(data) / entry["size"]) if entry["size"] else 1.0
-            if entry.get("anchors") and share >= PRESCREEN_SHARE * expected and sizes_compatible(entry["size"], len(data)):
+            if entry.get("anchors") and share >= PRESCREEN_SHARE * expected and sizes_compatible(entry["size"], len(data), forms):
                 donor_tokens = hint_tokens(" ".join((entry.get("vehicle", ""), entry.get("ecu", ""),
                                                      entry.get("project", ""))))
                 cross_size.append((min(1.0, share / expected), len(tokens & donor_tokens), entry))
@@ -270,7 +288,7 @@ def _rank_donors(package, data: bytes, hint: str = "", profile: str | None = Non
             if entry["original_sha256"] in listed:
                 listed[entry["original_sha256"]]["identity_confirmed"] = level
                 continue
-            if not sizes_compatible(entry["size"], len(data)):
+            if not sizes_compatible(entry["size"], len(data), forms):
                 continue  # a cut-off read is never "another read form"
             score = 0.0
             if entry.get("anchors"):
@@ -282,10 +300,13 @@ def _rank_donors(package, data: bytes, hint: str = "", profile: str | None = Non
     # A nearly identical image is better evidence than equal numbers in an
     # otherwise different one (measured on hidden tunes).
     # Same read form before another one; a part of a larger read comes last.
+    # A nearly identical image of the same size decides first: only there is
+    # 'already partly tuned' proof, not a suspicion (see transfer()).
     def order(e: dict[str, Any]) -> tuple:
         partial = bool(e.get("exact_required")) and not e.get("identity_confirmed")
         other_form = CROSS_SIZE_PENALTY if e.get("cross_size") else 0.0
-        return (0 if e["similarity"] >= NEARLY_IDENTICAL and not partial else 1,
+        close = e["similarity"] >= NEARLY_IDENTICAL and not partial
+        return (0 if close and not e.get("cross_size") else 1 if close else 2,
                 _IDENTITY_ORDER.get(e.get("identity_confirmed"), 2), partial,
                 other_form - (e["similarity"] + 0.004 * min(e["hint_overlap"], 5)), e["original_sha256"])
 
@@ -664,7 +685,10 @@ def _prefer_closest_values(data: bytes, profile: str, package, donors: list[dict
     if len(donors) < 2:
         return donors
     top = donors[0]["similarity"]
-    close = [d for d in donors[:MAX_DONORS_TRIED] if d["similarity"] >= top - 0.005]
+    # only within the same group of the ranking (same read form first, see rank_donors)
+    form = bool(donors[0].get("cross_size")), bool(donors[0].get("exact_required"))
+    close = [d for d in donors[:MAX_DONORS_TRIED] if abs(d["similarity"] - top) <= 0.005
+             and (bool(d.get("cross_size")), bool(d.get("exact_required"))) == form]
     if len(close) < 2:
         return donors
     scored = []
