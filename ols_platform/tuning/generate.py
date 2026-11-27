@@ -607,6 +607,11 @@ def _by_transfer(data: bytes, profile_name: str, package, contracts: dict | None
     if outcome.get("integrity_fields"):
         notes.append(f"{len(outcome['integrity_fields'])} checksum-/handtekeningveld(en) van het voorbeeld niet "
                      "overgenomen: die horen bij één bestand en moeten door het flashprogramma worden berekend.")
+    if opinion.get("missing_cells"):
+        places = ", ".join(f"0x{start:X}" for start, _end in opinion["missing_at"])
+        notes.insert(0, f"LET OP: {opinion['missing_cells']} waarden die alle {opinion['compared'] - 1} andere "
+                        f"voorbeelden van deze software wel aanpassen, blijven in deze tune ongewijzigd (o.a. bij "
+                        f"{places}). Mogelijk ontbreekt hier een kaart; controleer die plekken voor het flashen.")
     if opinion["looks_tuned"]:
         notes.insert(0, "WAARSCHUWING: dit bestand kan al (deels) getuned zijn. Controleer voor het flashen of "
                         "het echt een origineel is.")

@@ -21,6 +21,20 @@ def run(outputs, similarities=None):
     return dict(result, chosen=chosen), called
 
 
+class MissingMapTests(unittest.TestCase):
+    """Cells every other tune changes and the chosen one leaves alone."""
+
+    def test_reported_only_when_every_other_tune_agrees(self):
+        original = bytes(512)
+        full = bytes([1]) * 256 + bytes(256)
+        light = bytes([1]) * 64 + bytes(448)
+        found = tr.untouched_by_chosen(original, [light, full, full, full], 0)
+        self.assertEqual(found, [(64, 256)])
+        self.assertEqual(tr.untouched_by_chosen(original, [light, full, full, light], 0), [])  # one agrees with me
+        self.assertEqual(tr.untouched_by_chosen(original, [light, full, full], 0), [])  # too few opinions
+        self.assertEqual(tr.untouched_by_chosen(original, [full, full, full, full], 0), [])
+
+
 class TowardTests(unittest.TestCase):
     """Values already on the tuned side mean the file is probably tuned."""
 

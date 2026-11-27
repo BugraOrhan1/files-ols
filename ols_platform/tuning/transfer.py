@@ -906,6 +906,35 @@ def _overlap(original: bytes, one: bytes, other: bytes) -> float:
     return len(a & b) / len(a | b) if a | b else 0.0
 
 
+MISSING_OTHERS = 3        # at least this many other donors ...
+MISSING_CELLS = 64        # ... all change this many cells the chosen tune leaves alone: probably a map left out
+MISSING_SHOWN = 5         # places named in the warning
+
+
+def untouched_by_chosen(original: bytes, outputs: list[bytes], chosen: int) -> list[tuple[int, int]]:
+    """Regions (start, end) that every other tune changes and the chosen one
+    leaves as they are; empty unless that is at least MISSING_CELLS cells.
+
+    Measured on hidden tunes: 70 % of such cells were changed by the real
+    tuner as well. Choosing another donor did not do better; the user is told."""
+
+    others = [o for i, o in enumerate(outputs) if i != chosen]
+    if len(others) < MISSING_OTHERS:
+        return []
+    mine = outputs[chosen]
+    cells = [i for i in range(0, len(original) - 1, 2)
+             if mine[i:i + 2] == original[i:i + 2] and all(o[i:i + 2] != original[i:i + 2] for o in others)]
+    if len(cells) < MISSING_CELLS:
+        return []
+    regions: list[list[int]] = []
+    for i in cells:
+        if regions and i - regions[-1][1] <= 16:
+            regions[-1][1] = i + 2
+        else:
+            regions.append([i, i + 2])
+    return [(a, b) for a, b in regions]
+
+
 def with_second_opinions(data: bytes, profile: str, package, outcome: dict[str, Any], *, hint: str = "",
                          family_floor: dict[str, float] | None = None,
                          min_similarity: float = DEFAULT_MIN_SIMILARITY) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -944,7 +973,9 @@ def with_second_opinions(data: bytes, profile: str, package, outcome: dict[str, 
         chosen = max(range(len(outcomes)), key=lambda i: (round(scores[i], 4), -i))
     values = [v for v in agree[chosen] if v is not None]
     agreement = sum(values) / len(values) if values else None
+    missing = untouched_by_chosen(data, [o["output"] for o in outcomes], chosen)
     return outcomes[chosen], {
+        "missing_cells": sum(end - start for start, end in missing) // 2, "missing_at": missing[:MISSING_SHOWN],
         "opinions": len(values), "agreement": agreement, "compared": len(outcomes), "replaced_first": chosen != 0,
         "contradicted": len(values) >= 2 and agreement < OPINION_MINIMUM,
         "looks_tuned": looks_tuned}
