@@ -46,6 +46,8 @@ CROSS_SIZE_HEADER = 0x400   # ... apart from a small tool header/trailer (e.g. 0
 _RANK_CACHE: dict[tuple, list[dict[str, Any]]] = {}
 DEFAULT_MIN_COVERAGE = 1.0
 MAX_DONORS_TRIED = 8
+BUDGET_SIZE = 0x200000     # file size the edit budget is meant for
+EDIT_BUDGET = 36000        # donor changes placed per transfer at most (a large file with no good donor stays quick)
 MAX_DONORS_FALLBACK = 24   # ... when none of the first ones places the whole tune
 # Donors at least this similar count as the same software for 'already partly tuned' proof.
 NEARLY_IDENTICAL = 0.95     # ranked before donors that only share their numbers
@@ -359,8 +361,34 @@ def transfer_profiles(package, data: bytes, hint: str = "", min_similarity: floa
     return profiles, donors
 
 
+_WORDS: tuple[int, int, set[int]] | None = None  # (id, length, 8-byte words at every 4th offset) of the last file
+
+
+def _absent(data: bytes, pattern: bytes) -> bool:
+    """True when ``pattern`` certainly does not occur in ``data``.
+
+    Every occurrence of a pattern of 11+ bytes holds an 8-byte word that
+    starts at a multiple of 4 in ``data``; when none of the four candidate
+    words is in the file's word set, there is no occurrence. One set lookup
+    instead of searching megabytes (thousands of searches per donor)."""
+
+    global _WORDS
+    if len(pattern) < 11 or len(data) < 0x10000:
+        return False
+    if _WORDS is None or _WORDS[0] != id(data) or _WORDS[1] != len(data):
+        words: set[int] = set()
+        for start in (0, 4):
+            run = array("Q")
+            run.frombytes(data[start:start + (len(data) - start) // 8 * 8])
+            words.update(run)
+        _WORDS = (id(data), len(data), words)
+    words = _WORDS[2]
+    view = memoryview(pattern)
+    return not any(int.from_bytes(view[j:j + 8], "little") in words for j in range(4))
+
+
 def _unique(data: bytes, pattern: bytes, near: int | None = None) -> int | None:
-    if len(pattern) < 8:
+    if len(pattern) < 8 or _absent(data, pattern):
         return None
     first = data.find(pattern)
     if first < 0:
@@ -484,6 +512,8 @@ def place_edits(data: bytes, edits: list[list[Any]], exact_only: bool = False,
         if result is None:
             patterns = ((before + orig + after, len(before)),) if exact_only else (
                 (before + orig + after, len(before)), (before + orig, len(before)), (orig + after, 0), (orig, 0))
+            if _absent(data, orig) if size >= 11 else (size >= 8 and orig not in data):
+                patterns = ()  # every pattern contains these bytes: one search instead of four
             for pattern, lead in patterns:
                 found = _unique(data, pattern, start + shift)
                 if found is not None:
@@ -947,11 +977,16 @@ def transfer(data: bytes, profile: str, package, *, hint: str = "", exclude: set
     # Partial reads often fail on their size alone; they do not use up the places of other donors.
     tried += [d for d in donors if d["original_sha256"] not in listed
               and not d.get("exact_required")][:MAX_DONORS_FALLBACK - MAX_DONORS_TRIED]
+    work = 0
+    budget = EDIT_BUDGET * min(1.0, BUDGET_SIZE / max(1, len(data)))  # searching a larger file costs more per change
     for rank, donor in enumerate(tried):
+        if work >= budget and rank >= 2 and donor["similarity"] < NEARLY_IDENTICAL:
+            continue  # over budget only nearly identical images are still worth the search
         blob = package.load_variant(donor["variant_id"])
         pair = choose_known_pair(blob, profile, donor["original_sha256"])
         if pair is None or not pair["edits"]:
             continue
+        work += len(pair["edits"])
         fraction, _large = tuned_presence(data, pair["edits"])
         decides = rank == 0 or best is None
         if decides and fraction >= 0.5:

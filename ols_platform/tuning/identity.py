@@ -71,7 +71,15 @@ def classify_input(data: bytes) -> InputClassification:
 
 
 _GENERIC = {"MEDC17", "EDC17C", "EDC16C", "SIMOS1", "DELPHI", "BOSCH", "SIEMENS", "CONTINENTAL",
-            "MARELLI", "DENSO", "VISTEON", "ORIGINAL", "UNKNOWN", "EPROM", "FLASH"}
+            "MARELLI", "DENSO", "VISTEON", "ORIGINAL", "UNKNOWN", "EPROM", "FLASH",
+            "12A650"}  # Ford's base part number of every engine ECU (e.g. GK21-12A650-xx)
+_DIGITS = "01234567890123456789"
+
+
+def _counting(token: str) -> bool:
+    """0123456789, 12345678, 9876543210: a placeholder, not a number."""
+
+    return token.isdigit() and (token in _DIGITS or token in _DIGITS[::-1])
 
 
 def _useful(token: str) -> bool:
@@ -81,7 +89,7 @@ def _useful(token: str) -> bool:
 
     alnum = sum(ch.isalnum() for ch in token)
     return (alnum >= _MIN_TOKEN and alnum / len(token) >= 0.7 and any(ch.isdigit() for ch in token)
-            and len(set(token)) >= 3 and token.upper() not in _GENERIC)
+            and len(set(token)) >= 3 and token.upper() not in _GENERIC and not _counting(token))
 
 
 _VAG_PART = re.compile(r"\d[A-Z0-9]{2}9\d{5}[A-Z]{0,3}")

@@ -68,6 +68,16 @@ class TokenBoundaryTests(unittest.TestCase):
         self.assertNotIn("SC100CC500000", ctx.exception.message)
 
 
+class PlaceholderNumberTests(unittest.TestCase):
+    def test_placeholders_and_generic_part_numbers_identify_nothing(self):
+        from ols_platform.tuning.identity import _useful
+
+        for junk in ("0123456789", "123456789", "9876543210", "12A650"):
+            self.assertFalse(_useful(junk), junk)
+        for real in ("031471", "1037560564", "8W0907559G", "04C906057A"):
+            self.assertTrue(_useful(real), real)
+
+
 class IdentityConfirmedTransferTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
