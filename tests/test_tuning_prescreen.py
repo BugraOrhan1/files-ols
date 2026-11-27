@@ -79,5 +79,15 @@ class PrescreenTests(unittest.TestCase):
         self.assertEqual([d["original_sha256"] for d in chosen], ["s", "o"])
 
 
+class AbsentTests(unittest.TestCase):
+    def test_a_new_file_of_the_same_size_gets_its_own_word_set(self):
+        for seed in range(20):  # freed files' ids are reused: the cache must not mix them up
+            data = random.Random(seed).randbytes(0x20000)
+            pattern = data[0x1234:0x1234 + 24]
+            self.assertFalse(tr._absent(data, pattern))
+            self.assertTrue(tr._absent(data, bytes([0xA5]) * 24) or bytes([0xA5]) * 24 in data)
+            del data
+
+
 if __name__ == "__main__":
     unittest.main()

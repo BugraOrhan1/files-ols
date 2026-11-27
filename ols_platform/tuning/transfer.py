@@ -361,7 +361,7 @@ def transfer_profiles(package, data: bytes, hint: str = "", min_similarity: floa
     return profiles, donors
 
 
-_WORDS: tuple[int, int, set[int]] | None = None  # (id, length, 8-byte words at every 4th offset) of the last file
+_WORDS: tuple[bytes, set[int]] | None = None  # (the last file itself, its 8-byte words at every 4th offset)
 
 
 def _absent(data: bytes, pattern: bytes) -> bool:
@@ -375,14 +375,15 @@ def _absent(data: bytes, pattern: bytes) -> bool:
     global _WORDS
     if len(pattern) < 11 or len(data) < 0x10000:
         return False
-    if _WORDS is None or _WORDS[0] != id(data) or _WORDS[1] != len(data):
+    # Kept by reference, not by id(): a freed file's id is reused by the next one.
+    if _WORDS is None or _WORDS[0] is not data:
         words: set[int] = set()
         for start in (0, 4):
             run = array("Q")
             run.frombytes(data[start:start + (len(data) - start) // 8 * 8])
             words.update(run)
-        _WORDS = (id(data), len(data), words)
-    words = _WORDS[2]
+        _WORDS = (data, words)
+    words = _WORDS[1]
     view = memoryview(pattern)
     return not any(int.from_bytes(view[j:j + 8], "little") in words for j in range(4))
 
