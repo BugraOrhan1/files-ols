@@ -153,6 +153,7 @@ class LearnAndGenerateTests(unittest.TestCase):
         other_hw = make_original(7, Variant(hw="HW9999-0001"))
         transferred = generate(other_hw, "stage1", self.package)
         self.assertEqual(transferred.evidence_level, "DONOR_TRANSFER")
+        self.assertTrue(transferred.notes[0].startswith("OVERGEZET, GEEN EXACTE MATCH"), transferred.notes[0])
         expected = make_stage1(other_hw)
         self.assertLessEqual(max(abs(struct.unpack_from("<H", transferred.output, i)[0]
                                      - struct.unpack_from("<H", expected, i)[0])
@@ -543,6 +544,7 @@ class ScaleBehaviourTests(unittest.TestCase):
         result = generate(pair.original, "stage1", package)
         self.assertEqual(result.output, pair.tuned)
         self.assertEqual(result.evidence_level, "KNOWN_PAIR")
+        self.assertTrue(result.notes[0].startswith("EXACTE MATCH"), result.notes[0])
         self.assertTrue(any("andere varianten" in n for n in result.notes))
 
 

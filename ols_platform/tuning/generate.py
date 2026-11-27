@@ -662,11 +662,38 @@ def _by_transfer(data: bytes, profile_name: str, package, contracts: dict | None
     )
 
 
+def match_line(result: GenerationResult) -> str:
+    """The first line of every result: how sure the tune is, in WinOLS terms."""
+
+    if result.evidence_level == "KNOWN_PAIR":
+        return ("EXACTE MATCH (zoals 100/100 in WinOLS): dit origineel staat precies zo in de bibliotheek; de tune "
+                "van dat project is ongewijzigd overgenomen.")
+    if result.evidence_level == "DONOR_TRANSFER":
+        similarity = result.identity.get("similarity")
+        how = f"{similarity:.0%} gelijk" if isinstance(similarity, (int, float)) else "gelijkend"
+        return (f"OVERGEZET, GEEN EXACTE MATCH: de tune van een voorbeeld ({how}) is kaart voor kaart op dit bestand "
+                "gezet. Dat is minder zeker dan 100/100: controleer de kaarten voor het flashen.")
+    if result.evidence_level == "COMBINED":
+        return "SAMENGESTELD, GEEN EXACTE MATCH: losse tunes samengevoegd; controleer het resultaat in WinOLS."
+    return "GELEERD, GEEN EXACTE MATCH: tune uit geleerde regels voor deze software; controleer voor het flashen."
+
+
 def generate(data: bytes, profile_name: str, package, contracts: dict | None = None, *,
              hint: str = "", min_similarity: float | None = None,
              min_coverage: float | None = None, family_floor: dict[str, float] | None = None) -> GenerationResult:
     """The tune itself when the library has it; a combination without an
-    example is joined from its separate tunes."""
+    example is joined from its separate tunes. The first note always says
+    whether it is an exact match."""
+
+    result = _generate(data, profile_name, package, contracts, hint=hint, min_similarity=min_similarity,
+                       min_coverage=min_coverage, family_floor=family_floor)
+    result.notes.insert(0, match_line(result))
+    return result
+
+
+def _generate(data: bytes, profile_name: str, package, contracts: dict | None = None, *,
+              hint: str = "", min_similarity: float | None = None,
+              min_coverage: float | None = None, family_floor: dict[str, float] | None = None) -> GenerationResult:
 
     options = {"hint": hint, "min_similarity": min_similarity, "min_coverage": min_coverage,
                "family_floor": family_floor}
